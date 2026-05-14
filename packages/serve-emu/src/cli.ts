@@ -10,7 +10,7 @@ const { values } = parseArgs({
     serial: { type: "string", short: "s" },
     "max-fps": { type: "string", default: "60" },
     "bit-rate": { type: "string", default: "8000000" },
-    "max-size": { type: "string", default: "0" },
+    "max-size": { type: "string", default: "1920" },
     help: { type: "boolean", short: "h" },
   },
   allowPositionals: true,
@@ -27,7 +27,9 @@ Options:
   -s, --serial <serial>  adb device serial (defaults to the only booted device)
       --max-fps <n>      Cap source frame rate (default: 60)
       --bit-rate <bps>   H.264 bit rate (default: 8000000)
-      --max-size <px>    Cap longest screen edge in pixels; 0 = native (default: 0)
+      --max-size <px>    Cap longest screen edge in pixels; 0 = native, but many
+                         emulators reject native resolutions above ~2560 so this
+                         defaults to 1920 (set to 0 if you want full native).
   -h, --help             Show this help
 `);
   process.exit(0);
