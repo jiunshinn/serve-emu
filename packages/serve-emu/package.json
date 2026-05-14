@@ -1,0 +1,17 @@
+{
+  "name": "serve-emu",
+  "version": "0.0.1",
+  "description": "The `npx serve` of Android Emulators.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "serve-emu": "./src/cli.ts"
+  },
+  "scripts": {
+    "setup": "bun run scripts/fetch-scrcpy.ts",
+    "dev": "bun --watch run src/cli.ts",
+    "start": "bun run src/cli.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "files": ["src", "scripts", "vendor", "README.md", "LICENSE"]
+}

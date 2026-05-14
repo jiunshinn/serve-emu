@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>serve-emu</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #0b0b0e;
+        color: #e5e5ea;
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+      }
+      header {
+        padding: 12px 16px;
+        border-bottom: 1px solid #1f1f24;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+      }
+      header h1 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0;
+        letter-spacing: 0.02em;
+      }
+      header .meta {
+        font-size: 12px;
+        color: #8a8a93;
+        font-variant-numeric: tabular-nums;
+      }
+      main {
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .device {
+        position: relative;
+        background: #000;
+        border-radius: 24px;
+        overflow: hidden;
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+      }
+      canvas {
+        display: block;
+        max-height: 80vh;
+        max-width: 90vw;
+        height: auto;
+        cursor: crosshair;
+        user-select: none;
+        touch-action: none;
+      }
+      footer {
+        display: flex;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid #1f1f24;
+        justify-content: center;
+      }
+      button {
+        background: #1c1c22;
+        color: #e5e5ea;
+        border: 1px solid #2a2a32;
+        border-radius: 8px;
+        padding: 8px 14px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #25252d;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>serve-emu</h1>
+      <div class="meta" id="meta">connecting…</div>
+    </header>
+    <main>
+      <div class="device">
+        <canvas id="screen"></canvas>
+      </div>
+    </main>
+    <footer>
+      <button data-key="back">Back</button>
+      <button data-key="home">Home</button>
+      <button data-key="recents">Recents</button>
+      <button data-key="power">Power</button>
+    </footer>
+    <script type="module">
+      const meta = document.getElementById("meta");
+      const canvas = document.getElementById("screen");
+      const ctx = canvas.getContext("2d", { alpha: false, desynchronized: true });
+
+      let ws;
+      let down = null;
+      let deviceSize = { width: 0, height: 0 };
+      let fpsCount = 0;
+      let fpsTimer = performance.now();
+      let lastFps = 0;
+      let statusStr = "connecting…";
+
+      function setStatus(s) {
+        statusStr = s;
+        render();
+      }
+      function render() {
+        meta.textContent =
+          `${statusStr}` +
+          (deviceSize.width
+            ? ` • ${deviceSize.width}×${deviceSize.height} • ${lastFps} fps`
+            : "");
+      }
+
+      // ---- WebCodecs decoder ----
+      // The server bundles SPS+PPS into the first keyframe of every GOP, so
+      // each WS message is one complete Access Unit (one frame) in Annex-B.
+      let decoder = null;
+      let frameIdx = 0;
+      let sawKeyframe = false;
+
+      function buildCodecString(spsHeaderAndPayload) {
+        // First byte is the NAL header (0x67 for SPS); profile/constraints/level follow.
+        const profile = spsHeaderAndPayload[1].toString(16).padStart(2, "0");
+        const constraints = spsHeaderAndPayload[2].toString(16).padStart(2, "0");
+        const level = spsHeaderAndPayload[3].toString(16).padStart(2, "0");
+        return `avc1.${profile}${constraints}${level}`;
+      }
+
+      function ensureDecoder(spsBytes) {
+        if (decoder && decoder.state !== "closed") return;
+        const codec = buildCodecString(spsBytes);
+        decoder = new VideoDecoder({
+          output: (frame) => {
+            if (canvas.width !== frame.displayWidth) {
+              canvas.width = frame.displayWidth;
+              canvas.height = frame.displayHeight;
+            }
+            ctx.drawImage(frame, 0, 0);
+            frame.close();
+            fpsCount++;
+            const now = performance.now();
+            if (now - fpsTimer >= 1000) {
+              lastFps = Math.round((fpsCount * 1000) / (now - fpsTimer));
+              fpsCount = 0;
+              fpsTimer = now;
+              render();
+            }
+          },
+          error: (e) => {
+            console.error("VideoDecoder error", e);
+            setStatus("decoder error");
+          },
+        });
+        decoder.configure({ codec, optimizeForLatency: true });
+        console.log("VideoDecoder configured:", codec);
+      }
+
+      // Scan an Access Unit for an SPS NAL (type 7) and an IDR slice (type 5).
+      function scanAU(buf) {
+        let isKey = false;
+        let spsBytes = null;
+        const len = buf.length;
+        let i = 0;
+        while (i + 2 < len) {
+          if (buf[i] === 0 && buf[i + 1] === 0) {
+            let codeLen = 0;
+            if (buf[i + 2] === 1) codeLen = 3;
+            else if (i + 3 < len && buf[i + 2] === 0 && buf[i + 3] === 1) codeLen = 4;
+            if (codeLen) {
+              const headerByte = buf[i + codeLen];
+              const nalType = headerByte & 0x1f;
+              if (nalType === 7 && !spsBytes) spsBytes = buf.subarray(i + codeLen);
+              if (nalType === 5) isKey = true;
+              i += codeLen + 1;
+              continue;
+            }
+          }
+          i++;
+        }
+        return { isKey, spsBytes };
+      }
+
+      function feedFrame(bytes) {
+        const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+        const { isKey, spsBytes } = scanAU(data);
+        if (spsBytes) ensureDecoder(spsBytes);
+        if (!decoder || decoder.state !== "configured") return;
+        if (!sawKeyframe) {
+          if (!isKey) return;
+          sawKeyframe = true;
+        }
+        try {
+          decoder.decode(
+            new EncodedVideoChunk({
+              type: isKey ? "key" : "delta",
+              timestamp: Math.round((frameIdx * 1_000_000) / 60),
+              data,
+            }),
+          );
+          frameIdx++;
+        } catch (e) {
+          console.error("decode failed", e);
+        }
+      }
+
+      // ---- WebSocket ----
+      function connect() {
+        ws = new WebSocket(`ws://${location.host}/ws`);
+        ws.binaryType = "arraybuffer";
+        ws.onopen = () => setStatus("streaming");
+        ws.onclose = () => {
+          setStatus("disconnected — retrying…");
+          try {
+            decoder?.close();
+          } catch {}
+          decoder = null;
+          frameIdx = 0;
+          sawKeyframe = false;
+          setTimeout(connect, 500);
+        };
+        ws.onmessage = (e) => {
+          if (typeof e.data === "string") return; // input ack, ignore
+          feedFrame(e.data);
+        };
+      }
+      connect();
+
+      fetch("/api")
+        .then((r) => r.json())
+        .then((d) => {
+          deviceSize = d.size;
+          render();
+        });
+
+      // ---- Input ----
+      function send(msg) {
+        if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg));
+      }
+      function norm(e) {
+        const r = canvas.getBoundingClientRect();
+        return { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
+      }
+      canvas.addEventListener("pointerdown", (e) => {
+        canvas.setPointerCapture(e.pointerId);
+        down = { ...norm(e), t: performance.now() };
+      });
+      canvas.addEventListener("pointerup", (e) => {
+        if (!down) return;
+        const up = norm(e);
+        const dx = up.x - down.x;
+        const dy = up.y - down.y;
+        if (Math.hypot(dx, dy) < 0.01) {
+          send({ type: "tap", x: up.x, y: up.y });
+        } else {
+          send({
+            type: "swipe",
+            x1: down.x,
+            y1: down.y,
+            x2: up.x,
+            y2: up.y,
+            durationMs: Math.max(100, performance.now() - down.t),
+          });
+        }
+        down = null;
+      });
+      document.querySelectorAll("footer button").forEach((btn) => {
+        btn.addEventListener("click", () => send({ type: btn.dataset.key }));
+      });
+      document.addEventListener("keydown", (e) => {
+        if (e.target !== document.body) return;
+        if (e.key === "Escape") return send({ type: "back" });
+        if (e.key === "Enter") return send({ type: "key", keycode: 66 });
+        if (e.key.length === 1) return send({ type: "text", text: e.key });
+      });
+    </script>
+  </body>
+</html>
