@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 
 export type Device = { serial: string; state: string };
 
-export function listDevices(): Device[] {
+export function listAllDevices(): Device[] {
   const r = spawnSync("adb", ["devices"], { encoding: "utf8" });
   if (r.status !== 0) throw new Error(`adb devices failed: ${r.stderr}`);
   return r.stdout
@@ -13,8 +13,11 @@ export function listDevices(): Device[] {
     .map((l) => {
       const [serial, state] = l.split(/\s+/);
       return { serial, state };
-    })
-    .filter((d) => d.state === "device");
+    });
+}
+
+export function listDevices(): Device[] {
+  return listAllDevices().filter((d) => d.state === "device");
 }
 
 export function pickDevice(explicit?: string): string {
