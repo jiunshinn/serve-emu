@@ -1,4 +1,5 @@
 import { buildCodecString, scanAU } from "./h264";
+import { epochNowMs, parseFramePacket } from "../../shared/frame-meta";
 
 // The worker owns the whole WebSocket → decode → present pipeline so that
 // main-thread work (React renders, health polling, panels) can never stall
@@ -12,10 +13,6 @@ const SOFT_DECODE_QUEUE_SIZE = 12;
 const DECODER_RECOVERY_COOLDOWN_MS = 500;
 const KEYFRAME_REQUEST_COOLDOWN_MS = 400;
 const FRAME_QUEUE_SIZE = 3;
-const FRAME_META_MAGIC = 0x53454d55; // "SEMU"
-const FRAME_META_V1_HEADER_BYTES = 16;
-const FRAME_META_V2_HEADER_BYTES = 24;
-const FRAME_FLAG_KEY = 1 << 0;
 const PENDING_TIMING_LIMIT = 256;
 const STATS_INTERVAL_MS = 1000;
 
@@ -49,40 +46,6 @@ const scheduleFrame: (cb: () => void) => number =
     : (cb) => setTimeout(cb, 16) as unknown as number;
 const cancelFrame: (handle: number) => void =
   typeof cancelAnimationFrame === "function" ? (h) => cancelAnimationFrame(h) : (h) => clearTimeout(h);
-
-const epochNowMs = () => performance.timeOrigin + performance.now();
-
-type FramePacket = {
-  data: Uint8Array;
-  isKey: boolean | null;
-  timestamp: number | null;
-  serverTsMs: number | null;
-};
-
-function parseFramePacket(raw: ArrayBuffer | Uint8Array): FramePacket {
-  const bytes = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
-  if (bytes.byteLength > FRAME_META_V1_HEADER_BYTES) {
-    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    if (view.getUint32(0, false) === FRAME_META_MAGIC) {
-      const version = view.getUint8(4);
-      const isKey = (view.getUint8(5) & FRAME_FLAG_KEY) !== 0;
-      const pts = view.getBigUint64(8, false);
-      const timestamp = pts <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(pts) : null;
-      if (version === 2 && bytes.byteLength > FRAME_META_V2_HEADER_BYTES) {
-        return {
-          data: bytes.subarray(FRAME_META_V2_HEADER_BYTES),
-          isKey,
-          timestamp,
-          serverTsMs: Number(view.getBigUint64(16, false)) / 1000,
-        };
-      }
-      if (version === 1) {
-        return { data: bytes.subarray(FRAME_META_V1_HEADER_BYTES), isKey, timestamp, serverTsMs: null };
-      }
-    }
-  }
-  return { data: bytes, isKey: null, timestamp: null, serverTsMs: null };
-}
 
 let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;

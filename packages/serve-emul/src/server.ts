@@ -32,6 +32,8 @@ import {
   launchApp,
 } from "./app-management.ts";
 import { getForegroundApp } from "./app-info.ts";
+import { FrameStatWindow } from "./frame-stat-window.ts";
+import { FRAME_META_HEADER_BYTES, epochNowMs, writeFrameMetaHeader } from "./shared/frame-meta.ts";
 import { startScrcpy, type ScrcpySession } from "./scrcpy.ts";
 import { listAvds, listRunningAvds, startEmulator, stopEmulator } from "./emulator.ts";
 import { dispatch, parseGesture, resetVideoPacket, type Gesture, type Screen } from "./input.ts";
@@ -90,10 +92,6 @@ type Client = {
 const MAX_WS_MESSAGE_BYTES = 16 * 1024;
 const DROP_FRAME_BUFFERED_BYTES = 512 * 1024;
 const CLOSE_CLIENT_BUFFERED_BYTES = 16 * 1024 * 1024;
-const FRAME_META_MAGIC = 0x53454d55; // "SEMU"
-const FRAME_META_VERSION = 2;
-const FRAME_META_HEADER_BYTES = 24;
-const FRAME_FLAG_KEY = 1 << 0;
 // Rolling window used for /health frame timing stats: 240 frames ≈ 4s at 60fps.
 const FRAME_STAT_WINDOW = 240;
 const VIDEO_RESET_COOLDOWN_MS = 500;
@@ -134,12 +132,7 @@ export async function startServer(opts: ServerOpts) {
   let totalBackpressureEvents = 0;
   let sourceFps = 0;
   let lastFpsFrameCount = 0;
-  const frameIntervalsMs = new Float64Array(FRAME_STAT_WINDOW);
-  const frameSizes = new Uint32Array(FRAME_STAT_WINDOW);
-  const frameIsKey = new Uint8Array(FRAME_STAT_WINDOW);
-  let frameStatIdx = 0;
-  let frameStatCount = 0;
-  let lastFrameHrMs = 0;
+  const frameStats = new FrameStatWindow(FRAME_STAT_WINDOW);
   let videoResetRequests = 0;
   let lastVideoResetAt: string | null = null;
   let lastVideoResetReason: string | null = null;
@@ -158,56 +151,6 @@ export async function startServer(opts: ServerOpts) {
   let accessibilitySnapshotCache: { snapshot: AccessibilitySnapshot; expiresMs: number } | null = null;
   let accessibilitySnapshotInFlight: Promise<AccessibilitySnapshot> | null = null;
 
-  const recordFrameStat = (bytes: number, isKey: boolean) => {
-    const now = performance.now();
-    frameIntervalsMs[frameStatIdx] = lastFrameHrMs > 0 ? now - lastFrameHrMs : 0;
-    frameSizes[frameStatIdx] = bytes;
-    frameIsKey[frameStatIdx] = isKey ? 1 : 0;
-    frameStatIdx = (frameStatIdx + 1) % FRAME_STAT_WINDOW;
-    if (frameStatCount < FRAME_STAT_WINDOW) frameStatCount++;
-    lastFrameHrMs = now;
-  };
-
-  const resetFrameStats = () => {
-    frameStatIdx = 0;
-    frameStatCount = 0;
-    lastFrameHrMs = 0;
-  };
-
-  // Source cadence over the recent window, so agents (and we) can tell a
-  // slow encoder (large p50) from a bursty one (p50 fine, p95/max spiking).
-  const frameStats = () => {
-    if (frameStatCount === 0) return null;
-    const intervals: number[] = [];
-    let keyBytes = 0;
-    let keyFrames = 0;
-    let deltaBytes = 0;
-    let deltaFrames = 0;
-    for (let i = 0; i < frameStatCount; i++) {
-      if (frameIntervalsMs[i] > 0) intervals.push(frameIntervalsMs[i]);
-      if (frameIsKey[i]) {
-        keyBytes += frameSizes[i];
-        keyFrames++;
-      } else {
-        deltaBytes += frameSizes[i];
-        deltaFrames++;
-      }
-    }
-    intervals.sort((a, b) => a - b);
-    const at = (q: number) => intervals[Math.min(intervals.length - 1, Math.floor(intervals.length * q))];
-    const round1 = (n: number) => Math.round(n * 10) / 10;
-    return {
-      windowFrames: frameStatCount,
-      intervalMs:
-        intervals.length > 0
-          ? { p50: round1(at(0.5)), p95: round1(at(0.95)), max: round1(intervals[intervals.length - 1]) }
-          : null,
-      avgKeyFrameBytes: keyFrames > 0 ? Math.round(keyBytes / keyFrames) : null,
-      avgDeltaFrameBytes: deltaFrames > 0 ? Math.round(deltaBytes / deltaFrames) : null,
-      keyFramesInWindow: keyFrames,
-    };
-  };
-
   const health = () => ({
     ok: status === "streaming",
     status,
@@ -218,7 +161,7 @@ export async function startServer(opts: ServerOpts) {
     clients: clients.size,
     frames: frameCount,
     sourceFps,
-    frameStats: frameStats(),
+    frameStats: frameStats.summary(),
     configPackets: configPacketCount,
     droppedFrames: totalDroppedFrames,
     backpressureEvents: totalBackpressureEvents,
@@ -327,14 +270,7 @@ export async function startServer(opts: ServerOpts) {
   ): Buffer => {
     const configBytes = config?.length ?? 0;
     const out = Buffer.allocUnsafe(FRAME_META_HEADER_BYTES + configBytes + frameData.length);
-    out.writeUInt32BE(FRAME_META_MAGIC, 0);
-    out.writeUInt8(FRAME_META_VERSION, 4);
-    out.writeUInt8(frame.isKey ? FRAME_FLAG_KEY : 0, 5);
-    out.writeUInt16BE(0, 6);
-    out.writeBigUInt64BE(frame.pts, 8);
-    // Server send time as epoch µs, so a same-host client can measure
-    // transit and glass-to-glass latency against its own clock.
-    out.writeBigUInt64BE(BigInt(Math.round((performance.timeOrigin + performance.now()) * 1000)), 16);
+    writeFrameMetaHeader(out, { isKey: frame.isKey, pts: frame.pts, serverTsMs: epochNowMs() });
     if (config) config.copy(out, FRAME_META_HEADER_BYTES);
     frameData.copy(out, FRAME_META_HEADER_BYTES + configBytes);
     return out;
@@ -711,7 +647,7 @@ export async function startServer(opts: ServerOpts) {
           }
           frameCount++;
           lastFrameMs = Date.now();
-          recordFrameStat(f.data.length, f.isKey);
+          frameStats.record(f.data.length, f.isKey);
           const config = f.isKey ? cachedConfig : null;
           let rawOut: Buffer | null = null;
           let framedOut: Buffer | null = null;
@@ -765,7 +701,7 @@ export async function startServer(opts: ServerOpts) {
     totalBackpressureEvents = 0;
     sourceFps = 0;
     lastFpsFrameCount = 0;
-    resetFrameStats();
+    frameStats.reset();
     videoResetRequests = 0;
     lastVideoResetAt = null;
     lastVideoResetReason = null;
