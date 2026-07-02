@@ -37,6 +37,21 @@ export type StartOpts = {
   repeatFrameMs?: number;
 };
 
+// Single source of truth for encoder defaults; the CLI reads these for its
+// option defaults and --help text so the two can't drift.
+export const SCRCPY_DEFAULTS = {
+  maxFps: 60,
+  bitRate: 8_000_000,
+  // The emulator has no hardware video encoder; its software H.264 encoder
+  // (c2.android.avc.encoder) only sustains 60fps below roughly a megapixel,
+  // so cap the longest edge at 1280 unless the caller overrides it.
+  maxSize: 1280,
+  // Late joiners get keyframes on demand via reset-video, so a long interval
+  // avoids periodic keyframe bursts.
+  keyFrameInterval: 10,
+  repeatFrameMs: 0,
+} as const;
+
 export type VideoFrame = {
   type: "frame";
   data: Buffer;
@@ -308,14 +323,11 @@ function parseVideoPreamble(buf: Buffer): {
 export async function startScrcpy(opts: StartOpts): Promise<ScrcpySession> {
   const jar = await ensureScrcpyServer();
   const { serial } = opts;
-  const maxFps = opts.maxFps ?? 60;
-  const bitRate = opts.bitRate ?? 8_000_000;
-  // The emulator has no hardware video encoder; its software H.264 encoder
-  // (c2.android.avc.encoder) only sustains 60fps below roughly a megapixel,
-  // so cap the longest edge at 1280 unless the caller overrides it.
-  const maxSize = opts.maxSize ?? 1280;
-  const keyFrameInterval = opts.keyFrameInterval ?? 10;
-  const repeatFrameMs = opts.repeatFrameMs ?? 0;
+  const maxFps = opts.maxFps ?? SCRCPY_DEFAULTS.maxFps;
+  const bitRate = opts.bitRate ?? SCRCPY_DEFAULTS.bitRate;
+  const maxSize = opts.maxSize ?? SCRCPY_DEFAULTS.maxSize;
+  const keyFrameInterval = opts.keyFrameInterval ?? SCRCPY_DEFAULTS.keyFrameInterval;
+  const repeatFrameMs = opts.repeatFrameMs ?? SCRCPY_DEFAULTS.repeatFrameMs;
   // MediaCodec option types matter: repeat-previous-frame-after is a long (µs).
   const codecOptions = [
     ...(keyFrameInterval > 0 ? [`i-frame-interval=${keyFrameInterval}`] : []),

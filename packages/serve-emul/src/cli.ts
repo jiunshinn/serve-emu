@@ -2,6 +2,7 @@
 import { parseArgs } from "node:util";
 import { pickDevice } from "./adb.ts";
 import { listAvds, listRunningAvds, startEmulator } from "./emulator.ts";
+import { SCRCPY_DEFAULTS } from "./scrcpy.ts";
 import { startServer } from "./server.ts";
 import { getUpdateNotice } from "./update-check.ts";
 import packageJson from "../package.json";
@@ -12,11 +13,11 @@ const { values } = parseArgs({
   options: {
     port: { type: "string", short: "p", default: "3300" },
     serial: { type: "string", short: "s" },
-    "max-fps": { type: "string", default: "60" },
-    "bit-rate": { type: "string", default: "8000000" },
-    "max-size": { type: "string", default: "1280" },
-    "key-frame-interval": { type: "string", default: "10" },
-    "repeat-frame-ms": { type: "string", default: "0" },
+    "max-fps": { type: "string", default: String(SCRCPY_DEFAULTS.maxFps) },
+    "bit-rate": { type: "string", default: String(SCRCPY_DEFAULTS.bitRate) },
+    "max-size": { type: "string", default: String(SCRCPY_DEFAULTS.maxSize) },
+    "key-frame-interval": { type: "string", default: String(SCRCPY_DEFAULTS.keyFrameInterval) },
+    "repeat-frame-ms": { type: "string", default: String(SCRCPY_DEFAULTS.repeatFrameMs) },
     avd: { type: "string" },
     "avd-list": { type: "boolean" },
     "running-avds": { type: "boolean" },
@@ -60,15 +61,15 @@ Usage:
 Options:
   -p, --port <port>      Port to listen on (default: 3300)
   -s, --serial <serial>  adb device serial (defaults to the only booted device)
-      --max-fps <n>      Cap source frame rate (default: 60)
-      --bit-rate <bps>   H.264 bit rate (default: 8000000)
+      --max-fps <n>      Cap source frame rate (default: ${SCRCPY_DEFAULTS.maxFps})
+      --bit-rate <bps>   H.264 bit rate (default: ${SCRCPY_DEFAULTS.bitRate})
       --max-size <px>    Cap longest screen edge in pixels; 0 = native. The
                          emulator only has a software H.264 encoder, which
                          sustains 60fps only below ~1 megapixel, so this
-                         defaults to 1280.
+                         defaults to ${SCRCPY_DEFAULTS.maxSize}.
       --key-frame-interval <sec>
                          Ask the encoder for regular keyframes; 0 disables this
-                         codec option (default: 10). Late joiners get keyframes
+                         codec option (default: ${SCRCPY_DEFAULTS.keyFrameInterval}). Late joiners get keyframes
                          on demand via reset-video, so a long interval avoids
                          periodic keyframe bursts.
       --repeat-frame-ms <ms>
@@ -125,11 +126,11 @@ async function main() {
       })).serial
     : await pickDevice(values.serial);
   const port = Number(values.port);
-  const maxFps = numberOption("max-fps", 60);
-  const bitRate = numberOption("bit-rate", 8_000_000);
-  const maxSize = numberOption("max-size", 1280);
-  const keyFrameInterval = numberOption("key-frame-interval", 10);
-  const repeatFrameMs = numberOption("repeat-frame-ms", 0);
+  const maxFps = numberOption("max-fps", SCRCPY_DEFAULTS.maxFps);
+  const bitRate = numberOption("bit-rate", SCRCPY_DEFAULTS.bitRate);
+  const maxSize = numberOption("max-size", SCRCPY_DEFAULTS.maxSize);
+  const keyFrameInterval = numberOption("key-frame-interval", SCRCPY_DEFAULTS.keyFrameInterval);
+  const repeatFrameMs = numberOption("repeat-frame-ms", SCRCPY_DEFAULTS.repeatFrameMs);
 
   const { server, stop: stopServer } = await startServer({
     serial,
