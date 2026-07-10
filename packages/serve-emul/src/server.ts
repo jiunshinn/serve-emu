@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
+import { timingSafeEqual } from "node:crypto";
 import type { ServerWebSocket } from "bun";
 import { execText } from "./exec.ts";
 import {
@@ -47,12 +48,44 @@ const UI_DIR = join(__dirname, "..", "dist", "ui");
 export type ServerOpts = {
   serial: string;
   port: number;
+  /** Address to bind. Defaults to loopback (127.0.0.1). */
+  host?: string;
+  /**
+   * Shared secret required on every request. When empty/undefined, auth is
+   * disabled (intended only for loopback binds). Presented via bearer token,
+   * the `semu_session` cookie, or a `token` query param.
+   */
+  token?: string;
   maxFps?: number;
   bitRate?: number;
   maxSize?: number;
   keyFrameInterval?: number;
   repeatFrameMs?: number;
 };
+
+export const DEFAULT_HOST = "127.0.0.1";
+const SESSION_COOKIE = "semu_session";
+
+/** Constant-time string compare that never throws on length mismatch. */
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a, "utf8");
+  const bb = Buffer.from(b, "utf8");
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
+}
+
+function parseCookies(header: string | null): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!header) return out;
+  for (const part of header.split(";")) {
+    const idx = part.indexOf("=");
+    if (idx < 0) continue;
+    const key = part.slice(0, idx).trim();
+    if (!key) continue;
+    out[key] = part.slice(idx + 1).trim();
+  }
+  return out;
+}
 
 type SessionStatus = "streaming" | "stopped" | "error";
 type GridDeviceKind = "physical" | "emulator" | "avd";
@@ -110,6 +143,43 @@ export async function startServer(opts: ServerOpts) {
     keyFrameInterval: opts.keyFrameInterval,
     repeatFrameMs: opts.repeatFrameMs,
   });
+
+  const host = opts.host ?? DEFAULT_HOST;
+  const authToken = opts.token && opts.token.length > 0 ? opts.token : null;
+
+  /** Token presented by the request, from bearer header, cookie, or query. */
+  const presentedToken = (req: Request, url: URL): string | null => {
+    const authorization = req.headers.get("authorization");
+    if (authorization && authorization.startsWith("Bearer ")) {
+      return authorization.slice("Bearer ".length).trim();
+    }
+    const cookie = parseCookies(req.headers.get("cookie"))[SESSION_COOKIE];
+    if (cookie) return cookie;
+    return url.searchParams.get("token");
+  };
+
+  const tokenValid = (req: Request, url: URL): boolean => {
+    if (!authToken) return true;
+    const presented = presentedToken(req, url);
+    return presented !== null && safeEqual(presented, authToken);
+  };
+
+  /**
+   * Same-origin guard for state-changing requests and the WebSocket upgrade.
+   * A missing Origin means a non-browser client (CLI/agent), which is gated by
+   * the token check instead. A present Origin must match the request Host.
+   */
+  const originAllowed = (req: Request): boolean => {
+    const origin = req.headers.get("origin");
+    if (!origin) return true;
+    let originHost: string;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      return false;
+    }
+    return originHost === req.headers.get("host");
+  };
 
   let currentSerial = opts.serial;
   let session: ScrcpySession = await openScrcpy(currentSerial);
@@ -776,8 +846,52 @@ export async function startServer(opts: ServerOpts) {
   let nextId = 1;
   const server = Bun.serve<WsData>({
     port: opts.port,
+    hostname: host,
     async fetch(req, srv) {
       const url = new URL(req.url);
+
+      // Bootstrap: exchange a valid one-time URL token for an HttpOnly cookie,
+      // then redirect to a clean URL so the secret never lingers in the address
+      // bar, browser history, or referer logs. Same-origin fetch/EventSource/WS
+      // calls carry the cookie automatically afterward. Scoped to browser
+      // navigations (Accept: text/html) so agents hitting `/api?token=` still
+      // get their JSON response instead of a redirect.
+      if (authToken && req.method === "GET" && (req.headers.get("accept") ?? "").includes("text/html")) {
+        const queryToken = url.searchParams.get("token");
+        if (queryToken && safeEqual(queryToken, authToken)) {
+          const clean = new URL(url);
+          clean.searchParams.delete("token");
+          return new Response(null, {
+            status: 303,
+            headers: {
+              Location: `${clean.pathname}${clean.search}`,
+              "Set-Cookie": `${SESSION_COOKIE}=${authToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`,
+            },
+          });
+        }
+      }
+
+      if (!tokenValid(req, url)) {
+        return new Response(JSON.stringify({ ok: false, error: "unauthorized" }), {
+          status: 401,
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "WWW-Authenticate": "Bearer",
+          },
+        });
+      }
+
+      // CSRF / cross-origin guard: reject upgrades and state-changing requests
+      // whose Origin does not match the host. Applied even without auth so the
+      // control channel is never open to arbitrary cross-origin pages.
+      if (url.pathname === "/ws" || (req.method !== "GET" && req.method !== "HEAD")) {
+        if (!originAllowed(req)) {
+          return new Response(JSON.stringify({ ok: false, error: "forbidden origin" }), {
+            status: 403,
+            headers: { "Content-Type": "application/json; charset=utf-8" },
+          });
+        }
+      }
 
       if (url.pathname === "/api") {
         return Response.json({

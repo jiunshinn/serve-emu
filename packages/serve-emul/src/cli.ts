@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
+import { randomBytes } from "node:crypto";
 import { pickDevice } from "./adb.ts";
 import { listAvds, listRunningAvds, startEmulator } from "./emulator.ts";
 import { SCRCPY_DEFAULTS } from "./scrcpy.ts";
-import { startServer } from "./server.ts";
+import { DEFAULT_HOST, startServer } from "./server.ts";
 import { getUpdateNotice } from "./update-check.ts";
 import packageJson from "../package.json";
 
@@ -12,6 +13,9 @@ const { values } = parseArgs({
   args: argv,
   options: {
     port: { type: "string", short: "p", default: "3300" },
+    host: { type: "string" },
+    token: { type: "string" },
+    "unsafe-no-auth": { type: "boolean" },
     serial: { type: "string", short: "s" },
     "max-fps": { type: "string", default: String(SCRCPY_DEFAULTS.maxFps) },
     "bit-rate": { type: "string", default: String(SCRCPY_DEFAULTS.bitRate) },
@@ -38,6 +42,17 @@ function numberOption(name: string, fallback: number): number {
   return n;
 }
 
+function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase();
+  return h === "localhost" || h === "::1" || h === "[::1]" || h.startsWith("127.");
+}
+
+/** Address to show in the clickable startup URL (wildcard binds → localhost). */
+function displayHost(host: string): string {
+  if (host === "0.0.0.0" || host === "::" || host === "[::]") return "localhost";
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
 async function checkForUpdate() {
   if (process.env.SERVE_EMUL_UPDATE_CHECK === "0") return;
 
@@ -53,13 +68,23 @@ if (values.help) {
   console.log(`serve-emul — host an Android device over scrcpy + WebSocket
 
 Usage:
-  serve-emul [-p <port>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms]
+  serve-emul [-p <port>] [--host <addr>] [--token <secret>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms]
   serve-emul --avd <name> [--restart-avd]
   serve-emul --avd-list
   serve-emul --running-avds
 
 Options:
   -p, --port <port>      Port to listen on (default: 3300)
+      --host <addr>      Address to bind (default: 127.0.0.1, loopback only).
+                         Use 0.0.0.0 to expose over the LAN — this requires
+                         authentication (see --token) unless --unsafe-no-auth.
+      --token <secret>   Require this shared secret on every request. Browsers
+                         authenticate by opening the printed ?token= URL once
+                         (exchanged for an HttpOnly cookie); agents send
+                         'Authorization: Bearer <secret>'. On a non-loopback
+                         bind a token is generated automatically if omitted.
+      --unsafe-no-auth   Allow a non-loopback bind with NO authentication.
+                         Anyone who can reach the port can control the device.
   -s, --serial <serial>  adb device serial (defaults to the only booted device)
       --max-fps <n>      Cap source frame rate (default: ${SCRCPY_DEFAULTS.maxFps})
       --bit-rate <bps>   H.264 bit rate (default: ${SCRCPY_DEFAULTS.bitRate})
@@ -132,9 +157,29 @@ async function main() {
   const keyFrameInterval = numberOption("key-frame-interval", SCRCPY_DEFAULTS.keyFrameInterval);
   const repeatFrameMs = numberOption("repeat-frame-ms", SCRCPY_DEFAULTS.repeatFrameMs);
 
+  const host = values.host ?? DEFAULT_HOST;
+  const loopback = isLoopbackHost(host);
+  const unsafeNoAuth = Boolean(values["unsafe-no-auth"]);
+
+  // Access-control policy:
+  //  - loopback (default): auth off unless the user opts in with --token.
+  //  - non-loopback: auth required. Use --token if given, otherwise generate a
+  //    token so the bind is never exposed unauthenticated. --unsafe-no-auth is
+  //    the explicit override that turns auth off on a non-loopback bind.
+  let token: string | undefined = values.token || undefined;
+  if (!loopback) {
+    if (unsafeNoAuth) {
+      token = undefined;
+    } else if (!token) {
+      token = randomBytes(24).toString("base64url");
+    }
+  }
+
   const { server, stop: stopServer } = await startServer({
     serial,
     port,
+    host,
+    token,
     maxFps,
     bitRate,
     maxSize,
@@ -158,7 +203,23 @@ async function main() {
     process.exit(0);
   });
 
-  console.log(`serve-emul → http://localhost:${server.port}  (device: ${serial})`);
+  const base = `http://${displayHost(host)}:${server.port}`;
+  if (token) {
+    console.log(`serve-emul → ${base}/?token=${token}  (device: ${serial})`);
+    console.error(
+      "Authentication is ON. Open the URL above once to authenticate this browser " +
+        "(the token is exchanged for an HttpOnly cookie). Agents send " +
+        "'Authorization: Bearer <token>' or append ?token=<token>.",
+    );
+  } else {
+    console.log(`serve-emul → ${base}/  (device: ${serial})`);
+    if (!loopback) {
+      console.error(
+        `WARNING: bound to non-loopback address ${host} with --unsafe-no-auth. ` +
+          "The device is reachable and controllable without authentication.",
+      );
+    }
+  }
 }
 
 await main().catch((err) => {

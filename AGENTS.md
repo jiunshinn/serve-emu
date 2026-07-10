@@ -66,6 +66,7 @@ Current server protocol shape:
 - For slow WebSocket clients, keep the backpressure strategy: drop until the next keyframe, request video reset with cooldown, and close clients with excessive buffered bytes.
 - Maintain `/health` as the best machine-readable snapshot for agents: include status, stream metadata, client metrics, route/session state, and last error details when relevant.
 - Prefer structured JSON errors with `ok: false` for API endpoints rather than throwing raw responses.
+- Access control lives in `server.ts` (the `fetch` gate) and `cli.ts` (policy). Defaults bind to loopback (`DEFAULT_HOST`); non-loopback binds require a token unless `--unsafe-no-auth`. Every request passes the token gate when auth is on (bearer header, `semu_session` HttpOnly cookie, or `?token=`); WS upgrades and non-GET requests also require a matching `Origin`. The browser bootstraps by exchanging a `?token=` URL for the cookie, so the bundled UI needs no per-request token wiring. Never leak the token into `/health`, `/api`, error bodies, or reconnect URLs, and keep new endpoints behind the same gate (it runs before routing, so new routes are covered automatically).
 
 ## UI Guidance
 

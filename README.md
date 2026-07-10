@@ -75,7 +75,7 @@ bun run packages/serve-emul/src/cli.ts
 ## CLI
 
 ```text
-serve-emul [-p <port>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms]
+serve-emul [-p <port>] [--host <addr>] [--token <secret>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms]
 serve-emul --avd <name> [--gpu <mode>] [--restart-avd]
 serve-emul --avd-list
 serve-emul --running-avds
@@ -84,6 +84,9 @@ serve-emul --running-avds
 | flag | default | meaning |
 | --- | --- | --- |
 | `-p, --port` | `3300` | HTTP port for the preview server |
+| `--host` | `127.0.0.1` | Address to bind. Defaults to loopback so the device is not exposed. Set `0.0.0.0` to serve over the LAN — see [Access control](#access-control) |
+| `--token` | none | Shared secret required on every request. Auto-generated for non-loopback binds if omitted |
+| `--unsafe-no-auth` | false | Allow a non-loopback bind with **no** authentication (dangerous) |
 | `-s, --serial` | auto | adb device serial; required when multiple devices are online |
 | `--max-fps` | `60` | Cap source frame rate |
 | `--bit-rate` | `8000000` | H.264 bit rate in bps |
@@ -99,6 +102,34 @@ serve-emul --running-avds
 | `--emulator-port` | auto | Emulator console port for `--avd`; must be an even port from 5554 through 5682 |
 
 By default, `serve-emul` attaches to the only online device. If more than one device is online, pass `-s <serial>` or select another running device later through the HTTP API/UI.
+
+## Access control
+
+`serve-emul` grants full control of the connected device — input, screenshots, APK installation, file import, app-data clearing, logcat, and session controls. Treat access to the port as access to the device.
+
+**Default (loopback).** With no flags the server binds to `127.0.0.1`, so only processes on the same machine can reach it. No authentication is required, and local CLI/agent workflows keep working with no setup. Cross-origin browser requests and WebSocket upgrades are still rejected (the Origin must match the host), so a random web page cannot drive your device through the local port.
+
+**Exposing over the LAN or a tunnel.** Pass `--host 0.0.0.0` (or a specific interface address). A non-loopback bind **requires authentication**:
+
+- If you pass `--token <secret>`, that secret is required on every request.
+- If you omit `--token`, a random token is generated and printed once at startup.
+
+The startup line prints a ready-to-use URL with the token, for example:
+
+```text
+serve-emul → http://localhost:3300/?token=qNEvGN1TSgqRc3NHeZiXOfX2tkQUnv68  (device: emulator-5554)
+```
+
+How clients authenticate:
+
+- **Browser (bundled UI):** open the printed `?token=` URL once. The server exchanges the token for a `HttpOnly; SameSite=Strict` session cookie and redirects to a clean URL, so the secret is not kept in local storage or the address bar. Same-origin API, SSE, and WebSocket calls then carry the cookie automatically.
+- **Agents / CLI (`curl`, HTTP clients):** send `Authorization: Bearer <token>`, or append `?token=<token>` to the URL.
+
+Requests without a valid token get `401`; WebSocket upgrades and state-changing requests from a mismatched `Origin` get `403` before any work is done.
+
+**Unauthenticated LAN exposure.** `--host 0.0.0.0 --unsafe-no-auth` binds to all interfaces with no authentication. Anyone who can reach the port can control the device. Only use this on a trusted, isolated network; the CLI prints a warning at startup.
+
+**Token handling.** The token is never included in `/health`, `/api` responses, error payloads, or reconnect URLs — only in the one-time startup line. Rotate it by restarting with a new `--token` (or letting a fresh one be generated); existing cookies stop working immediately. When exposing beyond your machine, prefer an SSH tunnel or an authenticating reverse proxy over a raw `0.0.0.0` bind.
 
 ## Smooth Emulator Playback
 
