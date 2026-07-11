@@ -28,6 +28,16 @@ export type ScrcpySession = {
   close: () => void;
 };
 
+export type ScrcpyErrorCode =
+  | "clean-eof"
+  | "truncated-header"
+  | "truncated-payload"
+  | "invalid-frame-size"
+  | "reader-overflow"
+  | "unsupported-codec"
+  | "protocol-parse"
+  | "socket-error";
+
 export type StartOpts = {
   serial: string;
   maxFps?: number;
@@ -81,16 +91,24 @@ function pickPort(): number {
 }
 
 function removeForward(serial: string, port: number): void {
-  const r = spawnSync("adb", ["-s", serial, "forward", "--remove", `tcp:${port}`], {
-    encoding: "utf8",
-  });
+  const r = spawnSync(
+    "adb",
+    ["-s", serial, "forward", "--remove", `tcp:${port}`],
+    {
+      encoding: "utf8",
+    },
+  );
   if (r.status !== 0 && !r.stderr.includes("cannot remove listener")) {
-    throw new Error(`adb -s ${serial} forward --remove tcp:${port} failed: ${r.stderr}`);
+    throw new Error(
+      `adb -s ${serial} forward --remove tcp:${port} failed: ${r.stderr}`,
+    );
   }
 }
 
 function forwardedPort(serial: string, target: string): number | null {
-  const r = spawnSync("adb", ["-s", serial, "forward", "--list"], { encoding: "utf8" });
+  const r = spawnSync("adb", ["-s", serial, "forward", "--list"], {
+    encoding: "utf8",
+  });
   if (r.status !== 0) return null;
   for (const line of r.stdout.split("\n")) {
     const match = line.match(/^(\S+)\s+tcp:(\d+)\s+(.+)$/);
@@ -110,12 +128,17 @@ function forwardAbstractSocket(serial: string, scid: string): number {
     if (port && Number.isInteger(port)) return port;
   }
 
-  let lastError = dynamic.stderr.trim() || "adb did not return a forwarded port";
+  let lastError =
+    dynamic.stderr.trim() || "adb did not return a forwarded port";
   for (let attempt = 0; attempt < 5; attempt++) {
     const port = pickPort();
-    const fixed = spawnSync("adb", ["-s", serial, "forward", `tcp:${port}`, target], {
-      encoding: "utf8",
-    });
+    const fixed = spawnSync(
+      "adb",
+      ["-s", serial, "forward", `tcp:${port}`, target],
+      {
+        encoding: "utf8",
+      },
+    );
     if (fixed.status === 0) return port;
     lastError = fixed.stderr.trim() || lastError;
   }
@@ -132,39 +155,119 @@ function randomScid(): string {
 
 const MAX_READER_BUFFER_BYTES = 32 * 1024 * 1024;
 
+type ReadKind = "header" | "payload";
+
+export class ScrcpyStreamError extends Error {
+  constructor(
+    readonly code: ScrcpyErrorCode,
+    message: string,
+    readonly meta?: Record<string, string | number>,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "ScrcpyStreamError";
+  }
+}
+
 class FramedReader {
   private chunks: Buffer[] = [];
   private firstChunkOffset = 0;
   private total = 0;
-  private waiters: { n: number; resolve: (b: Buffer) => void; reject: (e: Error) => void }[] = [];
-  private err: Error | null = null;
+  private waiters: {
+    n: number;
+    kind: ReadKind;
+    resolve: (b: Buffer) => void;
+    reject: (e: Error) => void;
+  }[] = [];
+  private err: ScrcpyStreamError | null = null;
+  private ended = false;
 
   constructor(public readonly sock: Socket) {
     sock.on("data", (d: Buffer) => {
       if (this.total + d.length > MAX_READER_BUFFER_BYTES) {
-        this.err = new Error("scrcpy video reader buffer overflow");
-        while (this.waiters.length) this.waiters.shift()!.reject(this.err);
-        this.chunks.length = 0;
-        this.total = 0;
+        this.fail(
+          new ScrcpyStreamError(
+            "reader-overflow",
+            `scrcpy video reader buffer overflow (> ${MAX_READER_BUFFER_BYTES} bytes)`,
+            { limit: MAX_READER_BUFFER_BYTES },
+          ),
+        );
         return;
       }
       this.chunks.push(d);
       this.total += d.length;
       this.flush();
     });
-    const fail = (e: Error) => {
-      this.err = e;
-      while (this.waiters.length) this.waiters.shift()!.reject(e);
-    };
-    sock.on("error", fail);
-    sock.on("end", () => fail(new Error("scrcpy video socket ended")));
-    sock.on("close", () => fail(new Error("scrcpy video socket closed")));
+    sock.on("error", (e: Error) =>
+      this.fail(
+        new ScrcpyStreamError(
+          "socket-error",
+          `scrcpy video socket error: ${e.message}`,
+          undefined,
+          { cause: e },
+        ),
+      ),
+    );
+    sock.on("end", () => this.endStream());
+    sock.on("close", () => this.endStream());
   }
 
-  read(n: number): Promise<Buffer> {
+  // Terminal failure: record the first cause, reject pending reads, drop the
+  // buffer, and destroy the socket so no further data can accumulate.
+  private fail(e: ScrcpyStreamError) {
+    if (this.err) return;
+    this.err = e;
+    this.chunks.length = 0;
+    this.firstChunkOffset = 0;
+    this.total = 0;
+    while (this.waiters.length) this.waiters.shift()!.reject(e);
+    try {
+      this.sock.destroy();
+    } catch {}
+  }
+
+  // Socket end/close. A pending header read with an empty buffer is a clean
+  // frame-boundary EOF; anything else means the stream was cut mid-packet.
+  private endStream() {
+    if (this.err || this.ended) return;
+    this.ended = true;
+    while (this.waiters.length) {
+      const w = this.waiters.shift()!;
+      const clean = w.kind === "header" && this.total === 0;
+      w.reject(
+        clean
+          ? new ScrcpyStreamError(
+              "clean-eof",
+              "scrcpy video stream ended cleanly",
+            )
+          : new ScrcpyStreamError(
+              w.kind === "header" ? "truncated-header" : "truncated-payload",
+              `scrcpy stream ended mid-${w.kind} (needed ${w.n}, had ${this.total})`,
+              { needed: w.n, had: this.total },
+            ),
+      );
+    }
+  }
+
+  read(n: number, kind: ReadKind): Promise<Buffer> {
     if (this.err) return Promise.reject(this.err);
+    if (this.ended && this.total < n) {
+      const clean = kind === "header" && this.total === 0;
+      return Promise.reject(
+        clean
+          ? new ScrcpyStreamError(
+              "clean-eof",
+              "scrcpy video stream ended cleanly",
+            )
+          : new ScrcpyStreamError(
+              kind === "header" ? "truncated-header" : "truncated-payload",
+              `scrcpy stream ended mid-${kind} (needed ${n}, had ${this.total})`,
+              { needed: n, had: this.total },
+            ),
+      );
+    }
     return new Promise((resolve, reject) => {
-      this.waiters.push({ n, resolve, reject });
+      this.waiters.push({ n, kind, resolve, reject });
       this.flush();
     });
   }
@@ -184,7 +287,10 @@ class FramedReader {
     const first = this.chunks[0];
     const firstAvailable = first.length - this.firstChunkOffset;
     if (firstAvailable >= n) {
-      const out = first.subarray(this.firstChunkOffset, this.firstChunkOffset + n);
+      const out = first.subarray(
+        this.firstChunkOffset,
+        this.firstChunkOffset + n,
+      );
       this.firstChunkOffset += n;
       this.total -= n;
       if (this.firstChunkOffset === first.length) {
@@ -200,7 +306,12 @@ class FramedReader {
       const chunk = this.chunks[0];
       const available = chunk.length - this.firstChunkOffset;
       const take = Math.min(n - written, available);
-      chunk.copy(out, written, this.firstChunkOffset, this.firstChunkOffset + take);
+      chunk.copy(
+        out,
+        written,
+        this.firstChunkOffset,
+        this.firstChunkOffset + take,
+      );
       written += take;
       this.firstChunkOffset += take;
       this.total -= take;
@@ -220,12 +331,61 @@ class FramedReader {
   }
 }
 
-async function waitForAbstractSocket(serial: string, name: string, timeoutMs = 30_000) {
+function parseFrameHeader(
+  header: Buffer,
+  protocol: ScrcpyProtocol,
+):
+  | { kind: "session"; width: number; height: number; clientResized: boolean }
+  | {
+      kind: "frame";
+      size: number;
+      pts: bigint;
+      isConfig: boolean;
+      isKey: boolean;
+    } {
+  const ptsRaw = header.readBigUInt64BE(0);
+  if (protocol === 4 && (ptsRaw & PACKET_V4_FLAG_SESSION) !== 0n) {
+    return {
+      kind: "session",
+      clientResized: (header.readUInt32BE(0) & 1) !== 0,
+      width: header.readUInt32BE(4),
+      height: header.readUInt32BE(8),
+    };
+  }
+  const size = header.readUInt32BE(8);
+  if (size === 0 || size > 16 * 1024 * 1024) {
+    throw new ScrcpyStreamError(
+      "invalid-frame-size",
+      `invalid scrcpy frame size: ${size}`,
+      { size },
+    );
+  }
+  const isConfig =
+    protocol === 4
+      ? (ptsRaw & PACKET_V4_FLAG_CONFIG) !== 0n
+      : (ptsRaw & PACKET_FLAG_CONFIG) !== 0n;
+  const isKey =
+    protocol === 4
+      ? (ptsRaw & PACKET_V4_FLAG_KEY_FRAME) !== 0n
+      : (ptsRaw & PACKET_FLAG_KEY_FRAME) !== 0n;
+  const pts = ptsRaw & ~(protocol === 4 ? PACKET_V4_FLAGS : PACKET_V3_FLAGS);
+  return { kind: "frame", size, pts, isConfig, isKey };
+}
+
+async function waitForAbstractSocket(
+  serial: string,
+  name: string,
+  timeoutMs = 30_000,
+) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const r = spawnSync("adb", ["-s", serial, "shell", "cat", "/proc/net/unix"], {
-      encoding: "utf8",
-    });
+    const r = spawnSync(
+      "adb",
+      ["-s", serial, "shell", "cat", "/proc/net/unix"],
+      {
+        encoding: "utf8",
+      },
+    );
     if (r.stdout && r.stdout.includes(`@${name}`)) return;
     await sleep(100);
   }
@@ -303,7 +463,14 @@ function parseVideoPreamble(buf: Buffer): {
     const width = buf.readUInt32BE(streamMetaOffset + 4);
     const height = buf.readUInt32BE(streamMetaOffset + 8);
     const codecName = CODEC_NAMES[codecId];
-    if (!codecName || width < 1 || height < 1 || width > 16_384 || height > 16_384) continue;
+    if (
+      !codecName ||
+      width < 1 ||
+      height < 1 ||
+      width > 16_384 ||
+      height > 16_384
+    )
+      continue;
 
     const nameBuf = buf.subarray(offset, offset + 64);
     const deviceName = nameBuf.toString("utf8").replace(/\0+$/, "");
@@ -317,7 +484,9 @@ function parseVideoPreamble(buf: Buffer): {
     };
   }
 
-  throw new Error(`Could not parse scrcpy video preamble: ${buf.toString("hex", 0, 24)}...`);
+  throw new Error(
+    `Could not parse scrcpy video preamble: ${buf.toString("hex", 0, 24)}...`,
+  );
 }
 
 export async function startScrcpy(opts: StartOpts): Promise<ScrcpySession> {
@@ -326,12 +495,15 @@ export async function startScrcpy(opts: StartOpts): Promise<ScrcpySession> {
   const maxFps = opts.maxFps ?? SCRCPY_DEFAULTS.maxFps;
   const bitRate = opts.bitRate ?? SCRCPY_DEFAULTS.bitRate;
   const maxSize = opts.maxSize ?? SCRCPY_DEFAULTS.maxSize;
-  const keyFrameInterval = opts.keyFrameInterval ?? SCRCPY_DEFAULTS.keyFrameInterval;
+  const keyFrameInterval =
+    opts.keyFrameInterval ?? SCRCPY_DEFAULTS.keyFrameInterval;
   const repeatFrameMs = opts.repeatFrameMs ?? SCRCPY_DEFAULTS.repeatFrameMs;
   // MediaCodec option types matter: repeat-previous-frame-after is a long (µs).
   const codecOptions = [
     ...(keyFrameInterval > 0 ? [`i-frame-interval=${keyFrameInterval}`] : []),
-    ...(repeatFrameMs > 0 ? [`repeat-previous-frame-after:long=${Math.round(repeatFrameMs * 1000)}`] : []),
+    ...(repeatFrameMs > 0
+      ? [`repeat-previous-frame-after:long=${Math.round(repeatFrameMs * 1000)}`]
+      : []),
   ];
   const scid = randomScid();
   let localPort: number | null = null;
@@ -386,13 +558,19 @@ export async function startScrcpy(opts: StartOpts): Promise<ScrcpySession> {
         `max_size=${maxSize}`,
         `video_bit_rate=${bitRate}`,
         `max_fps=${maxFps}`,
-        ...(codecOptions.length > 0 ? [`video_codec_options=${codecOptions.join(",")}`] : []),
+        ...(codecOptions.length > 0
+          ? [`video_codec_options=${codecOptions.join(",")}`]
+          : []),
         "cleanup=true",
       ],
       { stdio: ["ignore", "pipe", "pipe"] },
     );
-    proc.stdout?.on("data", (b: Buffer) => process.stdout.write(`[scrcpy] ${b}`));
-    proc.stderr?.on("data", (b: Buffer) => process.stderr.write(`[scrcpy] ${b}`));
+    proc.stdout?.on("data", (b: Buffer) =>
+      process.stdout.write(`[scrcpy] ${b}`),
+    );
+    proc.stderr?.on("data", (b: Buffer) =>
+      process.stderr.write(`[scrcpy] ${b}`),
+    );
 
     // Wait for the device-side abstract socket to appear before the host dials in;
     // otherwise adb accepts the local connection, then closes it the moment the
@@ -412,7 +590,7 @@ export async function startScrcpy(opts: StartOpts): Promise<ScrcpySession> {
     const reader = new FramedReader(videoSock);
     // scrcpy variants disagree on whether the video socket includes the dummy
     // byte, so detect the codec metadata alignment instead of blindly skipping.
-    const preamble = parseVideoPreamble(await reader.read(81));
+    const preamble = parseVideoPreamble(await reader.read(81, "header"));
     reader.prepend(preamble.extra);
 
     return {
@@ -449,40 +627,40 @@ const PACKET_V4_FLAG_SESSION = 1n << 63n;
 const PACKET_V4_FLAG_CONFIG = 1n << 62n;
 const PACKET_V4_FLAG_KEY_FRAME = 1n << 61n;
 const PACKET_V3_FLAGS = PACKET_FLAG_CONFIG | PACKET_FLAG_KEY_FRAME;
-const PACKET_V4_FLAGS = PACKET_V4_FLAG_SESSION | PACKET_V4_FLAG_CONFIG | PACKET_V4_FLAG_KEY_FRAME;
+const PACKET_V4_FLAGS =
+  PACKET_V4_FLAG_SESSION | PACKET_V4_FLAG_CONFIG | PACKET_V4_FLAG_KEY_FRAME;
 
 export async function readFrame(
   reader: FramedReader,
   protocol: ScrcpyProtocol,
 ): Promise<VideoPacket | null> {
+  let header: Buffer;
   try {
-    const header = await reader.read(12);
-    const ptsRaw = header.readBigUInt64BE(0);
-    if (protocol === 4 && (ptsRaw & PACKET_V4_FLAG_SESSION) !== 0n) {
-      return {
-        type: "session",
-        clientResized: (header.readUInt32BE(0) & 1) !== 0,
-        width: header.readUInt32BE(4),
-        height: header.readUInt32BE(8),
-      };
-    }
-
-    const size = header.readUInt32BE(8);
-    if (size === 0 || size > 16 * 1024 * 1024) {
-      throw new Error(`invalid scrcpy frame size: ${size}`);
-    }
-    const isConfig =
-      protocol === 4
-        ? (ptsRaw & PACKET_V4_FLAG_CONFIG) !== 0n
-        : (ptsRaw & PACKET_FLAG_CONFIG) !== 0n;
-    const isKey =
-      protocol === 4
-        ? (ptsRaw & PACKET_V4_FLAG_KEY_FRAME) !== 0n
-        : (ptsRaw & PACKET_FLAG_KEY_FRAME) !== 0n;
-    const pts = ptsRaw & ~(protocol === 4 ? PACKET_V4_FLAGS : PACKET_V3_FLAGS);
-    const data = await reader.read(size);
-    return { type: "frame", data, pts, isConfig, isKey };
-  } catch {
-    return null;
+    header = await reader.read(12, "header");
+  } catch (e) {
+    // A clean EOF at a frame boundary is the only non-error stream end; every
+    // other failure (truncation, overflow, socket error) propagates with its
+    // original cause so callers can classify it.
+    if (e instanceof ScrcpyStreamError && e.code === "clean-eof") return null;
+    throw e;
   }
+
+  const parsed = parseFrameHeader(header, protocol);
+  if (parsed.kind === "session") {
+    return {
+      type: "session",
+      clientResized: parsed.clientResized,
+      width: parsed.width,
+      height: parsed.height,
+    };
+  }
+
+  const data = await reader.read(parsed.size, "payload");
+  return {
+    type: "frame",
+    data,
+    pts: parsed.pts,
+    isConfig: parsed.isConfig,
+    isKey: parsed.isKey,
+  };
 }
