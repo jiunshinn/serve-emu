@@ -223,6 +223,9 @@ export async function startServer(opts: ServerOpts) {
   let lastError: string | null = null;
   let lastErrorCode: string | null = null;
   let lastErrorMeta: Record<string, string | number> | null = null;
+  // Terminal cleanup (session.close/closeClients) must run once per session, but
+  // status may still escalate afterward (clean-eof "stopped" → crash "error").
+  let terminalCleanupDone = false;
   let stoppedAt: string | null = null;
   let stopRequested = false;
   let frameCount = 0;
@@ -361,16 +364,22 @@ export async function startServer(opts: ServerOpts) {
     detail?: { code?: string; meta?: Record<string, string | number> | null },
   ) => {
     if (generation !== sessionGeneration) return;
-    if (status !== "streaming") return;
+    // First terminal transition wins its slot, but a later abnormal scrcpy exit
+    // may escalate a clean-eof "stopped" to "error". Nothing downgrades an error.
+    if (status === "error") return;
+    if (status !== "streaming" && nextStatus !== "error") return;
     status = nextStatus;
     lastError = reason;
     lastErrorCode = detail?.code ?? null;
     lastErrorMeta = detail?.meta ?? null;
     stoppedAt = new Date().toISOString();
-    if (watchdog) clearInterval(watchdog);
-    routePlayback.close();
-    session.close();
-    closeClients(nextStatus === "error" ? 1011 : 1000, reason);
+    if (!terminalCleanupDone) {
+      terminalCleanupDone = true;
+      if (watchdog) clearInterval(watchdog);
+      routePlayback.close();
+      session.close();
+      closeClients(nextStatus === "error" ? 1011 : 1000, reason);
+    }
   };
 
   const sendJson = (ws: ServerWebSocket<WsData>, value: unknown) => {
@@ -879,13 +888,26 @@ export async function startServer(opts: ServerOpts) {
     generation: number,
   ) => {
     activeSession.proc.once("exit", (code, signal) => {
-      if (!stopRequested && status === "streaming") {
-        markTerminal(
-          "error",
-          `scrcpy exited with code ${code ?? "null"} signal ${signal ?? "null"}`,
-          generation,
-        );
-      }
+      // An abnormal exit (non-zero code or killed by signal) means scrcpy died
+      // unexpectedly — classify it as "error" even if the video socket already
+      // ended cleanly and marked the session "stopped" (markTerminal escalates).
+      // Normal exits and server-initiated teardowns (stopRequested / a bumped
+      // generation) are left alone.
+      if (stopRequested) return;
+      const abnormal = signal !== null || (code ?? 0) !== 0;
+      if (!abnormal) return;
+      markTerminal(
+        "error",
+        `scrcpy exited with code ${code ?? "null"} signal ${signal ?? "null"}`,
+        generation,
+        {
+          code: "process-exit",
+          meta: {
+            ...(code !== null ? { exitCode: code } : {}),
+            ...(signal !== null ? { signal } : {}),
+          },
+        },
+      );
     });
     activeSession.controlSocket.once("error", (err) => {
       if (!stopRequested && status === "streaming") {
@@ -907,6 +929,7 @@ export async function startServer(opts: ServerOpts) {
     lastError = null;
     lastErrorCode = null;
     lastErrorMeta = null;
+    terminalCleanupDone = false;
     stoppedAt = null;
     frameCount = 0;
     configPacketCount = 0;
