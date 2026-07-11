@@ -6,6 +6,7 @@ import {
   ScrcpyStreamError,
   parseFrameHeader,
   parseVideoPreamble,
+  readFrame,
 } from "../src/scrcpy.ts";
 
 function frameHeader(
@@ -67,4 +68,54 @@ test("overflow destroys reader and cannot resume", async () => {
   s.emit("data", Buffer.of(1, 2, 3, 4));
   const err2 = await r.read(4, "header").catch((e) => e);
   expect(err2.code).toBe("reader-overflow");
+});
+
+// The server maps readFrame's result to a terminal status: null → "stopped"
+// (clean shutdown), thrown ScrcpyStreamError → "error" with code/meta.
+describe("readFrame terminal mapping", () => {
+  test("clean EOF at a frame boundary returns null (→ status 'stopped')", async () => {
+    const { s, r } = makeReader();
+    s.emit("end");
+    expect(await readFrame(r, 4)).toBeNull();
+  });
+
+  test("truncated header throws truncated-header (→ status 'error')", async () => {
+    const { s, r } = makeReader();
+    s.emit("data", Buffer.alloc(6));
+    s.emit("end");
+    const err = await readFrame(r, 4).catch((e) => e);
+    expect(err).toBeInstanceOf(ScrcpyStreamError);
+    expect(err.code).toBe("truncated-header");
+  });
+
+  test("truncated payload throws truncated-payload (→ status 'error')", async () => {
+    const { s, r } = makeReader();
+    s.emit("data", frameHeader(4, { size: 100 }));
+    s.emit("data", Buffer.alloc(40));
+    s.emit("end");
+    const err = await readFrame(r, 4).catch((e) => e);
+    expect(err).toBeInstanceOf(ScrcpyStreamError);
+    expect(err.code).toBe("truncated-payload");
+    expect(err.meta).toEqual({ needed: 100, had: 40 });
+  });
+
+  test("zero-size frame header throws invalid-frame-size (→ status 'error')", async () => {
+    const { s, r } = makeReader();
+    s.emit("data", frameHeader(4, { size: 0 }));
+    const err = await readFrame(r, 4).catch((e) => e);
+    expect(err).toBeInstanceOf(ScrcpyStreamError);
+    expect(err.code).toBe("invalid-frame-size");
+  });
+
+  test("a complete frame is parsed and returned", async () => {
+    const { s, r } = makeReader();
+    s.emit("data", frameHeader(4, { size: 4, key: true }));
+    s.emit("data", Buffer.of(1, 2, 3, 4));
+    const f = await readFrame(r, 4);
+    expect(f?.type).toBe("frame");
+    if (f?.type === "frame") {
+      expect(f.isKey).toBe(true);
+      expect(f.data).toEqual(Buffer.of(1, 2, 3, 4));
+    }
+  });
 });
