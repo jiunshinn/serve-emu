@@ -484,8 +484,10 @@ function parseVideoPreamble(buf: Buffer): {
     };
   }
 
-  throw new Error(
+  throw new ScrcpyStreamError(
+    "protocol-parse",
     `Could not parse scrcpy video preamble: ${buf.toString("hex", 0, 24)}...`,
+    { head: buf.toString("hex", 0, 24) },
   );
 }
 
@@ -591,6 +593,13 @@ export async function startScrcpy(opts: StartOpts): Promise<ScrcpySession> {
     // scrcpy variants disagree on whether the video socket includes the dummy
     // byte, so detect the codec metadata alignment instead of blindly skipping.
     const preamble = parseVideoPreamble(await reader.read(81, "header"));
+    if (preamble.codecName !== "h264") {
+      throw new ScrcpyStreamError(
+        "unsupported-codec",
+        `bundled UI decodes H.264 only; device negotiated ${preamble.codecName}`,
+        { codec: preamble.codecName },
+      );
+    }
     reader.prepend(preamble.extra);
 
     return {
