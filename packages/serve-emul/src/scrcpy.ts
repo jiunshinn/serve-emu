@@ -169,7 +169,7 @@ export class ScrcpyStreamError extends Error {
   }
 }
 
-class FramedReader {
+export class FramedReader {
   private chunks: Buffer[] = [];
   private firstChunkOffset = 0;
   private total = 0;
@@ -331,7 +331,7 @@ class FramedReader {
   }
 }
 
-function parseFrameHeader(
+export function parseFrameHeader(
   header: Buffer,
   protocol: ScrcpyProtocol,
 ):
@@ -420,7 +420,7 @@ const CODEC_NAMES: Record<number, string> = {
   0x00617631: "av1",
 };
 
-function parseVideoPreamble(buf: Buffer): {
+export function parseVideoPreamble(buf: Buffer): {
   deviceName: string;
   codecName: string;
   width: number;
