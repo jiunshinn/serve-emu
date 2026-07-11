@@ -35,6 +35,12 @@ import {
 import { getForegroundApp } from "./app-info.ts";
 import { FrameStatWindow } from "./frame-stat-window.ts";
 import {
+  isAbnormalExit,
+  procExitDetail,
+  terminalTransitionAllowed,
+  type SessionStatus,
+} from "./session-status.ts";
+import {
   FRAME_META_HEADER_BYTES,
   epochNowMs,
   writeFrameMetaHeader,
@@ -111,7 +117,6 @@ function parseCookies(header: string | null): Record<string, string> {
   return out;
 }
 
-type SessionStatus = "streaming" | "stopped" | "error";
 type GridDeviceKind = "physical" | "emulator" | "avd";
 
 type GridDevice = {
@@ -364,10 +369,7 @@ export async function startServer(opts: ServerOpts) {
     detail?: { code?: string; meta?: Record<string, string | number> | null },
   ) => {
     if (generation !== sessionGeneration) return;
-    // First terminal transition wins its slot, but a later abnormal scrcpy exit
-    // may escalate a clean-eof "stopped" to "error". Nothing downgrades an error.
-    if (status === "error") return;
-    if (status !== "streaming" && nextStatus !== "error") return;
+    if (!terminalTransitionAllowed(status, nextStatus)) return;
     status = nextStatus;
     lastError = reason;
     lastErrorCode = detail?.code ?? null;
@@ -894,20 +896,9 @@ export async function startServer(opts: ServerOpts) {
       // Normal exits and server-initiated teardowns (stopRequested / a bumped
       // generation) are left alone.
       if (stopRequested) return;
-      const abnormal = signal !== null || (code ?? 0) !== 0;
-      if (!abnormal) return;
-      markTerminal(
-        "error",
-        `scrcpy exited with code ${code ?? "null"} signal ${signal ?? "null"}`,
-        generation,
-        {
-          code: "process-exit",
-          meta: {
-            ...(code !== null ? { exitCode: code } : {}),
-            ...(signal !== null ? { signal } : {}),
-          },
-        },
-      );
+      if (!isAbnormalExit(code, signal)) return;
+      const { reason, ...detail } = procExitDetail(code, signal);
+      markTerminal("error", reason, generation, detail);
     });
     activeSession.controlSocket.once("error", (err) => {
       if (!stopRequested && status === "streaming") {
