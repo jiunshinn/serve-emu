@@ -15,7 +15,8 @@ export type RoutePlaybackStatus =
   | "running"
   | "paused"
   | "completed"
-  | "error";
+  | "error"
+  | "closed";
 
 export type RoutePlaybackSnapshot = {
   status: RoutePlaybackStatus;
@@ -34,9 +35,43 @@ export type RoutePlaybackSnapshot = {
   currentLocation: (GeoFix & { appliedAt: string }) | null;
 };
 
+export class RoutePlaybackConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RoutePlaybackConflictError";
+  }
+}
+
+export class RoutePlaybackDisposedError extends RoutePlaybackConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = "RoutePlaybackDisposedError";
+  }
+}
+
+export class RoutePlaybackApplyError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "RoutePlaybackApplyError";
+  }
+}
+
+export function routePlaybackErrorStatus(error: unknown): number {
+  if (error instanceof RoutePlaybackConflictError) return 409;
+  if (error instanceof RoutePlaybackApplyError) return 502;
+  return 500;
+}
+
+export type RoutePlaybackClock = {
+  now: () => number;
+  setInterval: (callback: () => void, intervalMs: number) => unknown;
+  clearInterval: (handle: unknown) => void;
+};
+
 type RoutePlaybackOpts = {
-  applyLocation: (fix: GeoFix) => void | Promise<void>;
+  applyLocation: (fix: GeoFix, signal: AbortSignal) => void | Promise<void>;
   onLocation: (fix: GeoFix & { appliedAt: string }) => void;
+  clock?: RoutePlaybackClock;
 };
 
 type PreparedRoute = {
@@ -51,6 +86,13 @@ const DEFAULT_INTERVAL_MS = 1000;
 const MAX_WAYPOINTS = 10_000;
 const MIN_INTERVAL_MS = 250;
 const MAX_INTERVAL_MS = 60_000;
+
+const SYSTEM_CLOCK: RoutePlaybackClock = {
+  now: Date.now,
+  setInterval: (callback, intervalMs) => setInterval(callback, intervalMs),
+  clearInterval: (handle) =>
+    clearInterval(handle as ReturnType<typeof setInterval>),
+};
 
 function finiteNumber(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -203,8 +245,9 @@ export function parseRoutePlaybackRequest(value: unknown): RoutePlaybackRequest 
 export class RoutePlayback {
   #applyLocation: RoutePlaybackOpts["applyLocation"];
   #onLocation: RoutePlaybackOpts["onLocation"];
+  #clock: RoutePlaybackClock;
   #route: PreparedRoute | null = null;
-  #timer: ReturnType<typeof setInterval> | null = null;
+  #timer: { handle: unknown; runId: number } | null = null;
   #status: RoutePlaybackStatus = "idle";
   #speedKph = DEFAULT_SPEED_KPH;
   #multiplier = 1;
@@ -218,67 +261,88 @@ export class RoutePlayback {
   #completedAt: string | null = null;
   #lastError: string | null = null;
   #currentLocation: (GeoFix & { appliedAt: string }) | null = null;
-  #applying = false;
-  #applyId = 0;
+  #runId = 0;
+  #runController: AbortController | null = null;
+  #startingRunId: number | null = null;
+  #applyingRunId: number | null = null;
+  #closed = false;
 
   constructor(opts: RoutePlaybackOpts) {
     this.#applyLocation = opts.applyLocation;
     this.#onLocation = opts.onLocation;
+    this.#clock = opts.clock ?? SYSTEM_CLOCK;
   }
 
   async start(request: RoutePlaybackRequest): Promise<RoutePlaybackSnapshot> {
-    this.stop();
-    this.#route = prepareRoute(request.waypoints);
-    this.#speedKph = request.speedKph ?? DEFAULT_SPEED_KPH;
-    this.#multiplier = request.multiplier ?? 1;
-    this.#intervalMs = request.intervalMs ?? DEFAULT_INTERVAL_MS;
-    this.#loop = request.loop ?? false;
-    this.#progressMeters = 0;
-    this.#lastTickMs = Date.now();
-    this.#status = "running";
-    this.#startedAt = new Date(this.#lastTickMs).toISOString();
-    this.#updatedAt = this.#startedAt;
-    this.#pausedAt = null;
-    this.#completedAt = null;
-    this.#lastError = null;
-    await this.#applyCurrentLocation();
-    if (this.#status === "running") {
-      this.#timer = setInterval(() => this.#tick(), this.#intervalMs);
+    if (this.#closed) {
+      throw new RoutePlaybackConflictError("route playback is closed");
     }
-    return this.snapshot();
+    if (this.#startingRunId === this.#runId) {
+      throw new RoutePlaybackConflictError(
+        "route playback start is already in progress",
+      );
+    }
+
+    const runId = this.#beginRun();
+    this.#startingRunId = runId;
+    try {
+      this.#route = prepareRoute(request.waypoints);
+      this.#speedKph = request.speedKph ?? DEFAULT_SPEED_KPH;
+      this.#multiplier = request.multiplier ?? 1;
+      this.#intervalMs = request.intervalMs ?? DEFAULT_INTERVAL_MS;
+      this.#loop = request.loop ?? false;
+      this.#progressMeters = 0;
+      this.#lastTickMs = this.#clock.now();
+      this.#status = "running";
+      this.#startedAt = new Date(this.#lastTickMs).toISOString();
+      this.#updatedAt = this.#startedAt;
+      this.#pausedAt = null;
+      this.#completedAt = null;
+      this.#lastError = null;
+
+      const applied = await this.#applyCurrentLocation(runId, true);
+      if (!applied || !this.#isRunActive(runId)) {
+        throw new RoutePlaybackConflictError(
+          "route playback start was cancelled",
+        );
+      }
+      if (this.#status === "running") this.#scheduleTimer(runId);
+      return this.snapshot();
+    } finally {
+      if (this.#startingRunId === runId) this.#startingRunId = null;
+    }
   }
 
   pause(): RoutePlaybackSnapshot {
-    if (this.#status === "running") {
+    if (!this.#closed && this.#status === "running") {
       this.#status = "paused";
-      this.#pausedAt = new Date().toISOString();
-      this.#clearTimer();
+      this.#pausedAt = new Date(this.#clock.now()).toISOString();
+      this.#clearTimer(this.#runId);
     }
     return this.snapshot();
   }
 
   resume(): RoutePlaybackSnapshot {
-    if (this.#status === "paused" && this.#route) {
+    if (
+      !this.#closed &&
+      this.#status === "paused" &&
+      this.#isRunActive(this.#runId)
+    ) {
       this.#status = "running";
       this.#pausedAt = null;
-      this.#lastTickMs = Date.now();
-      this.#timer = setInterval(() => this.#tick(), this.#intervalMs);
+      this.#lastTickMs = this.#clock.now();
+      if (this.#startingRunId !== this.#runId) {
+        this.#scheduleTimer(this.#runId);
+      }
     }
     return this.snapshot();
   }
 
+  /** Stop the current route while keeping this player reusable. */
   stop(): RoutePlaybackSnapshot {
-    this.#clearTimer();
-    this.#applyId++;
-    this.#applying = false;
-    this.#route = null;
-    this.#status = "idle";
-    this.#progressMeters = 0;
-    this.#startedAt = null;
-    this.#updatedAt = null;
-    this.#pausedAt = null;
-    this.#completedAt = null;
-    this.#lastError = null;
+    if (this.#closed) return this.snapshot();
+    this.#invalidateRun();
+    this.#resetRouteState("idle", false);
     return this.snapshot();
   }
 
@@ -301,59 +365,152 @@ export class RoutePlayback {
     };
   }
 
-  close(): void {
-    this.#clearTimer();
+  /** Permanently dispose this player; a closed instance cannot be restarted. */
+  close(): RoutePlaybackSnapshot {
+    if (this.#closed) return this.snapshot();
+    this.#closed = true;
+    this.#invalidateRun();
+    this.#resetRouteState("closed", true);
+    return this.snapshot();
   }
 
-  #tick(): void {
-    void this.#tickNow();
+  #tick(runId: number): void {
+    void this.#tickNow(runId);
   }
 
-  async #tickNow(): Promise<void> {
-    if (!this.#route || this.#status !== "running" || this.#applying) return;
-    const now = Date.now();
+  async #tickNow(runId: number): Promise<void> {
+    if (
+      !this.#isRunActive(runId) ||
+      this.#status !== "running" ||
+      this.#applyingRunId === runId
+    ) {
+      return;
+    }
+    const route = this.#route;
+    if (!route) return;
+    const now = this.#clock.now();
     const elapsedSeconds = Math.max(0, (now - this.#lastTickMs) / 1000);
     this.#lastTickMs = now;
     this.#progressMeters += (this.#speedKph * 1000 * elapsedSeconds * this.#multiplier) / 3600;
 
-    if (this.#route.totalMeters === 0 || this.#progressMeters >= this.#route.totalMeters) {
-      if (this.#loop && this.#route.totalMeters > 0) {
-        this.#progressMeters %= this.#route.totalMeters;
+    if (route.totalMeters === 0 || this.#progressMeters >= route.totalMeters) {
+      if (this.#loop && route.totalMeters > 0) {
+        this.#progressMeters %= route.totalMeters;
       } else {
-        this.#progressMeters = this.#route.totalMeters;
+        this.#progressMeters = route.totalMeters;
         this.#status = "completed";
         this.#completedAt = new Date(now).toISOString();
-        this.#clearTimer();
+        this.#clearTimer(runId);
       }
     }
-    await this.#applyCurrentLocation();
+    await this.#applyCurrentLocation(runId, false);
   }
 
-  async #applyCurrentLocation(): Promise<void> {
+  async #applyCurrentLocation(
+    runId: number,
+    propagateError: boolean,
+  ): Promise<boolean> {
+    if (!this.#isRunActive(runId)) return false;
     const route = this.#route;
-    if (!route) return;
-    const applyId = ++this.#applyId;
-    this.#applying = true;
+    const controller = this.#runController;
+    if (!route || !controller) return false;
+    this.#applyingRunId = runId;
     try {
       const fix = locationAt(route, this.#progressMeters);
-      await this.#applyLocation(fix);
-      if (this.#route !== route || this.#applyId !== applyId) return;
-      this.#currentLocation = { ...fix, appliedAt: new Date().toISOString() };
+      await this.#applyLocation(fix, controller.signal);
+      if (!this.#isRunActive(runId) || this.#route !== route) return false;
+      this.#currentLocation = {
+        ...fix,
+        appliedAt: new Date(this.#clock.now()).toISOString(),
+      };
       this.#updatedAt = this.#currentLocation.appliedAt;
       this.#onLocation(this.#currentLocation);
+      return true;
     } catch (err) {
-      if (this.#route === route && this.#applyId === applyId) {
+      if (this.#isRunActive(runId) && this.#route === route) {
+        if (err instanceof RoutePlaybackDisposedError) {
+          this.close();
+          if (propagateError) throw err;
+          return false;
+        }
+        const message = err instanceof Error ? err.message : String(err);
         this.#status = "error";
-        this.#lastError = err instanceof Error ? err.message : String(err);
-        this.#clearTimer();
+        this.#lastError = message;
+        this.#clearTimer(runId);
+        if (propagateError) {
+          throw new RoutePlaybackApplyError(message, { cause: err });
+        }
       }
+      return false;
     } finally {
-      if (this.#applyId === applyId) this.#applying = false;
+      if (this.#applyingRunId === runId) this.#applyingRunId = null;
     }
   }
 
-  #clearTimer(): void {
-    if (this.#timer) clearInterval(this.#timer);
+  #beginRun(): number {
+    this.#invalidateRun();
+    this.#runController = new AbortController();
+    return this.#runId;
+  }
+
+  #invalidateRun(): void {
+    this.#runController?.abort();
+    this.#runController = null;
+    this.#runId++;
+    this.#clearTimer();
+  }
+
+  #isRunActive(runId: number): boolean {
+    return (
+      !this.#closed &&
+      this.#runId === runId &&
+      this.#route !== null &&
+      this.#runController !== null &&
+      !this.#runController.signal.aborted
+    );
+  }
+
+  #scheduleTimer(runId: number): void {
+    if (!this.#isRunActive(runId) || this.#status !== "running") return;
+    this.#clearTimer();
+    const handle = this.#clock.setInterval(
+      () => this.#tick(runId),
+      this.#intervalMs,
+    );
+    if (!this.#isRunActive(runId) || this.#status !== "running") {
+      this.#clock.clearInterval(handle);
+      return;
+    }
+    this.#timer = { handle, runId };
+  }
+
+  #clearTimer(runId?: number): void {
+    if (!this.#timer || (runId !== undefined && this.#timer.runId !== runId)) {
+      return;
+    }
+    this.#clock.clearInterval(this.#timer.handle);
     this.#timer = null;
+  }
+
+  #resetRouteState(
+    status: Extract<RoutePlaybackStatus, "idle" | "closed">,
+    clearCurrentLocation: boolean,
+  ): void {
+    this.#route = null;
+    this.#status = status;
+    this.#progressMeters = 0;
+    this.#lastTickMs = 0;
+    this.#startedAt = null;
+    this.#updatedAt = null;
+    this.#pausedAt = null;
+    this.#completedAt = null;
+    this.#lastError = null;
+    if (clearCurrentLocation) {
+      this.#speedKph = DEFAULT_SPEED_KPH;
+      this.#multiplier = 1;
+      this.#intervalMs = DEFAULT_INTERVAL_MS;
+      this.#loop = false;
+      this.#currentLocation = null;
+    }
   }
 }

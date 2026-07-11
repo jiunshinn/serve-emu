@@ -69,7 +69,12 @@ import {
   setEmulatorLocationAsync,
   type GeoFix,
 } from "./location.ts";
-import { parseRoutePlaybackRequest, RoutePlayback } from "./route-playback.ts";
+import { parseRoutePlaybackRequest } from "./route-playback.ts";
+import {
+  routePlaybackErrorResponse,
+  startRoutePlaybackResponse,
+} from "./route-playback-api.ts";
+import { createSessionRoutePlayback } from "./route-playback-session.ts";
 import { SessionRecorder } from "./session-recorder.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -247,16 +252,22 @@ export async function startServer(opts: ServerOpts) {
   let lastVideoResetMs = 0;
   let watchdog: ReturnType<typeof setInterval> | null = null;
   let lastLocation: (GeoFix & { appliedAt: string }) | null = null;
-  const createRoutePlayback = () =>
-    new RoutePlayback({
-      applyLocation: (fix) => setEmulatorLocationAsync(currentSerial, fix),
+  let sessionGeneration = 0;
+  const createRoutePlayback = (
+    serial = currentSerial,
+    generation = sessionGeneration,
+  ) =>
+    createSessionRoutePlayback({
+      serial,
+      generation,
+      getGeneration: () => sessionGeneration,
+      applyLocation: setEmulatorLocationAsync,
       onLocation: (fix) => {
         lastLocation = fix;
       },
     });
   let sessionRecorder = new SessionRecorder();
   let routePlayback = createRoutePlayback();
-  let sessionGeneration = 0;
   let accessibilitySnapshotCache: {
     snapshot: AccessibilitySnapshot;
     expiresMs: number;
@@ -1674,23 +1685,23 @@ export async function startServer(opts: ServerOpts) {
           return Response.json(routePlayback.snapshot());
         }
         if (req.method === "POST") {
+          const requestPlayback = routePlayback;
+          const requestGeneration = sessionGeneration;
+          let route: ReturnType<typeof parseRoutePlaybackRequest>;
           try {
-            const route = parseRoutePlaybackRequest(
+            route = parseRoutePlaybackRequest(
               await readJsonBody(req, MAX_ROUTE_BODY_BYTES),
             );
-            return Response.json({
-              ok: true,
-              route: await routePlayback.start(route),
-            });
           } catch (err) {
-            return Response.json(
-              {
-                ok: false,
-                error: err instanceof Error ? err.message : String(err),
-              },
-              { status: 400 },
-            );
+            return routePlaybackErrorResponse(err, 400);
           }
+          return startRoutePlaybackResponse(
+            requestPlayback,
+            route,
+            () =>
+              requestGeneration === sessionGeneration &&
+              requestPlayback === routePlayback,
+          );
         }
         if (req.method === "DELETE") {
           return Response.json({ ok: true, route: routePlayback.stop() });

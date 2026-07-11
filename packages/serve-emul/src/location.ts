@@ -8,6 +8,27 @@ export type GeoFix = {
   velocity?: number;
 };
 
+type LocationOutputStream = {
+  setEncoding: (encoding: "utf8") => unknown;
+  on: (event: "data", listener: (chunk: string) => void) => unknown;
+};
+
+export type LocationChildProcess = {
+  stdout: LocationOutputStream;
+  stderr: LocationOutputStream;
+  once: {
+    (event: "error", listener: (error: Error) => void): unknown;
+    (event: "exit", listener: (status: number | null) => void): unknown;
+  };
+  kill: (signal: "SIGKILL") => unknown;
+};
+
+export type LocationCommandDeps = {
+  spawn?: (args: string[]) => LocationChildProcess;
+  setTimeout?: (callback: () => void, timeoutMs: number) => unknown;
+  clearTimeout?: (handle: unknown) => void;
+};
+
 function finiteNumber(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw new Error(`${name} must be a finite number`);
@@ -89,27 +110,68 @@ export function setEmulatorLocation(serial: string, fix: GeoFix): void {
   assertGeoFixOutput(r.status, output);
 }
 
-export function setEmulatorLocationAsync(serial: string, fix: GeoFix): Promise<void> {
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException("location update aborted", "AbortError");
+}
+
+export function setEmulatorLocationAsync(
+  serial: string,
+  fix: GeoFix,
+  signal?: AbortSignal,
+  deps: LocationCommandDeps = {},
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn("adb", geoFixArgs(serial, fix), {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    if (signal?.aborted) {
+      reject(abortReason(signal));
+      return;
+    }
+    const args = geoFixArgs(serial, fix);
+    const child = deps.spawn
+      ? deps.spawn(args)
+      : (spawn("adb", args, {
+          stdio: ["ignore", "pipe", "pipe"],
+        }) as unknown as LocationChildProcess);
+    const scheduleTimeout =
+      deps.setTimeout ?? ((callback, timeoutMs) => setTimeout(callback, timeoutMs));
+    const cancelTimeout =
+      deps.clearTimeout ??
+      ((handle) => clearTimeout(handle as ReturnType<typeof setTimeout>));
     let output = "";
     let settled = false;
-    const timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {}
-      reject(new Error("adb emu geo fix timed out"));
-    }, 5_000);
+    let timeout: unknown | null = null;
+    const cleanup = () => {
+      if (timeout !== null) cancelTimeout(timeout);
+      timeout = null;
+      signal?.removeEventListener("abort", onAbort);
+    };
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeout);
+      cleanup();
       fn();
     };
+    const kill = () => {
+      try {
+        child.kill("SIGKILL");
+      } catch {}
+    };
+    const onAbort = () =>
+      finish(() => {
+        kill();
+        reject(abortReason(signal!));
+      });
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+    timeout = scheduleTimeout(
+      () =>
+        finish(() => {
+          kill();
+          reject(new Error("adb emu geo fix timed out"));
+        }),
+      5_000,
+    );
 
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");

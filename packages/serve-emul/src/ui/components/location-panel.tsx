@@ -5,7 +5,7 @@ type Point = { x: number; y: number };
 type LocationPoint = { latitude: number; longitude: number; altitude?: number };
 type Tile = { key: string; x: number; y: number; left: number; top: number; wrappedX: number };
 type RouteSnapshot = {
-  status: "idle" | "running" | "paused" | "completed" | "error";
+  status: "idle" | "running" | "paused" | "completed" | "error" | "closed";
   waypointCount: number;
   totalMeters: number;
   progressMeters: number;
