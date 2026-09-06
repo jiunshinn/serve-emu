@@ -445,3 +445,34 @@ describe("SessionRecorder legacy replay validation", () => {
     expect(recorder.summary().lastError).toBe("legacy string failure");
   });
 });
+
+
+describe("replay timeline", () => {
+  for (const legacy of [false, true]) {
+    test(`subtracts dispatch time and timer overshoot (${legacy ? "legacy" : "async"})`, async () => {
+      let now = 0;
+      const sleep = async (ms: number) => { now += ms + 5; };
+      const recorder = new SessionRecorder({ now: () => now, sleep });
+      recorder.recordGesture({ type: "swipe", x1: 0, y1: 0, x2: 1, y2: 1, durationMs: 1000 }, "test");
+      now = 1000;
+      recorder.recordGesture({ type: "tap", x: 0.5, y: 0.5 }, "test");
+      now = 2000;
+      recorder.recordLocation({ latitude: 0, longitude: 0 }, "test");
+      now = 0;
+      const starts: number[] = [];
+      const handlers: ReplayHandlers = {
+        dispatchGesture: (gesture) => {
+          starts.push(now);
+          if (gesture.type === "swipe") now += gesture.durationMs!;
+        },
+        setLocation: () => { starts.push(now); },
+      };
+      if (legacy) await recorder.replay({
+        dispatchGesture: (gesture) => handlers.dispatchGesture(gesture, new AbortController().signal),
+        setLocation: (fix) => handlers.setLocation(fix, new AbortController().signal),
+      });
+      else await recorder.startReplay(handlers).completion;
+      expect(starts).toEqual([5, 1010, 2005]);
+    });
+  }
+});

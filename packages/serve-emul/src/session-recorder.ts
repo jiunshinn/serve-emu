@@ -370,9 +370,11 @@ export class SessionRecorder {
     this.#replayStartedAt = new Date(this.#clock.now()).toISOString();
     this.#replayCompletedAt = null;
     this.#lastError = null;
+    let targetMs = this.#clock.now();
     try {
       for (const event of events) {
-        await this.#legacySleep(Math.max(0, event.delayMs / multiplier));
+        targetMs += event.delayMs / multiplier;
+        await this.#legacySleep(Math.max(0, targetMs - this.#clock.now()));
         if (this.#legacyStopReplay) break;
         if (event.kind === "gesture") {
           await handlers.dispatchGesture(cloneGesture(event.gesture));
@@ -440,11 +442,13 @@ export class SessionRecorder {
     multiplier: number,
   ): Promise<SessionSnapshot> {
     let outcome: "completed" | "cancelled" | "error" = "completed";
+    let targetMs = this.#clock.now();
     try {
       for (const event of events) {
         this.#assertReplayActive(replay);
+        targetMs += event.delayMs / multiplier;
         await this.#clock.delay(
-          Math.max(0, event.delayMs / multiplier),
+          Math.max(0, targetMs - this.#clock.now()),
           replay.controller.signal,
         );
         this.#assertReplayActive(replay);
