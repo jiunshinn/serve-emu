@@ -424,7 +424,9 @@ const ensureDecoder = (spsBytes: Uint8Array, generation: number): boolean => {
     dec.configure({
       codec,
       optimizeForLatency: true,
-      hardwareAcceleration: "prefer-hardware",
+      // Let the browser select hardware when available and software otherwise.
+      // prefer-hardware rejects valid H.264 streams in headless/VM environments.
+      hardwareAcceleration: "no-preference",
     });
     if (!isCurrentStreamGeneration(lifecycle, generation)) {
       dec.close();
