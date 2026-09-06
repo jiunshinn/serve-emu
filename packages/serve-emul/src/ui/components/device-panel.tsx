@@ -105,7 +105,7 @@ export function DevicePanel() {
       if (changesSession) {
         deviceSessionStore.beginTransition(action === "start" ? null : device.serial);
       }
-      let nextSession: { serial?: string | null; sessionGeneration?: number | null } | null = null;
+      let nextSession: { serial?: string | null; generation?: number | null } | null = null;
       try {
         const endpoint =
           action === "select"
@@ -128,7 +128,7 @@ export function DevicePanel() {
           ok?: boolean;
           error?: string;
           serial?: string | null;
-          sessionGeneration?: number | null;
+          generation?: number | null;
         };
         if (!json.ok) throw new Error(json.error || "Action failed");
         if (changesSession) nextSession = json;

@@ -1,3 +1,5 @@
+import { deviceSessionStore } from "./device-session-store";
+import { parseStreamHealth, type StreamHealth } from "./stream-state";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import {
@@ -29,11 +31,7 @@ export type StreamState = {
 
 export type Sender = (msg: Record<string, unknown>, ack?: boolean) => void;
 
-type ApiInfo = {
-  size: DeviceSize;
-  status?: "streaming" | "stopped" | "error";
-  lastError?: string | null;
-};
+type ApiInfo = StreamHealth;
 
 // A canvas can transfer control to an OffscreenCanvas only once, so the worker
 // that received it must be reused if the effect re-runs for the same element.
@@ -271,6 +269,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     async function pollHealth() {
       if (cancelled) return;
       const requestSequence = ++healthRequestSequence;
+      const sessionRequest = deviceSessionStore.beginHealthRequest();
       const requestGeneration = currentGeneration;
       const controller = new AbortController();
       healthController = controller;
@@ -281,7 +280,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
 
       try {
         const response = await fetch("/health", { signal: controller.signal });
-        const data = (await response.json()) as ApiInfo;
+        const data = parseStreamHealth(await response.json());
         if (
           cancelled ||
           controller.signal.aborted ||
@@ -290,6 +289,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
         ) {
           return;
         }
+        if (!deviceSessionStore.applyHealth(data, sessionRequest)) return;
         applyServerStatus(data);
       } catch {
         // The stream lifecycle remains authoritative when metadata is

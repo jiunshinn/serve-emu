@@ -1352,6 +1352,7 @@ export async function startServer(
     return {
       ok: true,
       serial: context.serial,
+      generation: context.generation,
       device: context.scrcpy.meta.deviceName,
     };
   };
