@@ -119,7 +119,7 @@ export function DeviceStream({
     pointFromClient(e.clientX, e.clientY);
 
   const sendTouch = (action: "down" | "move" | "up", p: Point, pointerId: number) => {
-    send({ type: "touch", action, x: p.x, y: p.y, pointerId, ack: false });
+    send({ type: "touch", action, x: p.x, y: p.y, pointerId }, action !== "move");
   };
 
   const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {

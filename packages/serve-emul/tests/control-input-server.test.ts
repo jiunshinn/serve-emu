@@ -427,13 +427,14 @@ describe("server control input integration", () => {
       writer.failNextWrite();
       harness.handlers.websocket.message(
         ws,
-        JSON.stringify({ type: "key", keycode: 20 }),
+        JSON.stringify({ type: "key", keycode: 20, requestId: "failed-key" }),
       );
       await waitFor(() => ws.sent.length === 4, "failure ACK missing");
       expect(ws.sent[3]).toMatchObject({
         ok: false,
         status: "failed",
         code: "control-dispatch-failed",
+        requestId: "failed-key",
       });
 
       harness.handlers.websocket.message(
@@ -466,7 +467,7 @@ describe("server control input integration", () => {
       writer.failNextWrite();
       harness.handlers.websocket.message(
         ws,
-        JSON.stringify({ type: "key", keycode: 20 }),
+        JSON.stringify({ type: "key", keycode: 20, requestId: "failed-key" }),
       );
       await waitFor(() => ws.sent.length === 1, "failure ACK missing");
       expect(ws.sent[0]).toMatchObject({

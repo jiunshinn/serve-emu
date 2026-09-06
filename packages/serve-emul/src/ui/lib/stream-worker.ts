@@ -1,3 +1,4 @@
+import { parseWsServerJson } from "../../shared/websocket-contracts";
 import { buildCodecString, scanAU } from "./h264";
 import { epochNowMs, parseFramePacket } from "../../shared/frame-meta";
 import {
@@ -39,6 +40,7 @@ export type StreamStats = {
 };
 
 type StreamWorkerEventPayload =
+  | { type: "control-error"; generation: number; error: string; requestId?: string }
   | { type: "lifecycle"; generation: number; state: StreamLifecycleState }
   | { type: "status"; generation: number; status: string }
   | { type: "session"; generation: number; size: { width: number; height: number } }
@@ -497,9 +499,13 @@ const connect = (reason: "connect" | "reconnect") => {
     if (stopped || ws !== sock) return;
     if (typeof e.data === "string") {
       try {
-        const msg = JSON.parse(e.data) as { type?: string; size?: { width: number; height: number } };
+        const msg = parseWsServerJson(e.data);
+        if ("ok" in msg && !msg.ok) {
+          postEvent({ type: "control-error", generation: lifecycle.generation, error: msg.error, requestId: msg.requestId });
+          return;
+        }
         if (
-          msg.type === "video-session" &&
+          "type" in msg && msg.type === "video-session" &&
           msg.size &&
           Number.isFinite(msg.size.width) &&
           Number.isFinite(msg.size.height)

@@ -1,3 +1,4 @@
+import { parseWsClientMessage, parseWsRequestId } from "./shared/websocket-contracts.ts";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { timingSafeEqual } from "node:crypto";
@@ -643,12 +644,6 @@ export async function startServer(
       return true;
     return (value as Record<string, unknown>).ack !== false;
   };
-
-  const isResetVideoRequest = (value: unknown) =>
-    typeof value === "object" &&
-    value !== null &&
-    !Array.isArray(value) &&
-    (value as Record<string, unknown>).type === "reset-video";
 
   const readJsonBody = async (
     req: Request,
@@ -2213,13 +2208,19 @@ export async function startServer(
           return;
         }
         let acknowledge = true;
+        let requestId: string | undefined;
+        const reply = (value: Record<string, unknown>) => sendJson(ws, {
+          ...value, ...(requestId === undefined ? {} : { requestId }),
+        });
         try {
           if (context.status !== "streaming") {
             throw new Error(`session is ${context.status}`);
           }
           const payload = JSON.parse(raw);
           acknowledge = wantsAck(payload);
-          if (isResetVideoRequest(payload)) {
+          requestId = parseWsRequestId(payload?.requestId);
+          const msg = parseWsClientMessage(payload);
+          if (msg.type === "reset-video") {
             const accepted = enqueueVideoReset(
               context,
               "client requested keyframe",
@@ -2227,32 +2228,31 @@ export async function startServer(
             void accepted.completion
               .then((result) => {
                 if (acknowledge) {
-                  sendJson(ws, { ok: true, status: result.status });
+                  reply({ ok: true, status: result.status });
                 }
               })
               .catch((err) => {
                 if (acknowledge) {
-                  sendJson(ws, inputErrorPayload(err, "failed"));
+                  reply(inputErrorPayload(err, "failed"));
                 }
               });
             return;
           }
-          const msg = parseGesture(payload);
           const accepted = enqueueClientGesture(ws, msg, shouldRecord(payload));
           void accepted.completion
             .then((result) => {
               if (acknowledge) {
-                sendJson(ws, { ok: true, status: result.status });
+                reply({ ok: true, status: result.status });
               }
             })
             .catch((err) => {
               if (acknowledge) {
-                sendJson(ws, inputErrorPayload(err, "failed"));
+                reply(inputErrorPayload(err, "failed"));
               }
             });
         } catch (err) {
           if (acknowledge) {
-            sendJson(ws, inputErrorPayload(err, "rejected"));
+            reply(inputErrorPayload(err, "rejected"));
           }
         }
       },

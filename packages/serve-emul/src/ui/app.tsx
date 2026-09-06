@@ -70,7 +70,7 @@ function useStreamControls(): StreamControls {
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { state, send } = useStream(canvasRef);
+  const { state, send, clearControlError } = useStream(canvasRef);
   const deviceWidth = state.deviceSize?.width;
   const deviceHeight = state.deviceSize?.height;
   const controls = useMemo<StreamControls>(
@@ -87,7 +87,7 @@ export function App() {
 
   return (
     <>
-      <StatusBar status={state.status} deviceSize={state.deviceSize} fps={state.fps} stats={state.stats} />
+      <StatusBar controlError={state.controlError} onDismissError={clearControlError} status={state.status} deviceSize={state.deviceSize} fps={state.fps} stats={state.stats} />
       <StreamControlsContext.Provider value={controls}>
         <AppShell />
       </StreamControlsContext.Provider>
