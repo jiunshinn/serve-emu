@@ -303,8 +303,7 @@ export class SessionRecorder {
   }
 
   summary(): SessionSummary {
-    const snapshot = this.snapshot();
-    const { events } = snapshot;
+    const events = this.#events;
     const oldest = events[0] ?? null;
     const newest = events.at(-1) ?? null;
     return {
@@ -316,11 +315,11 @@ export class SessionRecorder {
       newestEventId: newest?.id ?? null,
       oldestEventAt: oldest?.at ?? null,
       newestEventAt: newest?.at ?? null,
-      recording: snapshot.recording,
-      replaying: snapshot.replaying,
-      replayStartedAt: snapshot.replayStartedAt,
-      replayCompletedAt: snapshot.replayCompletedAt,
-      lastError: snapshot.lastError,
+      recording: this.#recording,
+      replaying: this.#replaying,
+      replayStartedAt: this.#replayStartedAt,
+      replayCompletedAt: this.#replayCompletedAt,
+      lastError: this.#lastError,
     };
   }
 
