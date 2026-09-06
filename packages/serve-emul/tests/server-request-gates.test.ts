@@ -1,320 +1,18 @@
-import { EventEmitter } from "node:events";
+import { describe, expect, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { afterEach, describe, expect, test } from "bun:test";
-import type { RecoveryWatchdogClock } from "../src/session-recovery-watchdog.ts";
+import { ScrcpyStreamError } from "../src/scrcpy.ts";
+import { startServer } from "../src/server.ts";
 import { parseFramePacket } from "../src/shared/frame-meta.ts";
+
 import {
-  ScrcpyStreamError,
-  type ScrcpySession,
-  type VideoPacket,
-} from "../src/scrcpy.ts";
-import {
-  startServer,
-  type ServerDependencies,
-  type ServerOpts,
-} from "../src/server.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
-type FrameFeedEntry =
-  | { type: "value"; value: VideoPacket | null }
-  | { type: "error"; error: unknown };
-
-class FrameFeed {
-  #entries: FrameFeedEntry[] = [];
-  #waiting: Deferred<VideoPacket | null> | null = null;
-
-  read(): Promise<VideoPacket | null> {
-    const entry = this.#entries.shift();
-    if (entry) {
-      return entry.type === "value"
-        ? Promise.resolve(entry.value)
-        : Promise.reject(entry.error);
-    }
-    this.#waiting = deferred<VideoPacket | null>();
-    return this.#waiting.promise;
-  }
-
-  push(value: VideoPacket | null): void {
-    const waiting = this.#waiting;
-    if (waiting) {
-      this.#waiting = null;
-      waiting.resolve(value);
-      return;
-    }
-    this.#entries.push({ type: "value", value });
-  }
-
-  fail(error: unknown): void {
-    const waiting = this.#waiting;
-    if (waiting) {
-      this.#waiting = null;
-      waiting.reject(error);
-      return;
-    }
-    this.#entries.push({ type: "error", error });
-  }
-}
-
-class FakeControlSocket extends EventEmitter {
-  readonly destroyed = false;
-  readonly writable = true;
-  readonly writes: Buffer[] = [];
-
-  write(
-    packet: Buffer,
-    callback?: (error?: Error | null) => void,
-  ): boolean {
-    this.writes.push(Buffer.from(packet));
-    callback?.();
-    return true;
-  }
-}
-
-type FakeScrcpy = ScrcpySession & {
-  readonly fakeControlSocket: FakeControlSocket;
-  readonly closeCalls: number;
-  pushFrame(frame: VideoPacket): void;
-  endFrames(): void;
-  failFrames(error: unknown): void;
-};
-
-function fakeScrcpy(serial = "emulator-5554"): FakeScrcpy {
-  const frames = new FrameFeed();
-  const controlSocket = new FakeControlSocket();
-  let settled = false;
-  let closeCalls = 0;
-  const session = {
-    transport: "scrcpy",
-    serial,
-    protocol: 4,
-    meta: {
-      deviceName: "request-gates-device",
-      codecId: "h264",
-      width: 720,
-      height: 1280,
-    },
-    proc: new EventEmitter(),
-    controlSocket,
-    fakeControlSocket: controlSocket,
-    readFrame: () => frames.read(),
-    close() {
-      closeCalls += 1;
-      if (settled) return;
-      settled = true;
-      frames.push(null);
-    },
-    get closeCalls() {
-      return closeCalls;
-    },
-    pushFrame(packet: VideoPacket) {
-      if (settled) throw new Error("frame feed is already terminal");
-      frames.push(packet);
-    },
-    endFrames() {
-      if (settled) return;
-      settled = true;
-      frames.push(null);
-    },
-    failFrames(error: unknown) {
-      if (settled) return;
-      settled = true;
-      frames.fail(error);
-    },
-  };
-  return session as unknown as FakeScrcpy;
-}
-
-const INERT_RECOVERY_CLOCK: RecoveryWatchdogClock = {
-  now: () => 1_000,
-  setInterval: () => Symbol("recovery-timer"),
-  clearInterval: () => {},
-};
-
-type UpgradeData = {
-  id: number;
-  frameMeta: boolean;
-  context: unknown;
-  handle?: unknown;
-};
-
-type CapturedHandlers = {
-  fetch(
-    request: Request,
-    server: CapturedServer,
-  ): Promise<Response | undefined>;
-  websocket: {
-    maxPayloadLength: number;
-    open(socket: FakeWebSocket): void;
-    message(socket: FakeWebSocket, message: string | Buffer): void;
-    close(socket: FakeWebSocket): void;
-  };
-};
-
-type CapturedServer = {
-  port: number;
-  hostname: string;
-  upgradeResult: boolean;
-  upgrades: UpgradeData[];
-  stopArguments: boolean[];
-  upgrade(request: Request, options: { data: UpgradeData }): boolean;
-  stop(closeActiveConnections?: boolean): void;
-};
-
-type FakeWebSocket = {
-  data: UpgradeData;
-  sent: unknown[];
-  closes: Array<{ code?: number; reason?: string }>;
-  bufferedAmount: number;
-  sendResult: number;
-  throwOnSend: boolean;
-  send(value: string | Buffer): number;
-  close(code?: number, reason?: string): void;
-  getBufferedAmount(): number;
-};
-
-function fakeWebSocket(
-  data: UpgradeData,
-  options: {
-    bufferedAmount?: number;
-    sendResult?: number;
-    throwOnSend?: boolean;
-  } = {},
-): FakeWebSocket {
-  const sent: unknown[] = [];
-  const closes: Array<{ code?: number; reason?: string }> = [];
-  return {
-    data,
-    sent,
-    closes,
-    bufferedAmount: options.bufferedAmount ?? 0,
-    sendResult: options.sendResult ?? 1,
-    throwOnSend: options.throwOnSend ?? false,
-    send(value) {
-      if (this.throwOnSend) throw new Error("injected websocket send failure");
-      sent.push(typeof value === "string" ? JSON.parse(value) : value);
-      return this.sendResult;
-    },
-    close(code, reason) {
-      closes.push({ code, reason });
-    },
-    getBufferedAmount() {
-      return this.bufferedAmount;
-    },
-  };
-}
-
-type Harness = {
-  started: Awaited<ReturnType<typeof startServer>>;
-  session: FakeScrcpy;
-  server: CapturedServer;
-  handlers: CapturedHandlers;
-  request(path: string, init?: RequestInit): Promise<Response | undefined>;
-};
-
-const activeServers: Array<Awaited<ReturnType<typeof startServer>>> = [];
-
-afterEach(async () => {
-  const servers = activeServers.splice(0);
-  await Promise.allSettled(servers.map((server) => server.stop()));
-});
-
-async function createHarness(
-  options: Partial<ServerOpts> = {},
-  dependencyOverrides: ServerDependencies = {},
-): Promise<Harness> {
-  const session = fakeScrcpy(options.serial);
-  let handlers: CapturedHandlers | null = null;
-  const server: CapturedServer = {
-    port: options.port ?? 33_040,
-    hostname: options.host ?? "127.0.0.1",
-    upgradeResult: true,
-    upgrades: [],
-    stopArguments: [],
-    upgrade(_request, upgradeOptions) {
-      this.upgrades.push(upgradeOptions.data);
-      return this.upgradeResult;
-    },
-    stop(closeActiveConnections = false) {
-      this.stopArguments.push(closeActiveConnections);
-    },
-  };
-  const serve = ((serveOptions: CapturedHandlers) => {
-    handlers = serveOptions;
-    return server;
-  }) as unknown as typeof Bun.serve;
-  const started = await startServer(
-    {
-      serial: options.serial ?? session.serial,
-      port: options.port ?? server.port,
-      host: options.host,
-      token: options.token,
-    },
-    {
-      openScrcpy: async () => session,
-      recoveryClock: INERT_RECOVERY_CLOCK,
-      serve,
-      ...dependencyOverrides,
-    },
-  );
-  activeServers.push(started);
-  if (!handlers) throw new Error("Bun.serve options were not captured");
-  const capturedHandlers = handlers as CapturedHandlers;
-
-  return {
-    started,
-    session,
-    server,
-    handlers: capturedHandlers,
-    async request(path, init = {}) {
-      const headers = new Headers(init.headers);
-      if (!headers.has("host")) {
-        headers.set("host", `${server.hostname}:${server.port}`);
-      }
-      return capturedHandlers.fetch(
-        new Request(`http://${server.hostname}:${server.port}${path}`, {
-          ...init,
-          headers,
-        }),
-        server,
-      );
-    },
-  };
-}
-
-async function response(
-  value: Promise<Response | undefined>,
-): Promise<Response> {
-  const result = await value;
-  if (!result) throw new Error("expected an HTTP response");
-  return result;
-}
-
-async function waitFor(
-  predicate: () => boolean | Promise<boolean>,
-): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  throw new Error("condition was not met before timeout");
-}
+  createHarness,
+  fakeScrcpy,
+  fakeWebSocket,
+  response,
+  waitFor,
+  type FakeWebSocket,
+} from "./helpers/server-harness.ts";
 
 describe("server request gates", () => {
   test("accepts bearer, cookie, and query credentials with explicit precedence", async () => {
@@ -485,9 +183,11 @@ describe("server HTTP and WebSocket boundaries", () => {
     for (const [method, path] of mismatches) {
       const result = await response(harness.request(path, { method }));
       expect(result.status, `${method} ${path}`).toBe(405);
-      expect(await result.text(), `${method} ${path}`).toBe(
-        "method not allowed",
-      );
+      expect(await result.json(), `${method} ${path}`).toMatchObject({
+        ok: false,
+        error: { code: "method_not_allowed" },
+      });
+      expect(result.headers.get("allow")).not.toBeNull();
     }
   });
 
@@ -518,24 +218,30 @@ describe("server HTTP and WebSocket boundaries", () => {
 
     const unknownApi = await response(harness.request("/api/not-registered"));
     expect(unknownApi.status).toBe(404);
-    expect(await unknownApi.text()).toBe("not found");
+    expect(await unknownApi.json()).toMatchObject({
+      ok: false,
+      error: { code: "not_found" },
+    });
   });
 
   test("merges physical devices, running emulators, and stopped AVDs", async () => {
-    const harness = await createHarness({}, {
-      listDevices: async () => [
-        { serial: "emulator-5554", state: "device" },
-        { serial: "usb-device", state: "unauthorized" },
-      ],
-      listRunningAvds: async () => [
-        {
-          serial: "emulator-5554",
-          avd: "Pixel_Running",
-          state: "device",
-        },
-      ],
-      listAvds: async () => ["Pixel_Running", "Pixel_Stopped"],
-    });
+    const harness = await createHarness(
+      {},
+      {
+        listDevices: async () => [
+          { serial: "emulator-5554", state: "device" },
+          { serial: "usb-device", state: "unauthorized" },
+        ],
+        listRunningAvds: async () => [
+          {
+            serial: "emulator-5554",
+            avd: "Pixel_Running",
+            state: "device",
+          },
+        ],
+        listAvds: async () => ["Pixel_Running", "Pixel_Stopped"],
+      },
+    );
 
     const devices = await response(harness.request("/api/devices"));
     expect(await devices.json()).toMatchObject({
@@ -730,11 +436,11 @@ describe("server HTTP and WebSocket boundaries", () => {
     await waitFor(() => rawSocket.sent.some((value) => Buffer.isBuffer(value)));
 
     const rawPacket = rawSocket.sent.find((value) =>
-      Buffer.isBuffer(value)
+      Buffer.isBuffer(value),
     ) as Buffer;
     expect(rawPacket).toEqual(Buffer.concat([config, keyFrame]));
     const framedPacket = framedSocket.sent.find((value) =>
-      Buffer.isBuffer(value)
+      Buffer.isBuffer(value),
     ) as Buffer;
     const parsed = parseFramePacket(framedPacket);
     expect(parsed).toMatchObject({ isKey: true, timestamp: 9_001 });
@@ -761,10 +467,7 @@ describe("server HTTP and WebSocket boundaries", () => {
     const sockets: FakeWebSocket[] = [];
     for (const options of socketOptions) {
       await harness.request("/ws");
-      const socket = fakeWebSocket(
-        harness.server.upgrades.at(-1)!,
-        options,
-      );
+      const socket = fakeWebSocket(harness.server.upgrades.at(-1)!, options);
       sockets.push(socket);
       harness.handlers.websocket.open(socket);
     }
@@ -776,6 +479,8 @@ describe("server HTTP and WebSocket boundaries", () => {
       isConfig: false,
       isKey: false,
     });
+    await waitFor(() => sockets[0]!.closes.length === 1);
+    expect(sockets[0]!.closes[0]?.code).toBe(1013);
     harness.session.pushFrame({
       type: "frame",
       data: Buffer.from([0, 0, 0, 1, 0x65]),
@@ -783,7 +488,7 @@ describe("server HTTP and WebSocket boundaries", () => {
       isConfig: false,
       isKey: true,
     });
-    await waitFor(() => sockets[0]!.closes.length === 1);
+    await waitFor(() => sockets[5]!.sent.length === 1);
 
     expect(sockets[0]!.closes).toEqual([
       { code: 1013, reason: "client too slow" },
@@ -797,7 +502,7 @@ describe("server HTTP and WebSocket boundaries", () => {
     expect(await health.json()).toMatchObject({
       clients: 3,
       frames: 2,
-      droppedFrames: 8,
+      droppedFrames: 7,
       backpressureEvents: 1,
       keyFrameRecovery: { awaitingClients: 2 },
     });
@@ -806,8 +511,8 @@ describe("server HTTP and WebSocket boundaries", () => {
   test("returns terminal health instead of upgrading a stopped stream", async () => {
     const harness = await createHarness();
     harness.session.endFrames();
-    await waitFor(async () =>
-      (await response(harness.request("/health"))).status === 503
+    await waitFor(
+      async () => (await response(harness.request("/health"))).status === 503,
     );
 
     const unavailable = await response(
@@ -865,14 +570,13 @@ describe("server shutdown and errors", () => {
   test("surfaces structured scrcpy stream failures through health", async () => {
     const harness = await createHarness();
     harness.session.failFrames(
-      new ScrcpyStreamError(
-        "truncated-payload",
-        "video payload ended early",
-        { expected: 128, received: 64 },
-      ),
+      new ScrcpyStreamError("truncated-payload", "video payload ended early", {
+        expected: 128,
+        received: 64,
+      }),
     );
-    await waitFor(async () =>
-      (await response(harness.request("/health"))).status === 503
+    await waitFor(
+      async () => (await response(harness.request("/health"))).status === 503,
     );
 
     const health = await response(harness.request("/health"));
