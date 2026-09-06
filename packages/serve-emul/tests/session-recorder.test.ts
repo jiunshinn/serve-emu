@@ -280,6 +280,7 @@ describe("SessionRecorder replay", () => {
       now: () => now,
       sleep: async (ms) => {
         sleeps.push(ms);
+        now += ms;
       },
     });
     recorder.recordGesture({ type: "home" }, "test");
@@ -312,7 +313,7 @@ describe("SessionRecorder replay", () => {
       eventCount: 0,
       replaying: false,
       replayStartedAt: new Date(1_000).toISOString(),
-      replayCompletedAt: new Date(1_000).toISOString(),
+      replayCompletedAt: new Date(1_300).toISOString(),
       lastError: null,
     });
   });

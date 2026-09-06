@@ -452,6 +452,8 @@ See the [protocol reference](docs/protocol.md) for the complete scrcpy v3/v4 fra
 
 ## Development
 
+`bun run check` enforces executed-line coverage floors, type checks, build, and package validation. Browser streaming tests separately exercise the built UI and production WebSocket handlers in Chromium, including real H.264 decoding, refresh, multi-tab device switching, input failure delivery, and slow-decoder recovery. See [the browser test guide](https://github.com/jiunshinn/serve-emul/blob/main/packages/serve-emul/tests/browser/README.md).
+
 ```sh
 bun install
 bun run --filter serve-emul setup
@@ -460,6 +462,8 @@ bun run --filter serve-emul typecheck
 bun run --filter serve-emul typecheck:ui
 bun run --filter serve-emul build
 bun run check
+(cd packages/serve-emul && bunx playwright install chromium)
+bun run --filter serve-emul test:browser
 ```
 
 `dev:ui` proxies `/api`, `/health`, and `/ws` to

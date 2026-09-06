@@ -1,3 +1,4 @@
+import { useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { memo, useEffect, useMemo, useRef } from "react";
 import type { PointerEvent, RefObject } from "react";
 import {
@@ -39,6 +40,7 @@ export function DeviceStream({
   keyboardProxyRef,
   keyboardActive = true,
 }: Props) {
+  const deviceSession = useDeviceSessionSnapshot();
   const activeRef = useRef<{ id: number; x: number; y: number } | null>(null);
   const hoverContextRef = useRef({
     enabled: accessibilityEnabled,
@@ -91,7 +93,11 @@ export function DeviceStream({
     lastReportedHoverRef.current = highlightedAccessibilityId;
   }, [highlightedAccessibilityId]);
 
-  useEffect(() => () => pointerMoveSchedulerRef.current?.cancel(), []);
+  useEffect(() => {
+    activeRef.current = null;
+    pointerMoveSchedulerRef.current?.cancel();
+    return () => pointerMoveSchedulerRef.current?.cancel();
+  }, [deviceSession.revision]);
 
   useEffect(() => {
     if (accessibilityEnabled) return;
@@ -113,7 +119,7 @@ export function DeviceStream({
     pointFromClient(e.clientX, e.clientY);
 
   const sendTouch = (action: "down" | "move" | "up", p: Point, pointerId: number) => {
-    send({ type: "touch", action, x: p.x, y: p.y, pointerId, ack: false });
+    send({ type: "touch", action, x: p.x, y: p.y, pointerId }, action !== "move");
   };
 
   const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {

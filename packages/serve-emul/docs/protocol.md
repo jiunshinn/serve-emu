@@ -156,6 +156,29 @@ v2, and raw Annex-B messages. Unknown magic or version values are treated as raw
 payloads. A PTS larger than JavaScript's safe integer range is exposed as
 `null`; v1 and raw messages have no server send time.
 
+## WebSocket JSON control and timing
+
+Gesture messages accept an optional `requestId` (1–128 characters); success and
+failure acknowledgements echo it. `ack: false` suppresses gesture acknowledgements.
+The bundled UI requests acknowledgements for touch down/up and keyboard input,
+while coalesced pointer moves use `ack: false`. A disconnected client's remaining
+touches are released on the same device session, with distinct wire pointer IDs
+for each client.
+
+A timing request `{ "type": "clock-sync", "clientTsMs": 1000 }` receives
+`{ "type": "clock-sync", "clientTsMs": 1000, "serverTsMs": 1005 }`.
+Both timestamps are epoch milliseconds; the response is a timing sample, not a
+control acknowledgement, and does not dispatch or record device input. The UI
+uses the lowest-RTT sample from the last minute to estimate clock offset. Transit
+and server-to-canvas values are estimates with an RTT/2 uncertainty; they remain
+unavailable until synchronization succeeds. They exclude device capture/encoding
+and compositor scanout. Decode and presentation-wait p95 use only the browser's
+local clock and need no synchronization.
+
+The worker sheds queued decode work by waiting for a keyframe when pending decode
+age exceeds 250 ms (with a hard cap of 48 queued operations). An idle hardware
+pipeline with no queued decode work does not trigger recovery.
+
 ## Golden byte sequences
 
 These examples use H.264, dimensions 1080 (`0x0438`) by 1920 (`0x0780`), and

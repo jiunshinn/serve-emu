@@ -42,3 +42,21 @@ describe("WebSocket contracts", () => {
     ).toThrow("positive finite");
   });
 });
+
+
+test("correlates bounded request IDs in success and failure envelopes", () => {
+  expect(parseWsClientMessage({ type: "home", requestId: "key-1" })).toMatchObject({ requestId: "key-1" });
+  expect(parseWsServerMessage({ ok: true, requestId: "key-1" })).toEqual({ ok: true, requestId: "key-1" });
+  expect(parseWsServerMessage({ ok: false, error: "queue full", requestId: "key-2" })).toEqual({ ok: false, error: "queue full", requestId: "key-2" });
+  for (const requestId of ["", "a".repeat(129), 42, {}]) {
+    expect(() => parseWsClientMessage({ type: "home", requestId })).toThrow("requestId");
+  }
+});
+
+test("clock synchronization validates both wire directions", () => {
+  expect(parseWsClientMessage({ type: "clock-sync", clientTsMs: 100, ack: false })).toEqual({ type: "clock-sync", clientTsMs: 100, ack: false });
+  expect(parseWsServerMessage({ type: "clock-sync", clientTsMs: 100, serverTsMs: 200 })).toEqual({ type: "clock-sync", clientTsMs: 100, serverTsMs: 200 });
+  for (const clientTsMs of [-1, Number.NaN, "100", Number.POSITIVE_INFINITY]) {
+    expect(() => parseWsClientMessage({ type: "clock-sync", clientTsMs })).toThrow("clock timestamp");
+  }
+});

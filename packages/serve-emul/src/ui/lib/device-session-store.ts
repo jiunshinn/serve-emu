@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 
 export type DeviceSessionHealth = {
   serial?: string | null;
+  generation?: number | null;
   sessionGeneration?: number | null;
 };
 
@@ -64,7 +65,7 @@ export function createDeviceSessionStore(): DeviceSessionStore {
         lastAppliedRequestId = request.requestId;
       }
       const serial = typeof health.serial === "string" && health.serial ? health.serial : null;
-      const sessionGeneration = normalizedGeneration(health.sessionGeneration);
+      const sessionGeneration = normalizedGeneration(health.generation ?? health.sessionGeneration);
       if (
         !snapshot.transitioning &&
         snapshot.serial === serial &&

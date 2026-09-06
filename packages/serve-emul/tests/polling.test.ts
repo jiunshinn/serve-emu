@@ -344,3 +344,17 @@ describe("device session store", () => {
     expect(store.getSnapshot()).toMatchObject({ serial: "second", transitioning: false });
   });
 });
+
+
+test("canonical health generation refreshes other tabs without a local transition", () => {
+  const store = createDeviceSessionStore();
+  const apply = (serial: string, generation: number) => store.applyHealth({ serial, generation }, store.beginHealthRequest());
+  apply("device-a", 0);
+  const first = store.getSnapshot();
+  apply("device-a", 0);
+  expect(store.getSnapshot()).toBe(first);
+  apply("device-b", 1);
+  expect(store.getSnapshot()).toMatchObject({ serial: "device-b", sessionGeneration: 1, revision: 2 });
+  apply("device-b", 2);
+  expect(store.getSnapshot()).toMatchObject({ sessionGeneration: 2, revision: 3 });
+});

@@ -1,90 +1,104 @@
-import type { Gesture } from "../shared/control-contracts.ts";
-import type {
-  AccessibilitySelector,
-  AccessibilitySnapshot,
-  AccessibilityTapResponse,
-  ApiInfoResponse,
-  ApiRequest,
-  AppActionResponse,
-  AppliedGeoFix,
-  AvdStartResponse,
-  AvdStopResponse,
-  DeviceGridResponse,
-  DeviceListResponse,
-  DeviceSelectionResponse,
-  FileImportResponse,
-  FontScaleStatus,
-  ForegroundApp,
-  GeoFix,
-  LocationResponse,
-  NightMode,
-  NightModeStatus,
-  NetworkStatus,
-  OrientationMode,
-  OrientationStatus,
-  RoutePlaybackRequest,
-  RoutePlaybackSnapshot,
-  SessionSnapshot,
-} from "../shared/api-contracts.ts";
+import type { AccessibilitySnapshot } from "../accessibility.ts";
+import type { DeviceSessionManager } from "../device-session-context.ts";
+import type { Gesture } from "../input.ts";
+import type { JsonResponseTracker } from "../json-response.ts";
+import type { GeoFix } from "../location.ts";
+import type { DeviceContext, DeviceGridResponse, WsData } from "../server.ts";
 
-export type { NightMode, OrientationMode } from "../shared/api-contracts.ts";
-export type RouteControlAction = ApiRequest<
-  "/api/route/control",
-  "POST"
->["action"];
-
-/**
- * High-level operations used by the HTTP API. Keeping this interface free of
- * Bun server state lets every registered route run against deterministic fakes.
- */
+/** Session-bound services consumed by the production HTTP routes. */
 export type ApiDependencies = {
-  getInfo: () => ApiInfoResponse;
-  listDevices: () => Promise<DeviceListResponse>;
-  getDeviceGrid: () => Promise<DeviceGridResponse>;
-  selectDevice: (serial: string) => Promise<DeviceSelectionResponse>;
-  startAvd: (avd: string, select: boolean) => Promise<AvdStartResponse>;
-  stopAvd: (input: { serial?: string; avd?: string }) => Promise<AvdStopResponse>;
-
-  getOrientation: () => Promise<OrientationStatus>;
-  setOrientation: (orientation: OrientationMode) => Promise<OrientationStatus>;
-  getNightMode: () => Promise<NightModeStatus>;
-  setNightMode: (mode: NightMode) => Promise<NightModeStatus>;
-  getFontScale: () => Promise<FontScaleStatus>;
-  setFontScale: (scale: number) => Promise<FontScaleStatus>;
-  getNetwork: () => Promise<NetworkStatus>;
-  setNetwork: (enabled: boolean) => Promise<NetworkStatus>;
-
-  openLogcat: (url: URL) => Response;
-  takeScreenshot: () => Promise<Uint8Array>;
-  getForegroundApp: () => Promise<ForegroundApp>;
-  getAccessibility: () => Promise<AccessibilitySnapshot>;
-  tapAccessibility: (
-    selector: AccessibilitySelector,
-    record: boolean,
-  ) => Promise<AccessibilityTapResponse>;
-
-  dispatchGesture: (
+  requestContext: DeviceContext;
+  runForPublishedContext: <T>(
+    context: DeviceContext,
+    operation: (captured: DeviceContext) => Promise<T>,
+  ) => Promise<T>;
+  listDevices: (
+    runExec?: typeof import("../exec.ts").execText,
+  ) => Promise<import("../adb.ts").Device[]>;
+  errorResponse: (err: unknown, fallbackStatus?: number) => Response;
+  deviceGrid: (context: DeviceContext) => Promise<DeviceGridResponse>;
+  readJsonBody: (
+    req: Request,
+    maxBytes?: number,
+    context?: DeviceContext,
+    requireUsableContext?: boolean,
+  ) => Promise<unknown>;
+  MAX_JSON_BODY_BYTES: number;
+  switchSession: (
+    serial: string,
+  ) => Promise<{
+    ok: boolean;
+    serial: string;
+    generation: number;
+    device: string;
+  }>;
+  launchEmulator: (
+    opts: import("../emulator.ts").StartEmulatorOpts,
+    dependencies?: import("../emulator.ts").EmulatorRuntimeDependencies,
+  ) => Promise<import("../emulator.ts").EmulatorLaunch>;
+  sessions: DeviceSessionManager<DeviceContext>;
+  listActiveAvds: (
+    devices?: readonly import("../adb.ts").Device[],
+    dependencies?: Pick<
+      import("../emulator.ts").EmulatorRuntimeDependencies,
+      "execText" | "listAllDevices"
+    >,
+  ) => Promise<import("../emulator.ts").RunningAvd[]>;
+  stopCurrentSession: (context: DeviceContext, reason: string) => Promise<void>;
+  killEmulator: (
+    serial: string,
+    runExec?: typeof import("../exec.ts").execText,
+  ) => Promise<void>;
+  runForContext: <T>(
+    context: DeviceContext,
+    operation: (captured: DeviceContext) => Promise<T>,
+  ) => Promise<T>;
+  srv: Bun.Server<WsData>;
+  logcatStream: (context: DeviceContext, req: Request, url: URL) => Response;
+  readAccessibilitySnapshot: (
+    context: DeviceContext,
+    cacheMs?: number,
+  ) => Promise<AccessibilitySnapshot>;
+  accessibilityTapEndpoint: (
+    context: DeviceContext,
+    req: Request,
+  ) => Promise<Response>;
+  gestureEndpoint: (
+    context: DeviceContext,
+    req: Request,
+    type: Gesture["type"],
+    source: string,
+  ) => Promise<Response>;
+  keyEndpoint: (context: DeviceContext, req: Request) => Promise<Response>;
+  responseMetrics: JsonResponseTracker<
+    "health" | "sessionPage" | "sessionExport"
+  >;
+  enqueueGesture: (
+    context: DeviceContext,
     gesture: Gesture,
     source: string,
-    record: boolean,
+    record?: boolean,
+  ) => import("../control-input-queue.ts").ControlInputHandle;
+  setLocation: (
+    serial: string,
+    fix: GeoFix,
+    signal: AbortSignal,
   ) => Promise<void>;
-
-  getSession: () => SessionSnapshot;
-  clearSession: () => SessionSnapshot;
-  replaySession: (multiplier: number) => SessionSnapshot;
-  stopSessionReplay: () => SessionSnapshot;
-
-  installApk: (file: File) => Promise<AppActionResponse>;
-  importFile: (file: File) => Promise<FileImportResponse>;
-  launchApp: (packageName: string, activity?: string) => Promise<AppActionResponse>;
-  clearApp: (packageName: string) => Promise<AppActionResponse>;
-  forceStopApp: (packageName: string) => Promise<AppActionResponse>;
-  grantPermission: (packageName: string, permission: string) => Promise<AppActionResponse>;
-
-  getLocation: () => LocationResponse;
-  setLocation: (fix: GeoFix) => Promise<AppliedGeoFix>;
-  getRoute: () => RoutePlaybackSnapshot;
-  startRoute: (route: RoutePlaybackRequest) => Promise<RoutePlaybackSnapshot>;
-  stopRoute: () => RoutePlaybackSnapshot;
-  controlRoute: (action: RouteControlAction) => RoutePlaybackSnapshot;
+  installEndpoint: (context: DeviceContext, req: Request) => Promise<Response>;
+  fileImportEndpoint: (
+    context: DeviceContext,
+    req: Request,
+  ) => Promise<Response>;
+  appJsonEndpoint: (
+    context: DeviceContext,
+    req: Request,
+    action: (payload: Record<string, unknown>) => unknown | Promise<unknown>,
+  ) => Promise<Response>;
+  applyLocation: (
+    context: DeviceContext,
+    fix: GeoFix,
+    source: string,
+    record?: boolean,
+  ) => Promise<GeoFix & { appliedAt: string }>;
+  MAX_ROUTE_BODY_BYTES: number;
 };

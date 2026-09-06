@@ -303,8 +303,7 @@ export class SessionRecorder {
   }
 
   summary(): SessionSummary {
-    const snapshot = this.snapshot();
-    const { events } = snapshot;
+    const events = this.#events;
     const oldest = events[0] ?? null;
     const newest = events.at(-1) ?? null;
     return {
@@ -316,11 +315,11 @@ export class SessionRecorder {
       newestEventId: newest?.id ?? null,
       oldestEventAt: oldest?.at ?? null,
       newestEventAt: newest?.at ?? null,
-      recording: snapshot.recording,
-      replaying: snapshot.replaying,
-      replayStartedAt: snapshot.replayStartedAt,
-      replayCompletedAt: snapshot.replayCompletedAt,
-      lastError: snapshot.lastError,
+      recording: this.#recording,
+      replaying: this.#replaying,
+      replayStartedAt: this.#replayStartedAt,
+      replayCompletedAt: this.#replayCompletedAt,
+      lastError: this.#lastError,
     };
   }
 
@@ -371,9 +370,11 @@ export class SessionRecorder {
     this.#replayStartedAt = new Date(this.#clock.now()).toISOString();
     this.#replayCompletedAt = null;
     this.#lastError = null;
+    let targetMs = this.#clock.now();
     try {
       for (const event of events) {
-        await this.#legacySleep(Math.max(0, event.delayMs / multiplier));
+        targetMs += event.delayMs / multiplier;
+        await this.#legacySleep(Math.max(0, targetMs - this.#clock.now()));
         if (this.#legacyStopReplay) break;
         if (event.kind === "gesture") {
           await handlers.dispatchGesture(cloneGesture(event.gesture));
@@ -441,11 +442,13 @@ export class SessionRecorder {
     multiplier: number,
   ): Promise<SessionSnapshot> {
     let outcome: "completed" | "cancelled" | "error" = "completed";
+    let targetMs = this.#clock.now();
     try {
       for (const event of events) {
         this.#assertReplayActive(replay);
+        targetMs += event.delayMs / multiplier;
         await this.#clock.delay(
-          Math.max(0, event.delayMs / multiplier),
+          Math.max(0, targetMs - this.#clock.now()),
           replay.controller.signal,
         );
         this.#assertReplayActive(replay);

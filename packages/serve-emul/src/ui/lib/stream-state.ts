@@ -23,6 +23,8 @@ export type StreamWorkerEvent =
   | { type: "stats"; stats: StreamStats };
 
 export type StreamHealth = {
+  serial?: string;
+  generation?: number;
   size: DeviceSize;
   status?: "streaming" | "stopped" | "error";
   lastFrameAt?: string | null;
@@ -55,6 +57,12 @@ function parseSize(value: unknown): DeviceSize {
 
 export function parseStreamHealth(value: unknown): StreamHealth {
   if (!isRecord(value)) throw new Error("health response must be an object");
+  if (value.serial !== undefined && (typeof value.serial !== "string" || !value.serial)) {
+    throw new Error("health serial is invalid");
+  }
+  if (value.generation !== undefined && (typeof value.generation !== "number" || !Number.isSafeInteger(value.generation) || value.generation < 0)) {
+    throw new Error("health generation is invalid");
+  }
   const status = value.status;
   if (
     status !== undefined &&
@@ -82,6 +90,8 @@ export function parseStreamHealth(value: unknown): StreamHealth {
   }
   return {
     size: parseSize(value.size),
+    ...(value.serial === undefined ? {} : { serial: value.serial as string }),
+    ...(value.generation === undefined ? {} : { generation: value.generation as number }),
     ...(status === undefined ? {} : { status }),
     ...(lastFrameAt === undefined ? {} : { lastFrameAt }),
     ...(lastError === undefined ? {} : { lastError }),

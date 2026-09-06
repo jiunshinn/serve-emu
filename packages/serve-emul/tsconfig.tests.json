@@ -4,10 +4,9 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["bun"]
   },
-  "include": ["tests/**/*.ts", "scripts/**/*.ts", "vite.config.ts"],
+  "include": ["tests/**/*.ts", "scripts/**/*.ts", "vite.config.ts", "playwright.config.ts"],
   "exclude": [
     "tests/api-contracts.test.ts",
-    "tests/api-routes.test.ts",
     "tests/app-management-upload.test.ts",
     "tests/device-grid.test.ts",
     "tests/device-session-context.test.ts",

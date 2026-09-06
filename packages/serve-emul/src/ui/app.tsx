@@ -1,3 +1,4 @@
+import { useDeviceSessionSnapshot } from "./lib/device-session-store";
 import {
   createContext,
   memo,
@@ -69,7 +70,7 @@ function useStreamControls(): StreamControls {
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { state, send } = useStream(canvasRef);
+  const { state, send, clearControlError } = useStream(canvasRef);
   const deviceWidth = state.deviceSize?.width;
   const deviceHeight = state.deviceSize?.height;
   const controls = useMemo<StreamControls>(
@@ -86,7 +87,7 @@ export function App() {
 
   return (
     <>
-      <StatusBar status={state.status} deviceSize={state.deviceSize} fps={state.fps} stats={state.stats} />
+      <StatusBar controlError={state.controlError} onDismissError={clearControlError} status={state.status} deviceSize={state.deviceSize} fps={state.fps} stats={state.stats} />
       <StreamControlsContext.Provider value={controls}>
         <AppShell />
       </StreamControlsContext.Provider>
@@ -97,6 +98,7 @@ export function App() {
 const AppShell = memo(function AppShell() {
   const { canvasRef, send, deviceSize } = useStreamControls();
   const keyboardProxyRef = useRef<HTMLInputElement>(null);
+  const deviceSession = useDeviceSessionSnapshot();
   const renderCountRef = useRef(0);
   renderCountRef.current += 1;
   const [accessibilityEnabled, setAccessibilityEnabled] = useState(false);
@@ -104,6 +106,11 @@ const AppShell = memo(function AppShell() {
   const [highlightedAccessibilityId, setHighlightedAccessibilityId] = useState<string | null>(null);
   const [devicesOpen, setDevicesOpen] = useState(true);
   const [keyboardActive, setKeyboardActive] = useState(true);
+
+  useEffect(() => {
+    setAccessibilityNodes([]);
+    setHighlightedAccessibilityId(null);
+  }, [deviceSession.revision]);
 
   // Keyboard input is captured on a hidden, always-focusable proxy input
   // rather than document.body: that's what lets the OS/browser IME attach
@@ -228,7 +235,7 @@ const AppShell = memo(function AppShell() {
           />
         </div>
         <aside className="side-panel">
-          <SideTools
+          <SideTools key={deviceSession.revision}
             accessibilityEnabled={accessibilityEnabled}
             accessibilityNodes={accessibilityNodes}
             highlightedAccessibilityId={highlightedAccessibilityId}

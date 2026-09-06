@@ -1,3 +1,5 @@
+import { deviceSessionStore } from "./device-session-store";
+import { parseStreamHealth, type StreamHealth } from "./stream-state";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
 import {
@@ -19,6 +21,7 @@ export type DeviceSize = { width: number; height: number };
 export type { StreamStats };
 
 export type StreamState = {
+  controlError: string | null;
   status: string;
   generation: number;
   lastRenderedAt: number | null;
@@ -29,11 +32,7 @@ export type StreamState = {
 
 export type Sender = (msg: Record<string, unknown>, ack?: boolean) => void;
 
-type ApiInfo = {
-  size: DeviceSize;
-  status?: "streaming" | "stopped" | "error";
-  lastError?: string | null;
-};
+type ApiInfo = StreamHealth;
 
 // A canvas can transfer control to an OffscreenCanvas only once, so the worker
 // that received it must be reused if the effect re-runs for the same element.
@@ -47,6 +46,7 @@ const HEALTH_REQUEST_TIMEOUT_MS = 5_000;
 export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
   const [state, setState] = useState<StreamState>({
     status: "connecting…",
+    controlError: null,
     generation: 0,
     lastRenderedAt: null,
     fps: 0,
@@ -55,6 +55,8 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
   });
   const workerRef = useRef<Worker | null>(null);
   const clientEpochRef = useRef(0);
+  const requestSequenceRef = useRef(0);
+  const clearControlError = useCallback(() => setState((s) => ({ ...s, controlError: null })), []);
 
   const send = useCallback<Sender>((msg, ack = true) => {
     const clientEpoch = clientEpochRef.current;
@@ -62,7 +64,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     workerRef.current?.postMessage({
       type: "send",
       clientEpoch,
-      text: JSON.stringify(ack ? msg : { ...msg, ack: false }),
+      text: JSON.stringify({ ...msg, requestId: `${clientEpoch}:${++requestSequenceRef.current}`, ...(!ack ? { ack: false } : {}) }),
     });
   }, []);
 
@@ -187,7 +189,11 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
           next = { ...next, generation: currentGeneration, lastRenderedAt };
         }
 
-        if (msg.type === "lifecycle" || msg.type === "rendered") {
+        if (msg.type === "control-error") {
+          next = { ...next, controlError: msg.error };
+        } else if (msg.type === "control-dropped") {
+          next = { ...next, controlError: "Connection unavailable. Input was not sent." };
+        } else if (msg.type === "lifecycle" || msg.type === "rendered") {
           if (currentLifecycle) {
             const status =
               serverTerminalStatus ??
@@ -271,6 +277,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     async function pollHealth() {
       if (cancelled) return;
       const requestSequence = ++healthRequestSequence;
+      const sessionRequest = deviceSessionStore.beginHealthRequest();
       const requestGeneration = currentGeneration;
       const controller = new AbortController();
       healthController = controller;
@@ -281,7 +288,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
 
       try {
         const response = await fetch("/health", { signal: controller.signal });
-        const data = (await response.json()) as ApiInfo;
+        const data = parseStreamHealth(await response.json());
         if (
           cancelled ||
           controller.signal.aborted ||
@@ -290,6 +297,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
         ) {
           return;
         }
+        if (!deviceSessionStore.applyHealth(data, sessionRequest)) return;
         applyServerStatus(data);
       } catch {
         // The stream lifecycle remains authoritative when metadata is
@@ -323,5 +331,5 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     };
   }, [canvasRef]);
 
-  return { state, send };
+  return { state, send, clearControlError };
 }
