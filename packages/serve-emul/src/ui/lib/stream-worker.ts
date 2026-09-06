@@ -1,3 +1,4 @@
+import { StreamPerformance, StreamClockSync } from "./stream-performance";
 import { parseWsServerJson } from "../../shared/websocket-contracts";
 import { buildCodecString, scanAU } from "./h264";
 import { epochNowMs, parseFramePacket } from "../../shared/frame-meta";
@@ -19,11 +20,6 @@ import {
 // main-thread work (React renders, health polling, panels) can never stall
 // frame presentation, and vice versa.
 
-// How deep the decoder's pending queue may grow before we jump to a keyframe to
-// shed latency. Hardware decoders keep a multi-frame pipeline, so a small value
-// like 4 trips on every transient hiccup; 12 (~200ms at 60fps) tolerates spikes
-// while still bounding latency.
-const SOFT_DECODE_QUEUE_SIZE = 12;
 const DECODER_RECOVERY_COOLDOWN_MS = 500;
 const KEYFRAME_REQUEST_COOLDOWN_MS = 400;
 const FRAME_QUEUE_SIZE = 3;
@@ -37,13 +33,27 @@ export type StreamStats = {
   e2eMs: number | null;
   codec: string | null;
   rendered: boolean;
+  decodeMsP95: number | null;
+  presentMsP95: number | null;
+  decodePendingMs: number;
+  recoveries: number;
+  clockUncertaintyMs: number | null;
 };
 
 type StreamWorkerEventPayload =
-  | { type: "control-error"; generation: number; error: string; requestId?: string }
+  | {
+      type: "control-error";
+      generation: number;
+      error: string;
+      requestId?: string;
+    }
   | { type: "lifecycle"; generation: number; state: StreamLifecycleState }
   | { type: "status"; generation: number; status: string }
-  | { type: "session"; generation: number; size: { width: number; height: number } }
+  | {
+      type: "session";
+      generation: number;
+      size: { width: number; height: number };
+    }
   | { type: "rendered"; generation: number; at: number }
   | { type: "stats"; generation: number; stats: StreamStats }
   | {
@@ -76,7 +86,9 @@ const scheduleFrame: (cb: () => void) => number =
     ? (cb) => requestAnimationFrame(cb)
     : (cb) => setTimeout(cb, 16) as unknown as number;
 const cancelFrame: (handle: number) => void =
-  typeof cancelAnimationFrame === "function" ? (h) => cancelAnimationFrame(h) : (h) => clearTimeout(h);
+  typeof cancelAnimationFrame === "function"
+    ? (h) => cancelAnimationFrame(h)
+    : (h) => clearTimeout(h);
 
 let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
@@ -102,7 +114,16 @@ let initFailureStatus: StreamFatalStatus | null = null;
 // Per-frame receive/server timestamps keyed by chunk timestamp, so decoded
 // VideoFrames (which carry the same timestamp) can be matched back for
 // latency measurement.
-type FrameTiming = { recvMs: number; serverTsMs: number | null };
+type FrameTiming = {
+  recvMs: number;
+  serverTsMs: number | null;
+  decodedAt: number | null;
+};
+const streamPerformance = new StreamPerformance();
+const clockSync = new StreamClockSync();
+let pendingClockSync: number | null = null;
+let lastClockSyncAt = Number.NEGATIVE_INFINITY;
+let recoveryCount = 0;
 const resources = new StreamSessionResources<VideoFrame, FrameTiming>({
   frameCapacity: FRAME_QUEUE_SIZE,
   timingCapacity: PENDING_TIMING_LIMIT,
@@ -139,13 +160,21 @@ const postDerivedStatus = (now = epochNowMs(), force = false) => {
 
 const postStats = (includeLifecycleSnapshot = true) => {
   const generation = lifecycle.generation;
+  requestClockSync();
   const stats: StreamStats = {
     fps: renderedSinceTick,
     decodeQueue: decoder?.decodeQueueSize ?? 0,
-    transitMs: transitCount > 0 ? Math.round((transitSumMs / transitCount) * 10) / 10 : null,
+    transitMs:
+      transitCount > 0
+        ? Math.round((transitSumMs / transitCount) * 10) / 10
+        : null,
     e2eMs: e2eCount > 0 ? Math.round((e2eSumMs / e2eCount) * 10) / 10 : null,
     codec: lifecycle.codec,
     rendered: lifecycle.rendered,
+    ...streamPerformance.takeStats(),
+    decodePendingMs: Math.round(streamPerformance.pendingMs(epochNowMs())),
+    recoveries: recoveryCount,
+    clockUncertaintyMs: clockSync.estimate(epochNowMs())?.uncertaintyMs ?? null,
   };
   renderedSinceTick = 0;
   transitSumMs = 0;
@@ -178,6 +207,7 @@ const resetSessionResources = () => {
   closeDecoderInstance();
   cancelRender();
   resources.reset();
+  streamPerformance.reset();
   sawKeyframe = false;
   frameIdx = 0;
   lastDecoderRecoveryAt = Number.NEGATIVE_INFINITY;
@@ -197,6 +227,7 @@ const beginWorkerGeneration = (
   at = epochNowMs(),
 ): number => {
   lifecycle = beginStreamGeneration(lifecycle, { phase, reason, at });
+  if (reason !== "decoder-recovery") recoveryCount = 0;
   resetSessionResources();
   lastPostedStatus = null;
   postLifecycle();
@@ -227,6 +258,21 @@ const applyLifecycle = (
   return true;
 };
 
+const requestClockSync = () => {
+  const now = epochNowMs();
+  if (!ws || ws.readyState !== WebSocket.OPEN || now - lastClockSyncAt < 5000)
+    return;
+  lastClockSyncAt = now;
+  pendingClockSync = now;
+  try {
+    ws.send(
+      JSON.stringify({ type: "clock-sync", clientTsMs: now, ack: false }),
+    );
+  } catch {
+    pendingClockSync = null;
+  }
+};
+
 const requestKeyframe = (generation = lifecycle.generation) => {
   if (!isCurrentStreamGeneration(lifecycle, generation)) return;
   const now = performance.now();
@@ -248,8 +294,13 @@ const requestKeyframe = (generation = lifecycle.generation) => {
 // so the stream stays smooth instead of freezing on a teardown.
 const recoverToKeyframe = () => {
   const now = performance.now();
-  if (now - lastDecoderRecoveryAt < DECODER_RECOVERY_COOLDOWN_MS && droppingUntilKeyframe) return;
+  if (
+    now - lastDecoderRecoveryAt < DECODER_RECOVERY_COOLDOWN_MS &&
+    droppingUntilKeyframe
+  )
+    return;
   lastDecoderRecoveryAt = now;
+  if (!droppingUntilKeyframe) recoveryCount++;
   droppingUntilKeyframe = true;
   requestKeyframe(lifecycle.generation);
 };
@@ -266,6 +317,7 @@ const beginDecoderRecovery = () => {
     return;
   }
   const generation = beginWorkerGeneration("recovering", "decoder-recovery");
+  recoveryCount++;
   lastDecoderRecoveryAt = now;
   droppingUntilKeyframe = true;
   requestKeyframe(generation);
@@ -273,7 +325,8 @@ const beginDecoderRecovery = () => {
 
 const renderFromQueue = (generation: number) => {
   renderHandle = 0;
-  if (!isCurrentStreamGeneration(lifecycle, generation) || !canvas || !ctx) return;
+  if (!isCurrentStreamGeneration(lifecycle, generation) || !canvas || !ctx)
+    return;
 
   // Latency-first policy: each vsync, present the NEWEST decoded frame and
   // discard the staler ones still queued. They were superseded before they
@@ -289,7 +342,10 @@ const renderFromQueue = (generation: number) => {
   }
 
   try {
-    if (canvas.width !== frame.displayWidth || canvas.height !== frame.displayHeight) {
+    if (
+      canvas.width !== frame.displayWidth ||
+      canvas.height !== frame.displayHeight
+    ) {
       canvas.width = frame.displayWidth;
       canvas.height = frame.displayHeight;
     }
@@ -305,10 +361,18 @@ const renderFromQueue = (generation: number) => {
   const timing = resources.takeTiming(frame.timestamp);
   if (timing) {
     if (timing.serverTsMs !== null) {
-      e2eSumMs += epochNowMs() - timing.serverTsMs;
-      e2eCount++;
+      const elapsed = clockSync.elapsedSinceServer(
+        timing.serverTsMs,
+        epochNowMs(),
+      );
+      if (elapsed !== null) {
+        e2eSumMs += elapsed;
+        e2eCount++;
+      }
     }
   }
+  if (timing?.decodedAt !== null && timing?.decodedAt !== undefined)
+    streamPerformance.presented(timing.decodedAt, epochNowMs());
   frame.close();
   const firstRenderedFrame = !lifecycle.rendered;
   const renderedAt = epochNowMs();
@@ -332,24 +396,36 @@ const ensureDecoder = (spsBytes: Uint8Array, generation: number): boolean => {
   let dec: VideoDecoder;
   dec = new VideoDecoder({
     output: (frame) => {
-      if (decoder !== dec || !isCurrentStreamGeneration(lifecycle, generation)) {
+      if (
+        decoder !== dec ||
+        !isCurrentStreamGeneration(lifecycle, generation)
+      ) {
         frame.close();
         return;
       }
+      const now = epochNowMs();
+      streamPerformance.decoded(frame.timestamp, now);
+      const timing = resources.peekTiming(frame.timestamp);
+      if (timing) timing.decodedAt = now;
       resources.pushFrame(frame);
       if (!renderHandle) {
         renderHandle = scheduleFrame(() => renderFromQueue(generation));
       }
     },
     error: (e) => {
-      if (decoder !== dec || !isCurrentStreamGeneration(lifecycle, generation)) return;
+      if (decoder !== dec || !isCurrentStreamGeneration(lifecycle, generation))
+        return;
       console.error("VideoDecoder error", e);
       postStatus("decoder error");
       beginDecoderRecovery();
     },
   });
   try {
-    dec.configure({ codec, optimizeForLatency: true, hardwareAcceleration: "prefer-hardware" });
+    dec.configure({
+      codec,
+      optimizeForLatency: true,
+      hardwareAcceleration: "prefer-hardware",
+    });
     if (!isCurrentStreamGeneration(lifecycle, generation)) {
       dec.close();
       return false;
@@ -385,12 +461,16 @@ const feedFrame = (raw: ArrayBuffer, generation: number) => {
   }
   applyLifecycle({ type: "packet-received", generation, at: recvMs });
   if (packet.serverTsMs !== null) {
-    transitSumMs += recvMs - packet.serverTsMs;
-    transitCount++;
+    const elapsed = clockSync.elapsedSinceServer(packet.serverTsMs, recvMs);
+    if (elapsed !== null) {
+      transitSumMs += elapsed;
+      transitCount++;
+    }
   }
   const needsScan =
     packet.isKey === null ||
-    (packet.isKey && (!decoder || decoder.state !== "configured" || droppingUntilKeyframe));
+    (packet.isKey &&
+      (!decoder || decoder.state !== "configured" || droppingUntilKeyframe));
   const scanned = needsScan ? scanAU(packet.data) : null;
   const isKey = packet.isKey ?? scanned?.isKey ?? false;
   const spsBytes = scanned?.spsBytes ?? null;
@@ -410,7 +490,7 @@ const feedFrame = (raw: ArrayBuffer, generation: number) => {
     return;
   }
 
-  if (decoder.decodeQueueSize > SOFT_DECODE_QUEUE_SIZE) {
+  if (streamPerformance.shouldRecover(decoder.decodeQueueSize, recvMs)) {
     recoverToKeyframe();
     return;
   }
@@ -424,6 +504,12 @@ const feedFrame = (raw: ArrayBuffer, generation: number) => {
   }
   const timestamp = packet.timestamp ?? Math.round((frameIdx * 1_000_000) / 60);
   try {
+    streamPerformance.submitted(timestamp, recvMs);
+    resources.rememberTiming(timestamp, {
+      recvMs,
+      serverTsMs: packet.serverTsMs,
+      decodedAt: null,
+    });
     decoder.decode(
       new EncodedVideoChunk({
         type: isKey ? "key" : "delta",
@@ -432,7 +518,6 @@ const feedFrame = (raw: ArrayBuffer, generation: number) => {
       }),
     );
     frameIdx++;
-    resources.rememberTiming(timestamp, { recvMs, serverTsMs: packet.serverTsMs });
     if (isKey) {
       applyLifecycle(
         { type: "keyframe-submitted", generation, at: recvMs },
@@ -451,6 +536,9 @@ const connect = (reason: "connect" | "reconnect") => {
     clearTimeout(retryTimer);
     retryTimer = null;
   }
+  clockSync.reset();
+  pendingClockSync = null;
+  lastClockSyncAt = Number.NEGATIVE_INFINITY;
   const previousSocket = ws;
   ws = null;
   try {
@@ -473,9 +561,14 @@ const connect = (reason: "connect" | "reconnect") => {
   sock.onopen = () => {
     if (stopped || ws !== sock) return;
     reconnectDelay = 500;
+    requestClockSync();
     controlDropNotifiedGeneration = null;
     applyLifecycle(
-      { type: "socket-open", generation: lifecycle.generation, at: epochNowMs() },
+      {
+        type: "socket-open",
+        generation: lifecycle.generation,
+        at: epochNowMs(),
+      },
       true,
     );
   };
@@ -488,7 +581,10 @@ const connect = (reason: "connect" | "reconnect") => {
     ws = null;
     const retryIn = reconnectDelay;
     beginWorkerGeneration("disconnected", "disconnect");
-    postStatus(`disconnected — retrying in ${Math.round(retryIn / 1000)}s`, true);
+    postStatus(
+      `disconnected — retrying in ${Math.round(retryIn / 1000)}s`,
+      true,
+    );
     reconnectDelay = Math.min(Math.round(reconnectDelay * 1.6), 5000);
     retryTimer = setTimeout(() => {
       retryTimer = null;
@@ -500,17 +596,33 @@ const connect = (reason: "connect" | "reconnect") => {
     if (typeof e.data === "string") {
       try {
         const msg = parseWsServerJson(e.data);
+        if ("type" in msg && msg.type === "clock-sync") {
+          if (msg.clientTsMs === pendingClockSync) {
+            clockSync.observe(msg.clientTsMs, epochNowMs(), msg.serverTsMs);
+            pendingClockSync = null;
+          }
+          return;
+        }
         if ("ok" in msg && !msg.ok) {
-          postEvent({ type: "control-error", generation: lifecycle.generation, error: msg.error, requestId: msg.requestId });
+          postEvent({
+            type: "control-error",
+            generation: lifecycle.generation,
+            error: msg.error,
+            requestId: msg.requestId,
+          });
           return;
         }
         if (
-          "type" in msg && msg.type === "video-session" &&
+          "type" in msg &&
+          msg.type === "video-session" &&
           msg.size &&
           Number.isFinite(msg.size.width) &&
           Number.isFinite(msg.size.height)
         ) {
-          const generation = beginWorkerGeneration("awaiting-keyframe", "video-session");
+          const generation = beginWorkerGeneration(
+            "awaiting-keyframe",
+            "video-session",
+          );
           droppingUntilKeyframe = true;
           postEvent({ type: "session", generation, size: msg.size });
           requestKeyframe(generation);
@@ -524,7 +636,8 @@ const connect = (reason: "connect" | "reconnect") => {
 
 const start = () => {
   stopped = false;
-  if (statsTimer === null) statsTimer = setInterval(postStats, STATS_INTERVAL_MS);
+  if (statsTimer === null)
+    statsTimer = setInterval(postStats, STATS_INTERVAL_MS);
   connect("connect");
 };
 
@@ -562,12 +675,17 @@ workerPort.addEventListener("message", (e: MessageEvent) => {
     case "init": {
       if (!validClientEpoch(msg.clientEpoch)) return;
       activeClientEpoch = msg.clientEpoch;
-      if (typeof VideoDecoder === "undefined" || typeof EncodedVideoChunk === "undefined") {
+      if (
+        typeof VideoDecoder === "undefined" ||
+        typeof EncodedVideoChunk === "undefined"
+      ) {
         publishInitFailure("WebCodecs unsupported");
         return;
       }
       canvas = msg.canvas;
-      ctx = canvas.getContext("2d", { alpha: false }) as OffscreenCanvasRenderingContext2D | null;
+      ctx = canvas.getContext("2d", {
+        alpha: false,
+      }) as OffscreenCanvasRenderingContext2D | null;
       if (!ctx) {
         publishInitFailure("canvas unavailable");
         return;
@@ -578,7 +696,11 @@ workerPort.addEventListener("message", (e: MessageEvent) => {
       break;
     }
     case "connect": {
-      if (!validClientEpoch(msg.clientEpoch) || msg.clientEpoch < activeClientEpoch) return;
+      if (
+        !validClientEpoch(msg.clientEpoch) ||
+        msg.clientEpoch < activeClientEpoch
+      )
+        return;
       activeClientEpoch = msg.clientEpoch;
       if (initFailureStatus && isStreamFatalStatus(initFailureStatus)) {
         publishInitFailure(initFailureStatus);

@@ -1538,6 +1538,10 @@ export async function startServer(
           acknowledge = wantsAck(payload);
           requestId = parseWsRequestId(payload?.requestId);
           const msg = parseWsClientMessage(payload);
+          if (msg.type === "clock-sync") {
+            reply({ type: "clock-sync", clientTsMs: msg.clientTsMs, serverTsMs: epochNowMs() });
+            return;
+          }
           if (msg.type === "reset-video") {
             const accepted = enqueueVideoReset(
               context,

@@ -409,6 +409,10 @@ export class StreamSessionResources<
     this.#timings.set(timestamp, timing);
   }
 
+  peekTiming(timestamp: number): Timing | undefined {
+    return this.#timings.get(timestamp);
+  }
+
   takeTiming(timestamp: number): Timing | undefined {
     const timing = this.#timings.get(timestamp);
     this.#timings.delete(timestamp);
