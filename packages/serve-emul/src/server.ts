@@ -195,6 +195,7 @@ type WsData = {
 };
 
 type Client = {
+  touches: Map<number, { gesture: Extract<Gesture, { type: "touch" }>; record: boolean }>;
   id: number;
   ws: ServerWebSocket<WsData>;
   context: DeviceContext;
@@ -766,6 +767,8 @@ export async function startServer(
     return snapshot;
   };
 
+  let nextTouchId = 1;
+
   const enqueueGesture = (
     context: DeviceContext,
     gesture: Gesture,
@@ -779,6 +782,37 @@ export async function startServer(
     const accepted = context.inputQueue.enqueue(gesture, { ...context.screen });
     if (record) context.recorder.recordGesture(accepted.gesture, source);
     return accepted;
+  };
+
+  const enqueueClientGesture = (ws: ServerWebSocket<WsData>, gesture: Gesture, record: boolean) => {
+    const client = ws.data.handle;
+    if (gesture.type !== "touch") return enqueueGesture(ws.data.context, gesture, "ws", record);
+    if (!client) throw new Error("WebSocket client is not open");
+    const sourceId = gesture.pointerId ?? 0;
+    const previous = client.touches.get(sourceId);
+    if (gesture.action === "down" ? previous : !previous) {
+      throw new Error(gesture.action === "down" ? "pointer is already down" : "pointer is not down");
+    }
+    if (!previous && !Number.isSafeInteger(nextTouchId)) throw new Error("pointer id space exhausted");
+    const mapped = { ...gesture, pointerId: previous?.gesture.pointerId ?? nextTouchId++ };
+    const accepted = enqueueGesture(ws.data.context, mapped, "ws", record);
+    if (gesture.action === "up") client.touches.delete(sourceId);
+    else client.touches.set(sourceId, { gesture: mapped, record: record || previous?.record === true });
+    return accepted;
+  };
+
+  const releaseClientTouches = (client: Client) => {
+    // The input queue reserves an UP slot for every admitted DOWN, even when full.
+    // Never redirect a late disconnect's releases onto a replacement session.
+    if (sessions.isCurrent(client.context)) {
+      for (const { gesture, record } of client.touches.values()) {
+        try {
+          const accepted = enqueueGesture(client.context, { ...gesture, action: "up" }, "ws:disconnect", record);
+          void accepted.completion.catch(() => {});
+        } catch {}
+      }
+    }
+    client.touches.clear();
   };
 
   const dispatchGesture = (
@@ -2148,6 +2182,7 @@ export async function startServer(
           return;
         }
         const handle: Client = {
+          touches: new Map(),
           id: ws.data.id,
           ws,
           context,
@@ -2202,12 +2237,7 @@ export async function startServer(
             return;
           }
           const msg = parseGesture(payload);
-          const accepted = enqueueGesture(
-            context,
-            msg,
-            "ws",
-            shouldRecord(payload),
-          );
+          const accepted = enqueueClientGesture(ws, msg, shouldRecord(payload));
           void accepted.completion
             .then((result) => {
               if (acknowledge) {
@@ -2226,7 +2256,10 @@ export async function startServer(
         }
       },
       close(ws) {
-        if (ws.data.handle) ws.data.context.clients.delete(ws.data.handle);
+        if (ws.data.handle) {
+          releaseClientTouches(ws.data.handle);
+          ws.data.context.clients.delete(ws.data.handle);
+        }
       },
     },
   };
