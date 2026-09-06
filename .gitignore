@@ -7,3 +7,6 @@ dist
 coverage
 packages/serve-emul/vendor/scrcpy-server-v*
 package-lock.json
+
+playwright-report/
+test-results/
