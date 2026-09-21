@@ -1,22 +1,22 @@
-# serve-emul Agent Notes
+# serve-emu Agent Notes
 
-`serve-emul` is a Bun workspace package that streams an Android emulator or device through scrcpy, forwards H.264 over WebSockets, and decodes it in the browser with WebCodecs. Optimize changes for low latency, protocol correctness, and agent-friendly control APIs.
+`serve-emu` is a Bun workspace package that streams an Android emulator or device through scrcpy, forwards H.264 over WebSockets, and decodes it in the browser with WebCodecs. Optimize changes for low latency, protocol correctness, and agent-friendly control APIs.
 
 ## Project Layout
 
-- Root scripts delegate to the `serve-emul` workspace package.
-- Main package: `packages/serve-emul`.
-- CLI entry point: `packages/serve-emul/src/cli.ts`.
-- HTTP, WebSocket, health, and REST APIs: `packages/serve-emul/src/server.ts`.
-- scrcpy process, adb forward tunnel, socket setup, and frame parsing: `packages/serve-emul/src/scrcpy.ts`.
-- scrcpy control socket message encoding for taps, swipes, keys, text, and video reset: `packages/serve-emul/src/input.ts`.
-- Android emulator discovery and launch helpers: `packages/serve-emul/src/emulator.ts`.
-- ADB helpers: `packages/serve-emul/src/adb.ts`.
-- App install/launch/clear/grant/import helpers: `packages/serve-emul/src/app-management.ts`.
-- Location and route playback: `packages/serve-emul/src/location.ts` and `packages/serve-emul/src/route-playback.ts`.
-- Session recording/replay: `packages/serve-emul/src/session-recorder.ts`.
-- React UI: `packages/serve-emul/src/ui`.
-- Vendored scrcpy downloader and pinned version: `packages/serve-emul/scripts/fetch-scrcpy.ts`.
+- Root scripts delegate to the `serve-emu` workspace package.
+- Main package: `packages/serve-emu`.
+- CLI entry point: `packages/serve-emu/src/cli.ts`.
+- HTTP, WebSocket, health, and REST APIs: `packages/serve-emu/src/server.ts`.
+- scrcpy process, adb forward tunnel, socket setup, and frame parsing: `packages/serve-emu/src/scrcpy.ts`.
+- scrcpy control socket message encoding for taps, swipes, keys, text, and video reset: `packages/serve-emu/src/input.ts`.
+- Android emulator discovery and launch helpers: `packages/serve-emu/src/emulator.ts`.
+- ADB helpers: `packages/serve-emu/src/adb.ts`.
+- App install/launch/clear/grant/import helpers: `packages/serve-emu/src/app-management.ts`.
+- Location and route playback: `packages/serve-emu/src/location.ts` and `packages/serve-emu/src/route-playback.ts`.
+- Session recording/replay: `packages/serve-emu/src/session-recorder.ts`.
+- React UI: `packages/serve-emu/src/ui`.
+- Vendored scrcpy downloader and pinned version: `packages/serve-emu/scripts/fetch-scrcpy.ts`.
 
 Prefer kebab-case for TypeScript and JavaScript filenames.
 
@@ -24,20 +24,20 @@ Prefer kebab-case for TypeScript and JavaScript filenames.
 
 ```sh
 bun install
-bun run --filter serve-emul setup
-bun run packages/serve-emul/src/cli.ts
+bun run --filter serve-emu setup
+bun run packages/serve-emu/src/cli.ts
 bun run dev
-bun run --filter serve-emul dev:ui
-bun run --filter serve-emul test
-bun run --filter serve-emul typecheck
-bun run --filter serve-emul typecheck:ui
-bun run --filter serve-emul build
+bun run --filter serve-emu dev:ui
+bun run --filter serve-emu test
+bun run --filter serve-emu typecheck
+bun run --filter serve-emu typecheck:ui
+bun run --filter serve-emu build
 bun run docs:check
 bun run check
 ```
 
 `setup` downloads the pinned scrcpy server into
-`packages/serve-emul/vendor/` and builds the browser UI. The CLI also runs the
+`packages/serve-emu/vendor/` and builds the browser UI. The CLI also runs the
 scrcpy setup lazily on first start.
 
 ## Runtime Assumptions
@@ -51,10 +51,10 @@ scrcpy setup lazily on first start.
 
 ## scrcpy Protocol Notes
 
-The canonical [protocol reference](packages/serve-emul/docs/protocol.md) is the
+The canonical [protocol reference](packages/serve-emu/docs/protocol.md) is the
 source of truth for scrcpy v3/v4 framing, control packets, `SEMU` metadata,
 golden bytes, and the scrcpy upgrade checklist. The server version remains
-pinned in `packages/serve-emul/scripts/fetch-scrcpy.ts`; update that marker, the
+pinned in `packages/serve-emu/scripts/fetch-scrcpy.ts`; update that marker, the
 reference, and parser fixtures together whenever it changes.
 
 Keep protocol-sensitive behavior low-latency and join-safe: detect the video
@@ -74,7 +74,7 @@ second byte-layout description here that can drift from the tested reference.
 
 ## UI Guidance
 
-- The UI lives under `packages/serve-emul/src/ui` and is built by Vite.
+- The UI lives under `packages/serve-emu/src/ui` and is built by Vite.
 - Keep streaming decode logic in `src/ui/lib/use-stream.ts` and H.264 helpers in `src/ui/lib/h264.ts`.
 - Device controls should call the local REST/WebSocket APIs instead of duplicating server-side adb or scrcpy logic in the UI.
 - When changing the stream protocol, update both the server frame metadata writer and the UI reader together.
@@ -91,7 +91,7 @@ For runtime or protocol changes, also test manually with a booted emulator or de
 
 ```sh
 adb devices
-bun run packages/serve-emul/src/cli.ts
+bun run packages/serve-emu/src/cli.ts
 ```
 
 Verify relevant flows: first video frame, browser refresh recovery, multiple tabs, tap/swipe/text/key input, `/api/screenshot`, changed REST APIs, logcat SSE, app management, location, route playback, and session replay when touched.

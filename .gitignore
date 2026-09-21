@@ -5,7 +5,7 @@ dist
 .env*
 *.bun-build
 coverage
-packages/serve-emul/vendor/scrcpy-server-v*
+packages/serve-emu/vendor/scrcpy-server-v*
 package-lock.json
 
 playwright-report/

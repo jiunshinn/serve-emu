@@ -22,19 +22,19 @@ jobs:
       matrix:
         include:
           - name: Complete package check
-            command: bun run --filter serve-emul check
+            command: bun run --filter serve-emu check
           - name: Unit tests
-            command: bun run --filter serve-emul test
+            command: bun run --filter serve-emu test
           - name: Critical coverage
-            command: bun run --filter serve-emul coverage
+            command: bun run --filter serve-emu coverage
           - name: Server typecheck
-            command: bun run --filter serve-emul typecheck
+            command: bun run --filter serve-emu typecheck
           - name: UI typecheck
-            command: bun run --filter serve-emul typecheck:ui
+            command: bun run --filter serve-emu typecheck:ui
           - name: Test and script typecheck
-            command: bun run --filter serve-emul typecheck:tests
+            command: bun run --filter serve-emu typecheck:tests
           - name: Production build
-            command: bun run --filter serve-emul build
+            command: bun run --filter serve-emu build
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -72,14 +72,14 @@ jobs:
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
       - name: Install Chromium
-        working-directory: packages/serve-emul
+        working-directory: packages/serve-emu
         run: bunx playwright install --with-deps chromium
       - name: Test built UI and production WebSocket pipeline
-        run: bun run --filter serve-emul test:browser
+        run: bun run --filter serve-emu test:browser
       - name: Preserve browser failure evidence
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: browser-failure-evidence
-          path: packages/serve-emul/test-results/
+          path: packages/serve-emu/test-results/
           retention-days: 7

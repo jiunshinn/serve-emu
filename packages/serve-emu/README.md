@@ -1,3 +1,5 @@
+<!-- Generated from ../../README.md by scripts/sync-readme.ts. Do not edit directly. -->
+
 # serve-emu
 
 Host your Android emulator or attached Android device for agent workflows like Codex, Cursor, Claude Desktop, and browser-based QA. `serve-emu` streams the screen locally, over your LAN, or through your tunnel of choice, then accepts low-latency input and device-control commands over HTTP and WebSocket.
@@ -20,7 +22,7 @@ Use `@latest` for one-off runs so Bun/npm fetches the newest published version i
 
 ## Status
 
-Current package version: see [`packages/serve-emu/package.json`](packages/serve-emu/package.json) and [`packages/serve-emu/CHANGELOG.md`](packages/serve-emu/CHANGELOG.md).
+Current package version: see [`package.json`](package.json) and [`CHANGELOG.md`](CHANGELOG.md).
 
 Working:
 
@@ -84,7 +86,7 @@ bun run packages/serve-emu/src/cli.ts
 # -> http://localhost:3300
 ```
 
-`setup` downloads the pinned `scrcpy-server-v4.0` into `packages/serve-emu/vendor/` and builds the browser UI. The CLI also runs the scrcpy setup lazily on first start, so you can skip the setup step for a quick local run.
+`setup` downloads the pinned `scrcpy-server-v4.0` into `vendor/` and builds the browser UI. The CLI also runs the scrcpy setup lazily on first start, so you can skip the setup step for a quick local run.
 
 ## CLI
 
@@ -429,7 +431,7 @@ Connect to `/ws` for the raw Annex-B H.264 stream. Send JSON control messages ov
 
 Use `/ws?frame-meta=1` to receive a 24-byte `SEMU` v2 frame metadata header before each H.264 access unit: magic `SEMU` (4B), version=2 (1B), flags (1B, bit 0 = keyframe), reserved (2B), PTS (8B BE, µs), and the server send time (8B BE, epoch µs). Same-host clients can compare the send time against their own clock to measure transit and glass-to-glass latency. The bundled UI uses this mode to avoid per-frame NAL scans and to track PTS/keyframe/latency state.
 
-See the [protocol reference](packages/serve-emu/docs/protocol.md) for the complete scrcpy v3/v4 framing, control packet, and `SEMU` v1/v2 wire formats.
+See the [protocol reference](docs/protocol.md) for the complete scrcpy v3/v4 framing, control packet, and `SEMU` v1/v2 wire formats.
 
 ## How It Works
 
@@ -515,7 +517,7 @@ Environment variables use the `SERVE_EMU_` prefix.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, validation steps, scrcpy protocol notes, and pull request guidelines.
+See [`CONTRIBUTING.md`](https://github.com/jiunshinn/serve-emu/blob/main/CONTRIBUTING.md) for development setup, validation steps, scrcpy protocol notes, and pull request guidelines.
 
 ## License
 

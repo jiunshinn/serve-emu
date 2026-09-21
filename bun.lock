@@ -9,11 +9,11 @@
         "typescript": "^5.6.0",
       },
     },
-    "packages/serve-emul": {
-      "name": "serve-emul",
-      "version": "0.0.5",
+    "packages/serve-emu": {
+      "name": "serve-emu",
+      "version": "0.0.6",
       "bin": {
-        "serve-emul": "src/cli.ts",
+        "serve-emu": "src/cli.ts",
       },
       "dependencies": {
         "@fastify/busboy": "^3.2.0",
@@ -373,7 +373,7 @@
 
     "semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
 
-    "serve-emul": ["serve-emul@workspace:packages/serve-emul"],
+    "serve-emu": ["serve-emu@workspace:packages/serve-emu"],
 
     "smol-toml": ["smol-toml@1.7.0", "", {}, "sha512-aqVvWoyO21L23mb+drl4RmMXbf6N7FdHjAhTRA9ZBL7apWBgfWC16KjrASI+1p9GAroljyMHj6fK67i0UiTNvQ=="],
 
