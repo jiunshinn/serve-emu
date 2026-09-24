@@ -154,7 +154,7 @@ Requests without a valid token get `401`; WebSocket upgrades and state-changing 
 
 The single biggest factor for stutter-free emulator streaming is the **emulator GPU mode**, not the bit rate or the transport. Many AVDs default to `auto`, which on some hosts (notably Apple Silicon) falls back to a **software Vulkan compositor** (`llvmpipe`/`lavapipe`). That caps the guest at a janky ~20fps with dropped frames, so the stream stutters no matter how high you set `--max-fps` or `--bit-rate`.
 
-`serve-emu` launches `--avd` emulators with **`-gpu host`** by default, which renders on the real GPU (Metal/Vulkan) for smooth ~60fps playback (measured: guest jank dropped from 10–19% to 0%). Override with `--gpu <mode>` when needed:
+`serve-emu` launches emulators with **`-gpu host`** by default, including **Start** in the browser and `/api/avds/start`. This uses the real GPU (Metal/Vulkan). Already-running emulators keep their current GPU mode: stop and start the AVD to apply the default. Override CLI launches with `--gpu <mode>` when needed:
 
 ```sh
 # default — real GPU, smooth
@@ -171,6 +171,10 @@ emulator @Pixel_8 -gpu host
 ```
 
 You can confirm the mode in the emulator log (`vulkan_mode_selected:host` = good; `lavapipe`/`llvmpipe` = software fallback) or via `adb shell dumpsys gfxinfo <pkg>` (look for a low "Janky frames" percentage while scrolling). For an extra fps margin, lower `--max-size` to stream at a smaller resolution.
+
+The FPS counter counts new frames, so a static screen can show a few FPS or
+`idle`. Measure while scrolling or playing video. In a local Pixel Fold test
+with host GPU rendering, scrolling streamed about 57 FPS at 1228×1024.
 
 ## Browser UI
 
@@ -216,7 +220,36 @@ refreshes reuse one `adb devices` snapshot while resolving running AVD names.
 Long install/import work uses a background lane; the default executor reserves
 one active slot and eight queue positions for interactive work such as GPS.
 
+Create an emulator from **Add emulator** in the Devices panel. Choose a name,
+SDK hardware profile (including Fold-in, Flip-style and
+Pixel Fold profiles when installed), and a system image compatible with the
+host CPU. Creation does not start the device or change the active session;
+use **Start** in the Devices panel afterward. Foldable profiles run stock
+Android, not Samsung One UI.
+
+Creation requires Android SDK Command-line Tools and Java 17 or newer. Install
+the tools through Android Studio → SDK Manager → SDK Tools, and set
+`ANDROID_HOME` to the SDK directory. Set `JAVA_HOME` if Java is not on PATH;
+Android Studio's bundled JBR can be used. System images must already be installed
+through SDK Manager → SDK Platforms (Show Package Details). The dialog includes
+setup guidance and a reload action. Existing AVDs are never overwritten.
+
 AVD lifecycle helpers:
+
+```sh
+# Discover hardware profile IDs and installed, host-compatible image IDs.
+curl "$BASE/api/avds/catalog"
+
+# Use profile/image IDs returned by the catalog.
+curl -X POST "$BASE/api/avds/create" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"My_Fold","profile":"pixel_fold","image":"system-images;android-34;google_apis_playstore;arm64-v8a"}'
+```
+
+Creation returns HTTP 201 with `{ "ok": true, "avd": "My_Fold" }`.
+Names use 1–80 letters, numbers, underscores or hyphens and begin with a letter
+or number. Duplicate names and concurrent creation requests return HTTP 409;
+missing or failing SDK tools return HTTP 503 with setup guidance.
 
 ```sh
 curl -X POST "$BASE/api/avds/start" \
@@ -227,6 +260,35 @@ curl -X POST "$BASE/api/avds/stop" \
   -H 'Content-Type: application/json' \
   -d '{"serial":"emulator-5554"}'
 ```
+
+### Foldable Testing
+
+Select a running Pixel Fold or Fold-in AVD, then open **Foldable** in the tools
+sidebar. **Fold**, **Half-open**, and **Unfold** use the emulator’s native
+hinge/posture controls, so Android receives actual device-state changes. The
+panel reads Android’s committed posture; non-foldable and physical devices show
+setup guidance. Video and touch coordinates follow the active display size.
+Half-open selects a hinge posture; the app decides whether to show a tabletop
+or two-pane layout.
+
+The browser mirrors a flat image of the active display, not a 3D bent device.
+Half-open keeps the entire inner screen active and may look unchanged on an
+app's home screen. For tabletop testing, use **Orientation** to turn the hinge
+horizontally and open an app screen that responds to that posture.
+
+```sh
+curl "$BASE/api/foldable"
+curl -X POST "$BASE/api/foldable" \
+  -H 'Content-Type: application/json' \
+  -d '{"posture":"folded"}'
+# Other postures: "half-open", "unfolded".
+```
+
+Posture actions are recorded by default and replay alongside gestures and
+location changes. Pass `"record": false` to omit an action. Use the **Session**
+tool to replay a fold/unfold sequence while checking app state preservation.
+These controls require an Android emulator with a hinge sensor; Samsung One UI
+is not emulated. See [Android’s native posture commands](https://developer.android.com/blog/posts/emulator-control-for-adaptive-app-development).
 
 ### Input
 

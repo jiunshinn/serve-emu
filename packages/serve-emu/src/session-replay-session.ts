@@ -1,11 +1,13 @@
 import type { Gesture } from "./input.ts";
 import type { GeoFix } from "./location.ts";
+import type { FoldPosture } from "./shared/foldable-contracts.ts";
 import {
   SessionReplayConflictError,
   type ReplayHandlers,
 } from "./session-recorder.ts";
 
 type SessionReplayHandlersOpts = {
+  setPosture?: (posture: FoldPosture, signal: AbortSignal) => Promise<void> | void;
   generation: number;
   getGeneration: () => number;
   dispatchGesture: (
@@ -34,6 +36,11 @@ export function createSessionReplayHandlers(
   };
 
   return {
+    ...(opts.setPosture ? { setPosture: async (posture: FoldPosture, signal: AbortSignal) => {
+      assertCurrent(signal);
+      await opts.setPosture!(posture, signal);
+      assertCurrent(signal);
+    } } : {}),
     dispatchGesture: async (gesture, signal) => {
       assertCurrent(signal);
       await opts.dispatchGesture(gesture, signal);

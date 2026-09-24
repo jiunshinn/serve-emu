@@ -1,7 +1,9 @@
+import type { FoldPosture } from "./shared/foldable-contracts.ts";
 import { normalizeTextForControl, type Gesture } from "./input.ts";
 import type { GeoFix } from "./location.ts";
 
 export type RecordedEvent =
+  | { id: number; at: string; delayMs: number; source: string; kind: "posture"; posture: FoldPosture }
   | {
       id: number;
       at: string;
@@ -65,6 +67,7 @@ export const DEFAULT_MAX_SESSION_EVENTS = 2_000;
 export const DEFAULT_MAX_SESSION_BYTES = 1024 * 1024;
 
 export type ReplayHandlers = {
+  setPosture?: (posture: FoldPosture, signal: AbortSignal) => Promise<void> | void;
   dispatchGesture: (
     gesture: Gesture,
     signal: AbortSignal,
@@ -132,6 +135,7 @@ function cloneGesture(gesture: Gesture): Gesture {
 }
 
 function cloneEvent(event: RecordedEvent): RecordedEvent {
+  if (event.kind === "posture") return { ...event };
   return event.kind === "gesture"
     ? { ...event, gesture: cloneGesture(event.gesture) }
     : { ...event, location: { ...event.location } };
@@ -239,6 +243,10 @@ export class SessionRecorder {
 
   recordGesture(gesture: Gesture, source: string): void {
     this.#record({ kind: "gesture", gesture, source });
+  }
+
+  recordPosture(posture: FoldPosture, source: string): void {
+    this.#record({ kind: "posture", posture, source });
   }
 
   recordLocation(location: GeoFix, source: string): void {
@@ -349,6 +357,7 @@ export class SessionRecorder {
 
   async replay(
     handlers: {
+      setPosture?: (posture: FoldPosture) => Promise<void> | void;
       dispatchGesture: (gesture: Gesture) => Promise<void> | void;
       setLocation: (fix: GeoFix) => Promise<void> | void;
     },
@@ -365,6 +374,9 @@ export class SessionRecorder {
     }
     validateMultiplier(multiplier);
     const events = this.#events.map(cloneEvent);
+    if (events.some((event) => event.kind === "posture") && !handlers.setPosture) {
+      throw new SessionReplayValidationError("posture replay is not supported by this handler");
+    }
     this.#replaying = true;
     this.#legacyStopReplay = false;
     this.#replayStartedAt = new Date(this.#clock.now()).toISOString();
@@ -376,7 +388,9 @@ export class SessionRecorder {
         targetMs += event.delayMs / multiplier;
         await this.#legacySleep(Math.max(0, targetMs - this.#clock.now()));
         if (this.#legacyStopReplay) break;
-        if (event.kind === "gesture") {
+        if (event.kind === "posture") {
+          await handlers.setPosture!(event.posture);
+        } else if (event.kind === "gesture") {
           await handlers.dispatchGesture(cloneGesture(event.gesture));
         } else {
           await handlers.setLocation({ ...event.location });
@@ -417,6 +431,9 @@ export class SessionRecorder {
     validateMultiplier(multiplier);
 
     const events = this.#events.map(cloneEvent);
+    if (events.some((event) => event.kind === "posture") && !handlers.setPosture) {
+      throw new SessionReplayValidationError("posture replay is not supported by this handler");
+    }
     const replay: ActiveReplay = {
       id: this.#nextReplayId++,
       controller: new AbortController(),
@@ -452,7 +469,9 @@ export class SessionRecorder {
           replay.controller.signal,
         );
         this.#assertReplayActive(replay);
-        if (event.kind === "gesture") {
+        if (event.kind === "posture") {
+          await handlers.setPosture!(event.posture, replay.controller.signal);
+        } else if (event.kind === "gesture") {
           await handlers.dispatchGesture(
             event.gesture,
             replay.controller.signal,
@@ -502,7 +521,8 @@ export class SessionRecorder {
   #record(
     event:
       | { kind: "gesture"; gesture: Gesture; source: string }
-      | { kind: "location"; location: GeoFix; source: string },
+      | { kind: "location"; location: GeoFix; source: string }
+      | { kind: "posture"; posture: FoldPosture; source: string },
   ): void {
     if (this.#closed || !this.#recording || this.#replaying) return;
     const now = this.#clock.now();
@@ -520,7 +540,9 @@ export class SessionRecorder {
     const recorded: RecordedEvent =
       event.kind === "gesture"
         ? { ...base, kind: "gesture", gesture: cloneGesture(event.gesture) }
-        : { ...base, kind: "location", location: { ...event.location } };
+        : event.kind === "posture"
+          ? { ...base, kind: "posture", posture: event.posture }
+          : { ...base, kind: "location", location: { ...event.location } };
     const bytes = Buffer.byteLength(JSON.stringify(recorded), "utf8");
     if (EMPTY_ARRAY_BYTES + bytes > this.#maxBytes) {
       this.#droppedEvents++;

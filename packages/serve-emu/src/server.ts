@@ -1,3 +1,5 @@
+import { getFoldableState, setFoldPosture } from "./foldable.ts";
+import { createAvd, getAvdCatalog } from "./avd-manager.ts";
 import type { ServerWebSocket } from "bun";
 import { timingSafeEqual } from "node:crypto";
 import { dirname, join } from "node:path";
@@ -192,6 +194,10 @@ const MAX_ROUTE_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_LOGCAT_QUERY_BYTES = 200;
 
 export type ServerDependencies = {
+  getFoldableState?: typeof getFoldableState;
+  setFoldPosture?: typeof setFoldPosture;
+  getAvdCatalog?: typeof getAvdCatalog;
+  createAvd?: typeof createAvd;
   openScrcpy?: (serial: string, signal?: AbortSignal) => Promise<ScrcpySession>;
   /** @deprecated Prefer openScrcpy. Kept for lifecycle-test compatibility. */
   startScrcpy?: (opts: ScrcpyStartOpts) => Promise<ScrcpySession>;
@@ -1350,6 +1356,10 @@ export async function startServer(
 
   const apiRouter = createApiRouter(createApiRoutes());
   const apiServices = {
+    getFoldableState: dependencies.getFoldableState ?? getFoldableState,
+    setFoldPosture: dependencies.setFoldPosture ?? setFoldPosture,
+    getAvdCatalog: dependencies.getAvdCatalog ?? getAvdCatalog,
+    createAvd: dependencies.createAvd ?? createAvd,
     runForPublishedContext,
     listDevices,
     errorResponse,

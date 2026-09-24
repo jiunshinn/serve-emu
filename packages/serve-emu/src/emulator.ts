@@ -358,8 +358,7 @@ export async function startEmulator(
   const port = opts.port ?? (await pickEmulatorPort(dependencies.listAllDevices));
   validateEmulatorPort(port);
 
-  const args = [emulatorAvdArg(name), "-port", String(port)];
-  if (opts.gpu) args.push("-gpu", opts.gpu);
+  const args = [emulatorAvdArg(name), "-port", String(port), "-gpu", opts.gpu ?? "host"];
 
   const proc = (dependencies.spawn ?? spawn)(emulator, args, {
     stdio: ["ignore", "inherit", "inherit"],
