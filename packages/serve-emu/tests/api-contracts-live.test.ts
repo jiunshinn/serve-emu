@@ -70,6 +70,7 @@ async function liveHarness() {
       stopped.push(serial);
     },
     setLocation: async () => {},
+    loadDisplaySize: async () => ({ width: 720, height: 1280 }),
     loadAccessibility: async () => ({
       ok: true,
       capturedAt: new Date().toISOString(),
@@ -192,6 +193,15 @@ describe("shared API contracts against real server responses", () => {
       await call("/api/avds/stop", "POST", { serial: "emulator-5558" }),
     ).toEqual({ ok: true, serial: "emulator-5558" });
     expect(stopped).toEqual(["emulator-5558"]);
+
+    expect(
+      await call("/api/devices/tap-element", "POST", {
+        sourceSerial: "emulator-5554",
+        serials: ["emulator-5554"],
+        x: 200 / 720,
+        y: 230 / 1280,
+      }),
+    ).toMatchObject({ results: [{ serial: "emulator-5554", ok: true }] });
 
     expect(
       await call("/api/devices/select", "POST", { serial: "emulator-5556" }),

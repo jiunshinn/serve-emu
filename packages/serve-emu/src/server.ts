@@ -17,9 +17,12 @@ import { createApiRoutes } from "./api/routes/index.ts";
 import { importMediaFile, installApk } from "./app-management.ts";
 import { logApiFailure } from "./command-failure.ts";
 import { ControlInputQueue } from "./control-input-queue.ts";
+import { loadDisplaySize } from "./display-size.ts";
+import { createElementTapEndpoint } from "./element-tap-api.ts";
 import {
   ActiveDeviceSession,
   DeviceSessionManager,
+  SessionChangedError,
 } from "./device-session-context.ts";
 import {
   listAvds,
@@ -154,6 +157,7 @@ export type ServerDependencies = {
     serial: string,
     signal: AbortSignal,
   ) => Promise<AccessibilitySnapshot>;
+  loadDisplaySize?: typeof loadDisplaySize;
   setLocation?: (
     serial: string,
     fix: GeoFix,
@@ -333,6 +337,8 @@ export async function startServer(
    * selected device's slot has no `pinnedSerial` and can switch devices; a
    * `/d/<serial>/` slot stays on its serial.
    */
+  const inputRevisions = new WeakMap<DeviceContext, number>();
+
   function createSlot(initial: DeviceContext, pinnedSerial: string | null) {
     const sessions = new DeviceSessionManager(initial, allocateGeneration);
     let closing = false;
@@ -469,12 +475,21 @@ export async function startServer(
       return qualityResponse(switched);
     };
 
+    // Group element taps compare this revision across their slow hierarchy
+    // reads, so a tap never lands on a screen other input already changed.
+    const enqueueGesture: typeof services.enqueueGesture = (context, ...rest) => {
+      inputRevisions.set(context, (inputRevisions.get(context) ?? 0) + 1);
+      return services.enqueueGesture(context, ...rest);
+    };
+
     const apiServices: Omit<
       ApiDependencies,
       "requestContext" | "srv" | "errorResponse"
     > = {
       ...services,
+      enqueueGesture,
       sessions,
+      elementTapEndpoint: (request) => elementTap(request),
       MAX_JSON_BODY_BYTES,
       MAX_ROUTE_BODY_BYTES,
       device,
@@ -497,7 +512,7 @@ export async function startServer(
     const ws = createWebSocketEndpoint({
       sessions,
       join: video.join,
-      enqueueGesture: services.enqueueGesture,
+      enqueueGesture,
       enqueueVideoReset: video.enqueueVideoReset,
       health,
     });
@@ -622,6 +637,50 @@ export async function startServer(
     );
     return entry.slot;
   };
+
+  const leasedSlots = new WeakMap<DeviceContext, DeviceSlot>();
+  const slotFor = (context: DeviceContext): DeviceSlot => {
+    const slot = leasedSlots.get(context);
+    if (!slot) throw new SessionChangedError(context.generation, null);
+    slot.sessions.assertCurrent(context);
+    return slot;
+  };
+
+  // Group taps resolve each target through the same per-device slots as
+  // `/d/<serial>/`, holding them open (inFlight) until the request ends.
+  const elementTap = createElementTapEndpoint({
+    acquire: async (serial) => {
+      const slot = await resolveSlot(serial);
+      slot.inFlight++;
+      let released = false;
+      const context = slot.sessions.current;
+      leasedSlots.set(context, slot);
+      return {
+        context,
+        release() {
+          if (released) return;
+          released = true;
+          slot.inFlight--;
+          slot.lastActiveMs = Date.now();
+        },
+      };
+    },
+    loadAccessibility,
+    loadDisplaySize: dependencies.loadDisplaySize ?? loadDisplaySize,
+    assertCurrent: (context) => {
+      slotFor(context);
+    },
+    inputRevision: (context) => inputRevisions.get(context) ?? 0,
+    assertInputIdle: (context) => {
+      const queue = context.inputQueue.snapshot();
+      const held = [...context.clients].some((client) => client.touches.size > 0);
+      if (held || queue.depth || queue.active || queue.reservedReleases) {
+        throw new Error("A controller has pending input or a held touch on this device.");
+      }
+    },
+    enqueue: (context, gesture, source, record) =>
+      slotFor(context).apiServices.enqueueGesture(context, gesture, source, record),
+  });
 
   /**
    * Before an emulator is killed through `caller`, stops the other slots

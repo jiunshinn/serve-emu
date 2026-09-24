@@ -8,6 +8,10 @@ import type { Gesture } from "../input.ts";
 export type WsData = {
   id: number;
   frameMeta: boolean;
+  /** `control=1`: the socket announces itself with `control-ready`. */
+  control: boolean;
+  /** `video=0`: a control-only socket that never receives frames. */
+  video: boolean;
   context: DeviceContext;
   /** The handlers of the device endpoint that upgraded this socket. */
   handlers: WebSocketHandler<WsData>;
@@ -23,6 +27,7 @@ export type Client = {
   ws: ServerWebSocket<WsData>;
   context: DeviceContext;
   frameMeta: boolean;
+  video: boolean;
   sentFrames: number;
   droppedFrames: number;
   backpressureEvents: number;

@@ -47,7 +47,7 @@ describe("stream worker commands", () => {
   test("accepts every command the UI posts, each with its client epoch", () => {
     const commands = [
       parse({ type: "init", clientEpoch: 1, canvas, url: "ws://127.0.0.1:3300/ws?frame-meta=1" }),
-      parse({ type: "connect", clientEpoch: 1 }),
+      parse({ type: "connect", clientEpoch: 1, url: "ws://127.0.0.1:3300/ws?frame-meta=1" }),
       parse({ type: "send", clientEpoch: 1, text: '{"type":"home"}' }),
       parse({ type: "stop", clientEpoch: 1 }),
     ];
@@ -67,11 +67,12 @@ describe("stream worker commands", () => {
 
   test("drops a command without a valid client epoch", () => {
     for (const clientEpoch of [undefined, 0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
-      expect(parse({ type: "connect", clientEpoch })).toBeNull();
+      expect(parse({ type: "connect", clientEpoch, url: "ws://h/ws" })).toBeNull();
     }
-    expect(parse({ type: "connect", clientEpoch: Number.MAX_SAFE_INTEGER })).toEqual({
+    expect(parse({ type: "connect", clientEpoch: Number.MAX_SAFE_INTEGER, url: "ws://h/ws" })).toEqual({
       type: "connect",
       clientEpoch: Number.MAX_SAFE_INTEGER,
+      url: "ws://h/ws",
     });
   });
 

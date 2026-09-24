@@ -24,6 +24,7 @@ import type {
 
 /** Session-bound services consumed by the production HTTP routes. */
 export type ApiDependencies = {
+  elementTapEndpoint: (request: Request) => Promise<Response>;
   requestContext: DeviceContext;
   sessions: DeviceSessionManager<DeviceContext>;
   srv: Bun.Server<WsData>;

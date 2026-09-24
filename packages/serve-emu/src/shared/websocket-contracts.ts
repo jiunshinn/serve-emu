@@ -15,6 +15,11 @@ export type WsResetVideoMessage = {
   ack?: boolean;
   requestId?: string;
 };
+export type WsReleaseInputMessage = {
+  type: "release-input";
+  ack?: boolean;
+  requestId?: string;
+};
 export type WsClockRequest = {
   type: "clock-sync";
   clientTsMs: number;
@@ -29,16 +34,19 @@ export type WsClockResponse = {
 export type WsClientMessage =
   | WsGestureMessage
   | WsResetVideoMessage
+  | WsReleaseInputMessage
   | WsClockRequest;
 
 export type WsAckMessage = { ok: true; requestId?: string };
 /** Kept as a string for compatibility with the existing WebSocket wire format. */
 export type WsFailureMessage = { ok: false; error: string; requestId?: string };
 export type WsVideoSessionMessage = { type: "video-session"; size: DeviceSize };
+export type WsControlReadyMessage = { type: "control-ready"; serial: string };
 export type WsServerMessage =
   | WsAckMessage
   | WsFailureMessage
   | WsVideoSessionMessage
+  | WsControlReadyMessage
   | WsClockResponse;
 
 function record(value: unknown, name: string): Record<string, unknown> {
@@ -87,9 +95,9 @@ export function parseWsClientMessage(value: unknown): WsClientMessage {
       ...(ack === undefined ? {} : { ack }),
     };
   }
-  if (source.type === "reset-video") {
+  if (source.type === "reset-video" || source.type === "release-input") {
     return {
-      type: "reset-video",
+      type: source.type,
       ...correlation,
       ...(ack === undefined ? {} : { ack }),
     };
@@ -126,6 +134,12 @@ export function isWsClientMessage(value: unknown): value is WsClientMessage {
 
 export function parseWsServerMessage(value: unknown): WsServerMessage {
   const source = record(value, "WebSocket server message");
+  if (source.type === "control-ready") {
+    if (typeof source.serial !== "string" || source.serial.length === 0 || source.serial.length > 256) {
+      throw new TypeError("controller serial must be a string of 1 to 256 characters");
+    }
+    return { type: "control-ready", serial: source.serial };
+  }
   if (source.type === "clock-sync")
     return {
       type: "clock-sync",

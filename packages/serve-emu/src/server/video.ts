@@ -81,8 +81,11 @@ export function createVideoPipeline(deps: {
 
   const canReceive = (client: Client) =>
     client.ws.getBufferedAmount() <= DROP_FRAME_BUFFERED_BYTES;
+  // Control-only sockets (`video=0`) never receive frames.
+  const viewers = (context: DeviceContext) =>
+    [...context.clients].filter((client) => client.video);
   const hasHealthyViewer = (context: DeviceContext, except?: Client) => {
-    for (const viewer of context.clients) {
+    for (const viewer of viewers(context)) {
       if (viewer !== except && !viewer.awaitingKeyFrame && canReceive(viewer)) return true;
     }
     return false;
@@ -141,7 +144,7 @@ export function createVideoPipeline(deps: {
   const createRecovery = (context: DeviceContext) =>
     new SessionRecoveryWatchdog<Client>({
       clock,
-      clients: () => context.clients,
+      clients: () => viewers(context),
       startedMs: clock.now(),
       intervalMs: 1_000,
       sessionResetCooldownMs: VIDEO_RESET_COOLDOWN_MS,
@@ -274,7 +277,7 @@ export function createVideoPipeline(deps: {
               // key frame. Requesting a reset here would restart the encoder
               // before it can send that key frame.
               for (const c of context.clients) {
-                recoveries.get(context)?.markAwaiting(c);
+                if (c.video) recoveries.get(context)?.markAwaiting(c);
                 sendJson(c.ws, {
                   type: "video-session",
                   size: { width: f.width, height: f.height },
@@ -296,7 +299,7 @@ export function createVideoPipeline(deps: {
           cache.append(f, config);
           let rawOut: Buffer | null = null;
           let framedOut: Buffer | null = null;
-          for (const c of context.clients) {
+          for (const c of viewers(context)) {
             sendFrame(
               c,
               () =>

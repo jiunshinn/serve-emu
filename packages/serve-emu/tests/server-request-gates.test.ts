@@ -317,6 +317,7 @@ describe("server HTTP and WebSocket boundaries", () => {
       ["POST", "/api/devices"],
       ["POST", "/api/device-grid"],
       ["GET", "/api/devices/select"],
+      ["GET", "/api/devices/tap-element"],
       ["GET", "/api/avds/start"],
       ["GET", "/api/avds/stop"],
       ["PUT", "/api/stream-quality"],
@@ -457,6 +458,7 @@ describe("server HTTP and WebSocket boundaries", () => {
     const harness = await createHarness();
     const invalidRequests: Array<[path: string, payload: unknown]> = [
       ["/api/devices/select", {}],
+      ["/api/devices/tap-element", {}],
       ["/api/avds/start", {}],
       ["/api/avds/stop", {}],
       ["/api/stream-quality", {}],
