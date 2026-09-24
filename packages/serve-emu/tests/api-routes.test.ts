@@ -5,6 +5,10 @@ import { createHarness, response } from "./helpers/server-harness.ts";
 
 const EXPECTED_ROUTES = [
   ["GET", "/api"],
+  ["GET", "/api/foldable"],
+  ["POST", "/api/foldable"],
+  ["GET", "/api/avds/catalog"],
+  ["POST", "/api/avds/create"],
   ["GET", "/api/devices"],
   ["GET", "/api/device-grid"],
   ["POST", "/api/devices/select"],

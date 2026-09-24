@@ -177,7 +177,7 @@ describe("emulator lifecycle", () => {
     expect(spawns).toBe(0);
   });
 
-  test("chooses a free even port, boots with GPU arguments, and stops idempotently", async () => {
+  test.each([undefined, "host", "swiftshader_indirect"])("chooses a free port and uses GPU mode %s (host by default)", async (gpu) => {
     const adbCalls: string[] = [];
     const runExec = (async (command, args) => {
       if (command === "/sdk/emulator") return result("Pixel_8\n");
@@ -201,7 +201,7 @@ describe("emulator lifecycle", () => {
     const { proc, killSignals } = fakeProcess();
     const spawnCalls: unknown[][] = [];
     const launch = await startEmulator(
-      { avd: "Pixel_8", emulatorPath: "/sdk/emulator", gpu: "host" },
+      { avd: "Pixel_8", emulatorPath: "/sdk/emulator", gpu },
       {
         execText: runExec,
         listAllDevices: readDevices,
@@ -215,7 +215,7 @@ describe("emulator lifecycle", () => {
     expect(spawnCalls).toEqual([
       [
         "/sdk/emulator",
-        ["@Pixel_8", "-port", "5558", "-gpu", "host"],
+        ["@Pixel_8", "-port", "5558", "-gpu", gpu ?? "host"],
         { stdio: ["ignore", "inherit", "inherit"] },
       ],
     ]);

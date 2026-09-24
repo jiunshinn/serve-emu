@@ -1,3 +1,4 @@
+import { FOLD_POSTURES, type FoldPosture, type FoldableState } from "./foldable-contracts";
 import { parseGesture, type Gesture } from "./control-contracts";
 
 /** Stable error codes sent by every JSON API failure. */
@@ -203,7 +204,8 @@ export type LocationSessionEvent = {
   kind: "location";
   location: GeoFix;
 };
-export type SessionEvent = GestureSessionEvent | LocationSessionEvent;
+export type PostureSessionEvent = { id: number; at: string; delayMs: number; source: string; kind: "posture"; posture: FoldPosture };
+export type SessionEvent = GestureSessionEvent | LocationSessionEvent | PostureSessionEvent;
 export type RecordedEvent = SessionEvent;
 export type SessionSnapshot = {
   events: SessionEvent[];
@@ -324,6 +326,10 @@ export type EndpointContract<Request, Response> = {
  * Errors are added by ApiResponse so endpoint success shapes stay readable.
  */
 export type ApiContractMap = {
+  "/api/foldable": {
+    GET: EndpointContract<undefined, ApiSuccess<{ foldable: FoldableState }>>;
+    POST: EndpointContract<{ posture: FoldPosture; record?: boolean }, ApiSuccess<{ foldable: FoldableState }>>;
+  };
   "/api": { GET: EndpointContract<undefined, ApiInfoResponse> };
   "/api/devices": { GET: EndpointContract<undefined, DeviceListResponse> };
   "/api/device-grid": { GET: EndpointContract<undefined, DeviceGridResponse> };
@@ -813,6 +819,9 @@ function parseSessionEvent(value: unknown, index: number): SessionEvent {
     delayMs: number(item.delayMs, `session.events[${index}].delayMs`),
     source: string(item.source, `session.events[${index}].source`),
   };
+  if (item.kind === "posture") {
+    return { ...base, kind: "posture", posture: oneOf(item.posture, FOLD_POSTURES, "session posture") };
+  }
   if (item.kind === "gesture") {
     const gesture = parseGesture(item.gesture);
     return { ...base, kind: "gesture", gesture };
@@ -1051,10 +1060,22 @@ type ApiSuccessParserMap = {
   };
 };
 
+function parseFoldableResponse(value: unknown): ApiSuccess<{ foldable: FoldableState }> {
+  const root = record(value, "foldable response");
+  if (root.ok !== true) fail("foldable response.ok must be true");
+  const item = record(root.foldable, "foldable");
+  return { ok: true, foldable: {
+    supported: boolean(item.supported, "foldable.supported"),
+    posture: oneOf(item.posture, [...FOLD_POSTURES, "unknown"] as const, "foldable.posture"),
+    ...(item.reason === undefined ? {} : { reason: string(item.reason, "foldable.reason") }),
+  } };
+}
+
 const unsupportedStreamingResponse = (): never => fail("streaming responses are not JSON API payloads");
 
 /** Runtime parser table used by both server tests and the typed UI client. */
 export const API_SUCCESS_PARSERS = {
+  "/api/foldable": { GET: parseFoldableResponse, POST: parseFoldableResponse },
   "/api": { GET: parseApiInfoResponse },
   "/api/devices": { GET: parseDeviceListResponse },
   "/api/device-grid": { GET: parseDeviceGridResponse },

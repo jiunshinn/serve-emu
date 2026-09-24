@@ -6,7 +6,8 @@ type SessionEvent = {
   at: string;
   delayMs: number;
   source: string;
-  kind: "gesture" | "location";
+  kind: "gesture" | "location" | "posture";
+  posture?: string;
   gesture?: { type: string };
   location?: { latitude: number; longitude: number };
 };
@@ -40,6 +41,7 @@ const RECENT_EVENT_LIMIT = 6;
 const POLL_INTERVAL_MS = 1_000;
 
 function labelForEvent(event: SessionEvent): string {
+  if (event.kind === "posture") return `posture ${event.posture} • ${event.source}`;
   if (event.kind === "gesture") {
     return `${event.gesture?.type ?? "gesture"} • ${event.source}`;
   }

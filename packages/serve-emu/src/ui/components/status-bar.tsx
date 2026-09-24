@@ -53,7 +53,7 @@ export function StatusBar({
           </button>
         </span>
       )}
-      <div className="meta" title={detail}>
+      <div className="meta" title={["FPS counts new screen frames. Static screens send fewer frames; measure while scrolling or playing video.", detail].filter(Boolean).join(" • ")}>
         {meta}
       </div>
     </header>

@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { deviceSessionStore, useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { usePoll } from "../lib/use-poll";
+import { AddEmulator } from "./add-emulator";
 
 type GridDeviceKind = "physical" | "emulator" | "avd";
 
@@ -195,6 +196,7 @@ export function DevicePanel() {
         )}
       </div>
 
+      <AddEmulator onCreated={() => { setQuery(""); refreshDevices(); }} />
       <button onClick={refreshDevices}>Refresh Devices</button>
     </section>
   );

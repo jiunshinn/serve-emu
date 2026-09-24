@@ -7,6 +7,10 @@ import type { DeviceContext, DeviceGridResponse, WsData } from "../server.ts";
 
 /** Session-bound services consumed by the production HTTP routes. */
 export type ApiDependencies = {
+  getFoldableState: typeof import("../foldable.ts").getFoldableState;
+  setFoldPosture: typeof import("../foldable.ts").setFoldPosture;
+  getAvdCatalog: typeof import("../avd-manager.ts").getAvdCatalog;
+  createAvd: typeof import("../avd-manager.ts").createAvd;
   requestContext: DeviceContext;
   runForPublishedContext: <T>(
     context: DeviceContext,
