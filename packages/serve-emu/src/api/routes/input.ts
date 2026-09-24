@@ -5,6 +5,11 @@ export function inputRoutes(): ApiRoute<ApiDependencies>[] {
   return [
     {
       method: "POST",
+      path: "/api/devices/tap-element",
+      handler: ({ request, deps }) => deps.elementTapEndpoint(request),
+    },
+    {
+      method: "POST",
       path: "/api/tap",
       handler: async ({ request: req, deps }) => {
         const { gestureEndpoint, requestContext } = deps;

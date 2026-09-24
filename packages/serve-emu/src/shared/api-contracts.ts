@@ -112,6 +112,8 @@ export type ForegroundResponse = ApiSuccess<{ app: ForegroundApp }>;
 export type AccessibilityBounds = { left: number; top: number; right: number; bottom: number };
 export type AccessibilityNode = {
   id: string;
+  /** Local hierarchy only; IDs are never matched across devices. */
+  parentId?: string;
   text: string;
   contentDescription: string;
   resourceId: string;
@@ -142,6 +144,24 @@ export type AccessibilitySnapshot = ApiSuccess<{
 export type AccessibilityTapResponse = ApiSuccess<{
   node: AccessibilityNode;
   capturedAt: string;
+}>;
+export type MatchedElement = {
+  text: string;
+  contentDescription: string;
+  resourceId: string;
+  packageName: string;
+};
+export type ElementTapRequest = {
+  sourceSerial: string;
+  serials: string[];
+  x: number;
+  y: number;
+  record?: boolean;
+};
+export type ElementTapDeviceResult = { serial: string; ok: boolean; error?: string; code?: string };
+export type ElementTapResponse = ApiSuccess<{
+  results: ElementTapDeviceResult[];
+  element: MatchedElement;
 }>;
 
 export type GeoFix = {
@@ -330,6 +350,7 @@ export type ApiContractMap = {
   "/api/devices/select": {
     POST: EndpointContract<{ serial: string }, DeviceSelectionResponse>;
   };
+  "/api/devices/tap-element": { POST: EndpointContract<ElementTapRequest, ElementTapResponse> };
   "/api/avds/start": {
     POST: EndpointContract<{ avd: string; select?: boolean }, AvdStartResponse>;
   };
@@ -703,6 +724,7 @@ function parseAccessibilityNode(value: unknown, name = "accessibility node"): Ac
   const bounds = record(item.bounds, `${name}.bounds`);
   return {
     id: string(item.id, `${name}.id`),
+    ...(item.parentId === undefined ? {} : { parentId: string(item.parentId, `${name}.parentId`) }),
     text: string(item.text, `${name}.text`),
     contentDescription: string(item.contentDescription, `${name}.contentDescription`),
     resourceId: string(item.resourceId, `${name}.resourceId`),
@@ -1053,12 +1075,38 @@ type ApiSuccessParserMap = {
 
 const unsupportedStreamingResponse = (): never => fail("streaming responses are not JSON API payloads");
 
+export function parseElementTapResponse(value: unknown): ElementTapResponse {
+  const root = record(value, "element tap response");
+  if (root.ok !== true) fail("element tap response.ok must be true");
+  if (!Array.isArray(root.results)) fail("element tap response.results must be an array");
+  const element = record(root.element, "element");
+  return {
+    ok: true,
+    results: root.results.map((value, index) => {
+      const result = record(value, `results[${index}]`);
+      return {
+        serial: string(result.serial, `results[${index}].serial`),
+        ok: boolean(result.ok, `results[${index}].ok`),
+        ...(result.error === undefined ? {} : { error: string(result.error, `results[${index}].error`) }),
+        ...(result.code === undefined ? {} : { code: string(result.code, `results[${index}].code`) }),
+      };
+    }),
+    element: {
+      text: string(element.text, "element.text"),
+      contentDescription: string(element.contentDescription, "element.contentDescription"),
+      resourceId: string(element.resourceId, "element.resourceId"),
+      packageName: string(element.packageName, "element.packageName"),
+    },
+  };
+}
+
 /** Runtime parser table used by both server tests and the typed UI client. */
 export const API_SUCCESS_PARSERS = {
   "/api": { GET: parseApiInfoResponse },
   "/api/devices": { GET: parseDeviceListResponse },
   "/api/device-grid": { GET: parseDeviceGridResponse },
   "/api/devices/select": { POST: parseDeviceSelectionResponse },
+  "/api/devices/tap-element": { POST: parseElementTapResponse },
   "/api/avds/start": { POST: parseAvdStartResponse },
   "/api/avds/stop": { POST: parseAvdStopResponse },
   "/api/orientation": { GET: parseOrientationResponse, POST: parseOrientationResponse },

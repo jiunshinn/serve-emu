@@ -1,6 +1,8 @@
 import type { DeviceSize, StreamStats } from "../lib/use-stream";
+import type { ReactNode } from "react";
 
 type Props = {
+  viewSwitch?: ReactNode;
   controlError?: string | null;
   onDismissError?: () => void;
   status: string;
@@ -10,6 +12,7 @@ type Props = {
 };
 
 export function StatusBar({
+  viewSwitch,
   status,
   deviceSize,
   fps,
@@ -45,6 +48,7 @@ export function StatusBar({
   return (
     <header>
       <h1>serve-emu</h1>
+      {viewSwitch}
       {controlError && (
         <span role="alert">
           Input failed: {controlError}{" "}

@@ -32,6 +32,8 @@ export type StreamState = {
 
 export type Sender = (msg: Record<string, unknown>, ack?: boolean) => void;
 
+type StreamOptions = { serial?: string };
+
 type ApiInfo = StreamHealth;
 
 // A canvas can transfer control to an OffscreenCanvas only once, so the worker
@@ -39,11 +41,12 @@ type ApiInfo = StreamHealth;
 const workerByCanvas = new WeakMap<HTMLCanvasElement, Worker>();
 const workerGenerationByCanvas = new WeakMap<HTMLCanvasElement, number>();
 const clientEpochByCanvas = new WeakMap<HTMLCanvasElement, number>();
+const workerCleanupByCanvas = new WeakMap<HTMLCanvasElement, ReturnType<typeof setTimeout>>();
 
 const HEALTH_POLL_INTERVAL_MS = 1_500;
 const HEALTH_REQUEST_TIMEOUT_MS = 5_000;
 
-export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
+export function useStream(canvasRef: RefObject<HTMLCanvasElement>, { serial }: StreamOptions = {}) {
   const [state, setState] = useState<StreamState>({
     status: "connecting…",
     controlError: null,
@@ -59,6 +62,8 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
   const clearControlError = useCallback(() => setState((s) => ({ ...s, controlError: null })), []);
 
   const send = useCallback<Sender>((msg, ack = true) => {
+    // Serial-scoped streams are previews; controls belong to the active device.
+    if (serial !== undefined) return;
     const clientEpoch = clientEpochRef.current;
     if (clientEpoch < 1) return;
     workerRef.current?.postMessage({
@@ -66,7 +71,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       clientEpoch,
       text: JSON.stringify({ ...msg, requestId: `${clientEpoch}:${++requestSequenceRef.current}`, ...(!ack ? { ack: false } : {}) }),
     });
-  }, []);
+  }, [serial]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -88,7 +93,13 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     let healthRequestSequence = 0;
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${location.host}/ws?frame-meta=1`;
+    const url = `${proto}//${location.host}/ws?frame-meta=1${serial === undefined ? "" : `&serial=${encodeURIComponent(serial)}`}`;
+
+    const pendingCleanup = workerCleanupByCanvas.get(canvas);
+    if (pendingCleanup !== undefined) {
+      clearTimeout(pendingCleanup);
+      workerCleanupByCanvas.delete(canvas);
+    }
 
     let worker = workerByCanvas.get(canvas);
     const isNewWorker = !worker;
@@ -233,11 +244,13 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       setState((prev) => ({
         ...prev,
         status: "connecting",
+        controlError: null,
         lastRenderedAt: null,
         fps: 0,
+        deviceSize: null,
         stats: null,
       }));
-      worker.postMessage({ type: "connect", clientEpoch });
+      worker.postMessage({ type: "connect", clientEpoch, url });
     }
 
     lifecycleTimer = setInterval(() => {
@@ -260,7 +273,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     };
 
     function refreshHealthForGeneration() {
-      if (cancelled) return;
+      if (cancelled || serial !== undefined) return;
       if (healthTimer !== null) {
         clearTimeout(healthTimer);
         healthTimer = null;
@@ -275,7 +288,9 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     }
 
     async function pollHealth() {
-      if (cancelled) return;
+      // /health describes the active device. A preview gets its own dimensions
+      // and lifecycle from its socket without changing the global session store.
+      if (cancelled || serial !== undefined) return;
       const requestSequence = ++healthRequestSequence;
       const sessionRequest = deviceSessionStore.beginHealthRequest();
       const requestGeneration = currentGeneration;
@@ -328,8 +343,20 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       worker.postMessage({ type: "stop", clientEpoch });
       if (clientEpochRef.current === clientEpoch) clientEpochRef.current = 0;
       workerRef.current = null;
+      // StrictMode replays the effect immediately on the same transferred
+      // canvas. Give that setup a chance to reuse its worker, but release the
+      // worker after real unmounts such as closing the multi-device grid.
+      const cleanup = setTimeout(() => {
+        if (workerCleanupByCanvas.get(canvas) !== cleanup) return;
+        worker.terminate();
+        workerCleanupByCanvas.delete(canvas);
+        workerByCanvas.delete(canvas);
+        workerGenerationByCanvas.delete(canvas);
+        clientEpochByCanvas.delete(canvas);
+      }, 0);
+      workerCleanupByCanvas.set(canvas, cleanup);
     };
-  }, [canvasRef]);
+  }, [canvasRef, serial]);
 
   return { state, send, clearControlError };
 }

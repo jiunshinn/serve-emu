@@ -10,6 +10,8 @@ import {
   type NormalizedPoint,
 } from "../lib/accessibility-hover";
 import type { Sender } from "../lib/use-stream";
+import { canvasPoint } from "../lib/canvas-point";
+import { reducePointerGesture, type PointerGesture, type PointerGestureAction } from "../lib/pointer-gesture";
 import type { AccessibilityNode } from "./accessibility-panel";
 
 type Props = {
@@ -22,12 +24,14 @@ type Props = {
   deviceSize?: { width: number; height: number } | null;
   keyboardProxyRef?: RefObject<HTMLInputElement>;
   keyboardActive?: boolean;
+  resetKey?: string | number;
+  inputEnabled?: boolean;
+  canvasLabel?: string;
+  onTap?: (point: NormalizedPoint) => void;
 };
 
 type Point = NormalizedPoint;
 type PointerSample = { point: Point; pointerId: number };
-
-const clamp01 = (n: number) => Math.min(1, Math.max(0, n));
 
 export function DeviceStream({
   canvasRef,
@@ -39,15 +43,22 @@ export function DeviceStream({
   deviceSize = null,
   keyboardProxyRef,
   keyboardActive = true,
+  resetKey,
+  inputEnabled = true,
+  canvasLabel,
+  onTap,
 }: Props) {
   const deviceSession = useDeviceSessionSnapshot();
-  const activeRef = useRef<{ id: number; x: number; y: number } | null>(null);
+  const pointerResetKey = resetKey ?? deviceSession.revision;
+  const activeRef = useRef<PointerGesture | null>(null);
+  const tapMode = onTap !== undefined;
   const hoverContextRef = useRef({
     enabled: accessibilityEnabled,
     nodes: accessibilityNodes,
     size: deviceSize as AccessibilityViewport | null,
     onHover: onAccessibilityHover,
     send,
+    onTap,
   });
   const lastReportedHoverRef = useRef(highlightedAccessibilityId);
   const pointerMoveSchedulerRef = useRef<LatestAnimationFrameScheduler<PointerSample> | null>(null);
@@ -62,6 +73,7 @@ export function DeviceStream({
     size: accessibilitySize,
     onHover: onAccessibilityHover,
     send,
+    onTap,
   };
 
   const reportAccessibilityHover = (id: string | null) => {
@@ -73,11 +85,10 @@ export function DeviceStream({
   if (!pointerMoveSchedulerRef.current) {
     pointerMoveSchedulerRef.current = createLatestAnimationFrameScheduler(({ point, pointerId }) => {
       const active = activeRef.current;
-      if (active && pointerId === active.id) {
-        active.x = point.x;
-        active.y = point.y;
+      if (active && pointerId === active.pointerId) {
+        if (!active.forwarded) return;
         hoverContextRef.current.send(
-          { type: "touch", action: "move", x: point.x, y: point.y, pointerId: active.id },
+          { type: "touch", action: "move", x: point.x, y: point.y, pointerId: active.pointerId },
           false,
         );
         return;
@@ -94,10 +105,26 @@ export function DeviceStream({
   }, [highlightedAccessibilityId]);
 
   useEffect(() => {
+    const canvas = canvasRef.current;
     activeRef.current = null;
     pointerMoveSchedulerRef.current?.cancel();
-    return () => pointerMoveSchedulerRef.current?.cancel();
-  }, [deviceSession.revision]);
+    return () => {
+      pointerMoveSchedulerRef.current?.cancel();
+      const active = activeRef.current;
+      activeRef.current = null;
+      // Explicitly scoped grid inputs keep their control sockets across view
+      // changes. Release their held touch before hiding or disabling a card.
+      // The default stream changes its server-side session on reset instead.
+      if (active) {
+        if (resetKey !== undefined || active.deferTap) {
+          for (const action of reducePointerGesture(active, { type: "cancel", pointerId: active.pointerId }).actions) {
+            if (action.type === "touch") hoverContextRef.current.send(action);
+          }
+        }
+        try { canvas?.releasePointerCapture(active.pointerId); } catch {}
+      }
+    };
+  }, [pointerResetKey, inputEnabled, tapMode]);
 
   useEffect(() => {
     if (accessibilityEnabled) return;
@@ -109,56 +136,89 @@ export function DeviceStream({
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const r = canvas.getBoundingClientRect();
-    return {
-      x: clamp01((clientX - r.left) / r.width),
-      y: clamp01((clientY - r.top) / r.height),
-    };
+    return canvasPoint(
+      clientX, clientY, r, deviceSize ?? canvas,
+      getComputedStyle(canvas).objectFit === "contain",
+      activeRef.current !== null,
+    );
   };
 
   const norm = (e: PointerEvent<HTMLCanvasElement>): Point | null =>
     pointFromClient(e.clientX, e.clientY);
 
-  const sendTouch = (action: "down" | "move" | "up", p: Point, pointerId: number) => {
-    send({ type: "touch", action, x: p.x, y: p.y, pointerId }, action !== "move");
+  const dispatchPointerActions = (actions: PointerGestureAction[], scheduleMoves = true) => {
+    for (const action of actions) {
+      if (action.type === "tap") hoverContextRef.current.onTap?.(action.point);
+      else if (action.action === "move" && scheduleMoves) {
+        pointerMoveSchedulerRef.current?.schedule({ point: action, pointerId: action.pointerId });
+      } else hoverContextRef.current.send(action, action.action !== "move");
+    }
   };
 
   const onPointerDown = (e: PointerEvent<HTMLCanvasElement>) => {
+    if (!inputEnabled) return;
     if (e.pointerType === "mouse" && e.button !== 0) return;
     if (activeRef.current) return;
-    e.preventDefault();
-    keyboardProxyRef?.current?.focus({ preventScroll: true });
     const p = norm(e);
     if (!p) return;
+    e.preventDefault();
+    keyboardProxyRef?.current?.focus({ preventScroll: true });
     pointerMoveSchedulerRef.current?.cancel();
     reportAccessibilityHover(null);
-    canvasRef.current?.setPointerCapture(e.pointerId);
-    activeRef.current = { id: e.pointerId, ...p };
-    sendTouch("down", p, e.pointerId);
+    try { canvasRef.current?.setPointerCapture(e.pointerId); } catch {}
+    const next = reducePointerGesture(null, {
+      type: "down", pointerId: e.pointerId, point: p,
+      clientX: e.clientX, clientY: e.clientY, deferTap: tapMode,
+    });
+    activeRef.current = next.state;
+    dispatchPointerActions(next.actions);
   };
 
   const onPointerMove = (e: PointerEvent<HTMLCanvasElement>) => {
+    if (!inputEnabled) return;
     const active = activeRef.current;
-    if (active && e.pointerId !== active.id) return;
+    if (active && e.pointerId !== active.pointerId) return;
     const native = e.nativeEvent;
     const coalesced =
       typeof native.getCoalescedEvents === "function" ? native.getCoalescedEvents() : null;
-    if (active && e.pointerId === active.id) e.preventDefault();
+    if (active) {
+      e.preventDefault();
+      // Classify every coalesced sample before reducing moves to one per frame.
+      // An excursion past the threshold stays a drag even if it returns home.
+      for (const sample of coalesced?.length ? coalesced : [e]) {
+        const point = pointFromClient(sample.clientX, sample.clientY);
+        if (!point) continue;
+        const next = reducePointerGesture(activeRef.current, {
+          type: "move", pointerId: e.pointerId, point,
+          clientX: sample.clientX, clientY: sample.clientY,
+        });
+        activeRef.current = next.state;
+        dispatchPointerActions(next.actions);
+      }
+      return;
+    }
     const latest = coalesced && coalesced.length > 0 ? coalesced[coalesced.length - 1] : e;
     const point = pointFromClient(latest.clientX, latest.clientY);
     if (point) pointerMoveSchedulerRef.current?.schedule({ point, pointerId: e.pointerId });
+    else reportAccessibilityHover(null);
   };
 
-  const stopPointer = (e: PointerEvent<HTMLCanvasElement>) => {
+  const stopPointer = (e: PointerEvent<HTMLCanvasElement>, cancelled = false) => {
     const active = activeRef.current;
-    if (!active || e.pointerId !== active.id) return;
+    if (!active || e.pointerId !== active.pointerId) return;
+    cancelled ||= !inputEnabled;
     e.preventDefault();
-    pointerMoveSchedulerRef.current?.flush();
+    if (cancelled) pointerMoveSchedulerRef.current?.cancel();
+    else pointerMoveSchedulerRef.current?.flush();
     const up = norm(e);
-    if (up) sendTouch("up", up, active.id);
-    try {
-      canvasRef.current?.releasePointerCapture(active.id);
-    } catch {}
+    const next = reducePointerGesture(active, cancelled || !up
+      ? { type: "cancel", pointerId: active.pointerId }
+      : { type: "up", pointerId: active.pointerId, point: up, clientX: e.clientX, clientY: e.clientY });
     activeRef.current = null;
+    try {
+      canvasRef.current?.releasePointerCapture(active.pointerId);
+    } catch {}
+    dispatchPointerActions(next.actions, false);
   };
 
   const onPointerLeave = () => {
@@ -170,14 +230,16 @@ export function DeviceStream({
     <div className="stream-surface">
       <canvas
         ref={canvasRef}
+        aria-label={canvasLabel}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerLeave={onPointerLeave}
-        onPointerUp={stopPointer}
-        onPointerCancel={stopPointer}
+        onPointerUp={(event) => stopPointer(event)}
+        onPointerCancel={(event) => stopPointer(event, true)}
+        onLostPointerCapture={(event) => stopPointer(event, true)}
         onContextMenu={(e) => e.preventDefault()}
       />
-      {!keyboardActive && (
+      {inputEnabled && !keyboardActive && (
         <button
           type="button"
           className="keyboard-hint"

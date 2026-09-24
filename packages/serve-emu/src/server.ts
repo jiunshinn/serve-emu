@@ -22,6 +22,9 @@ import {
   DeviceSessionManager,
   SessionChangedError,
 } from "./device-session-context.ts";
+import { DevicePreviewError, DevicePreviewPool } from "./device-preview-pool.ts";
+import { loadDisplaySize } from "./display-size.ts";
+import { createElementTapEndpoint } from "./element-tap-api.ts";
 import {
   listAvds,
   listRunningAvds,
@@ -159,6 +162,10 @@ export type WsData = {
   frameMeta: boolean;
   context: DeviceContext;
   handle?: Client;
+  /** Presence owns a serial-scoped pool subscription. Read-only by default. */
+  releasePreview?: () => void;
+  control?: boolean;
+  video?: boolean;
 };
 
 type Client = {
@@ -166,10 +173,12 @@ type Client = {
     number,
     { gesture: Extract<Gesture, { type: "touch" }>; record: boolean }
   >;
+  pendingInput: Set<Promise<unknown>>;
   id: number;
   ws: ServerWebSocket<WsData>;
   context: DeviceContext;
   frameMeta: boolean;
+  video: boolean;
   sentFrames: number;
   droppedFrames: number;
   backpressureEvents: number;
@@ -190,6 +199,9 @@ const AWAITING_KEYFRAME_RESET_MS = 2500;
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 const MAX_ROUTE_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_LOGCAT_QUERY_BYTES = 200;
+const MAX_DEVICE_PREVIEWS = 16;
+const MAX_DEVICE_SERIAL_BYTES = 256;
+const INPUT_RELEASE_DRAIN_MS = 1_000;
 
 export type ServerDependencies = {
   openScrcpy?: (serial: string, signal?: AbortSignal) => Promise<ScrcpySession>;
@@ -207,6 +219,7 @@ export type ServerDependencies = {
     serial: string,
     signal: AbortSignal,
   ) => Promise<AccessibilitySnapshot>;
+  loadDisplaySize?: typeof loadDisplaySize;
   setLocation?: (
     serial: string,
     fix: GeoFix,
@@ -368,6 +381,7 @@ export async function startServer(
     serial: string,
     generation: number,
     scrcpy: ScrcpySession,
+    preview = false,
   ): DeviceContext => {
     const context = new ActiveDeviceSession<Client>({
       serial,
@@ -376,7 +390,7 @@ export async function startServer(
       applyLocation: setLocation,
       inputQueue: createInputQueue(scrcpy),
     });
-    context.registerCleanup(() =>
+    if (!preview) context.registerCleanup(() =>
       uploads.cancelGeneration(
         generation,
         new UploadManagerError(
@@ -400,6 +414,30 @@ export async function startServer(
     throw err;
   }
   const sessions = new DeviceSessionManager(initialContext);
+  let nextPreviewGeneration = -1;
+  const previews = new DevicePreviewPool<DeviceContext>(
+    MAX_DEVICE_PREVIEWS,
+    async (serial, signal) => {
+      const device = (await listDevices()).find((candidate) => candidate.serial === serial);
+      if (signal.aborted) throw signal.reason;
+      if (!device) throw new DevicePreviewError(`Unknown adb device "${serial}".`, 404);
+      if (device.state !== "device") {
+        throw new DevicePreviewError(`${serial} is ${device.state}, not ready.`, 409);
+      }
+      const scrcpy = await openScrcpy(serial, signal);
+      try {
+        return createContext(serial, nextPreviewGeneration--, scrcpy, true);
+      } catch (err) {
+        await scrcpy.close();
+        throw err;
+      }
+    },
+    (context) => activateContext(context),
+  );
+  const isStreamPublished = (context: DeviceContext) =>
+    sessions.isPublished(context) || previews.isPublished(context);
+  const isStreamCurrent = (context: DeviceContext) =>
+    sessions.isCurrent(context) || previews.isCurrent(context);
   const recoveries = new WeakMap<
     DeviceContext,
     SessionRecoveryWatchdog<Client>
@@ -434,6 +472,15 @@ export async function startServer(
       codec: context.scrcpy.meta.codecId,
       size: { width: context.screen.width, height: context.screen.height },
       clients: context.clients.size,
+      previews: {
+        limit: MAX_DEVICE_PREVIEWS,
+        sessions: previews.snapshot().map(({ serial, context: preview }) => ({
+          serial,
+          status: preview?.status ?? "starting",
+          clients: preview?.clients.size ?? 0,
+          frames: preview?.frameCount ?? 0,
+        })),
+      },
       frames: context.frameCount,
       sourceFps: recoverySnapshot.sourceFps,
       sourceFrameAgeMs: recoverySnapshot.sourceFrameAgeMs,
@@ -462,6 +509,7 @@ export async function startServer(
       clientsDetail: Array.from(context.clients, (client) => ({
         id: client.id,
         frameMeta: client.frameMeta,
+        video: client.video,
         sentFrames: client.sentFrames,
         droppedFrames: client.droppedFrames,
         backpressureEvents: client.backpressureEvents,
@@ -558,7 +606,7 @@ export async function startServer(
     reason: string,
     detail?: { code?: string; meta?: Record<string, string | number> | null },
   ) => {
-    if (sessions.current !== context) return;
+    if (!isStreamPublished(context)) return;
     if (!terminalTransitionAllowed(context.status, nextStatus)) return;
     context.terminalTransitionStarted = true;
     context.status = nextStatus;
@@ -722,7 +770,29 @@ export async function startServer(
   };
 
   let nextTouchId = 1;
+  const inputRevisions = new Map<string, number>();
+  let nextInputRevision = 0;
 
+  const enqueueStreamGesture = (
+    context: DeviceContext,
+    gesture: Gesture,
+    source: string,
+    record = true,
+  ) => {
+    if (!isStreamCurrent(context)) throw new SessionChangedError(context.generation, null);
+    if (context.status !== "streaming") {
+      throw new Error(`session is ${context.status}`);
+    }
+    const accepted = context.inputQueue.enqueue(gesture, { ...context.screen });
+    inputRevisions.delete(context.serial);
+    inputRevisions.set(context.serial, ++nextInputRevision);
+    if (inputRevisions.size > 128) inputRevisions.delete(inputRevisions.keys().next().value!);
+    if (record) context.recorder.recordGesture(accepted.gesture, source);
+    return accepted;
+  };
+
+  // REST, replay, and active-device operations retain the stricter generation
+  // guard; only an explicitly opted-in socket can dispatch to a pool context.
   const enqueueGesture = (
     context: DeviceContext,
     gesture: Gesture,
@@ -730,12 +800,7 @@ export async function startServer(
     record = true,
   ) => {
     sessions.assertCurrent(context);
-    if (context.status !== "streaming") {
-      throw new Error(`session is ${context.status}`);
-    }
-    const accepted = context.inputQueue.enqueue(gesture, { ...context.screen });
-    if (record) context.recorder.recordGesture(accepted.gesture, source);
-    return accepted;
+    return enqueueStreamGesture(context, gesture, source, record);
   };
 
   const enqueueClientGesture = (
@@ -744,9 +809,15 @@ export async function startServer(
     record: boolean,
   ) => {
     const client = ws.data.handle;
-    if (gesture.type !== "touch")
-      return enqueueGesture(ws.data.context, gesture, "ws", record);
     if (!client) throw new Error("WebSocket client is not open");
+    const enqueue = ws.data.releasePreview && ws.data.control
+      ? enqueueStreamGesture
+      : enqueueGesture;
+    if (gesture.type !== "touch") {
+      const accepted = enqueue(ws.data.context, gesture, "ws", record);
+      trackClientInput(client, accepted.completion);
+      return accepted;
+    }
     const sourceId = gesture.pointerId ?? 0;
     const previous = client.touches.get(sourceId);
     if (gesture.action === "down" ? previous : !previous) {
@@ -762,7 +833,8 @@ export async function startServer(
       ...gesture,
       pointerId: previous?.gesture.pointerId ?? nextTouchId++,
     };
-    const accepted = enqueueGesture(ws.data.context, mapped, "ws", record);
+    const accepted = enqueue(ws.data.context, mapped, "ws", record);
+    trackClientInput(client, accepted.completion);
     if (gesture.action === "up") client.touches.delete(sourceId);
     else
       client.touches.set(sourceId, {
@@ -772,23 +844,34 @@ export async function startServer(
     return accepted;
   };
 
-  const releaseClientTouches = (client: Client) => {
+  const trackClientInput = (client: Client, completion: Promise<unknown>) => {
+    client.pendingInput.add(completion);
+    void completion.finally(() => client.pendingInput.delete(completion)).catch(() => {});
+  };
+
+  const releaseClientTouches = (client: Client, source = "ws:disconnect") => {
     // The input queue reserves an UP slot for every admitted DOWN, even when full.
     // Never redirect a late disconnect's releases onto a replacement session.
-    if (sessions.isCurrent(client.context)) {
+    const completions: Promise<unknown>[] = [];
+    if (isStreamCurrent(client.context)) {
       for (const { gesture, record } of client.touches.values()) {
         try {
-          const accepted = enqueueGesture(
+          const accepted = enqueueStreamGesture(
             client.context,
             { ...gesture, action: "up" },
-            "ws:disconnect",
+            source,
             record,
           );
           void accepted.completion.catch(() => {});
-        } catch {}
+          trackClientInput(client, accepted.completion);
+          completions.push(accepted.completion);
+        } catch (err) {
+          completions.push(Promise.reject(err));
+        }
       }
     }
     client.touches.clear();
+    return Promise.all(completions);
   };
 
   const dispatchGesture = (
@@ -1058,7 +1141,7 @@ export async function startServer(
     });
 
   const enqueueVideoReset = (context: DeviceContext, reason: string) => {
-    sessions.assertCurrent(context);
+    if (!isStreamCurrent(context)) throw new SessionChangedError(context.generation, null);
     context.inputQueue.assertOpen();
     const now = Date.now();
     if (now - context.lastVideoResetMs < VIDEO_RESET_COOLDOWN_MS) {
@@ -1085,7 +1168,7 @@ export async function startServer(
   const createRecovery = (context: DeviceContext) =>
     new SessionRecoveryWatchdog<Client>({
       clock: recoveryClock,
-      clients: () => context.clients,
+      clients: () => Array.from(context.clients).filter((client) => client.video),
       startedMs: recoveryClock.now(),
       intervalMs: 1_000,
       sessionResetCooldownMs: VIDEO_RESET_COOLDOWN_MS,
@@ -1093,7 +1176,7 @@ export async function startServer(
       sourceStallResetMs: SOURCE_STALL_RESET_MS,
       awaitingKeyFrameResetMs: AWAITING_KEYFRAME_RESET_MS,
       requestReset: (reason, now) => {
-        if (!sessions.isCurrent(context) || context.status !== "streaming") {
+        if (!isStreamCurrent(context) || context.status !== "streaming") {
           return false;
         }
         try {
@@ -1176,9 +1259,9 @@ export async function startServer(
     context.cachedConfig = null;
     const pump = (async () => {
       try {
-        while (!stopRequested && sessions.isCurrent(context)) {
+        while (!stopRequested && isStreamCurrent(context)) {
           const f = await context.scrcpy.readFrame();
-          if (!sessions.isCurrent(context)) break;
+          if (!isStreamCurrent(context)) break;
           if (!f) {
             if (!stopRequested)
               markTerminal(context, "stopped", "scrcpy video stream ended");
@@ -1190,7 +1273,7 @@ export async function startServer(
               context.screen.height = f.height;
               context.cachedConfig = null;
               for (const c of context.clients) {
-                recoveries.get(context)?.markAwaiting(c);
+                if (c.video) recoveries.get(context)?.markAwaiting(c);
                 sendJson(c.ws, {
                   type: "video-session",
                   size: { width: f.width, height: f.height },
@@ -1216,6 +1299,7 @@ export async function startServer(
           let rawOut: Buffer | null = null;
           let framedOut: Buffer | null = null;
           for (const c of context.clients) {
+            if (!c.video) continue;
             sendFrame(
               c,
               () =>
@@ -1255,7 +1339,7 @@ export async function startServer(
       // generation) are left alone.
       if (
         stopRequested ||
-        sessions.current !== context ||
+        !isStreamPublished(context) ||
         (context.signal.aborted && !context.terminalTransitionStarted)
       ) {
         return;
@@ -1267,7 +1351,7 @@ export async function startServer(
     context.scrcpy.controlSocket.once("error", (err) => {
       if (
         !stopRequested &&
-        sessions.current === context &&
+        isStreamPublished(context) &&
         (!context.signal.aborted || context.terminalTransitionStarted)
       ) {
         markTerminal(
@@ -1350,6 +1434,24 @@ export async function startServer(
 
   const apiRouter = createApiRouter(createApiRoutes());
   const apiServices = {
+    elementTapEndpoint: createElementTapEndpoint({
+      acquire: (serial, signal) => previews.acquire(serial, signal),
+      loadAccessibility,
+      loadDisplaySize: dependencies.loadDisplaySize ?? loadDisplaySize,
+      assertCurrent: (context) => {
+        if (!previews.isCurrent(context)) throw new SessionChangedError(context.generation, null);
+      },
+      inputRevision: (context) => inputRevisions.get(context.serial) ?? 0,
+      assertInputIdle: (context) => {
+        const active = sessions.current;
+        if (active.serial !== context.serial || !sessions.isCurrent(active)) return;
+        const queue = active.inputQueue.snapshot();
+        if (queue.depth || queue.active || queue.reservedReleases) {
+          throw new Error("The active controller has pending input or a held touch on this device.");
+        }
+      },
+      enqueue: enqueueStreamGesture,
+    }),
     runForPublishedContext,
     listDevices,
     errorResponse,
@@ -1459,6 +1561,39 @@ export async function startServer(
       }
 
       if (url.pathname === "/ws") {
+        if (url.searchParams.has("serial")) {
+          const serial = url.searchParams.get("serial")!;
+          if (!serial || Buffer.byteLength(serial) > MAX_DEVICE_SERIAL_BYTES || /[\u0000-\u001f\u007f]/.test(serial)) {
+            return Response.json({ ok: false, error: "invalid device serial" }, { status: 400 });
+          }
+          let lease: Awaited<ReturnType<typeof previews.acquire>> | undefined;
+          try {
+            lease = await previews.acquire(serial, req.signal);
+            if (req.signal.aborted || stopRequested) {
+              lease.release();
+              return Response.json({ ok: false, error: "preview request aborted" }, { status: 499 });
+            }
+            const ok = srv.upgrade(req, {
+              data: {
+                id: nextId++,
+                frameMeta: url.searchParams.get("frame-meta") === "1",
+                context: lease.context,
+                releasePreview: lease.release,
+                control: url.searchParams.get("control") === "1",
+                video: url.searchParams.get("video") !== "0",
+              },
+            });
+            if (ok) return undefined as unknown as Response;
+            lease.release();
+            return Response.json({ ok: false, error: "upgrade failed" }, { status: 400 });
+          } catch (err) {
+            lease?.release();
+            return Response.json(
+              { ok: false, error: err instanceof Error ? err.message : "preview unavailable" },
+              { status: err instanceof DevicePreviewError ? err.status : 503 },
+            );
+          }
+        }
         if (requestContext.status !== "streaming") {
           return new Response(JSON.stringify(health(requestContext)), {
             status: 503,
@@ -1484,21 +1619,24 @@ export async function startServer(
       maxPayloadLength: MAX_WS_MESSAGE_BYTES,
       open(ws) {
         const context = ws.data.context;
-        if (!sessions.isCurrent(context)) {
+        if (!isStreamCurrent(context)) {
           sendJson(ws, {
             ok: false,
             code: "session_changed",
             error: "device session changed",
           });
           ws.close(1012, "device session changed");
+          ws.data.releasePreview?.();
           return;
         }
         const handle: Client = {
           touches: new Map(),
+          pendingInput: new Set(),
           id: ws.data.id,
           ws,
           context,
           frameMeta: ws.data.frameMeta,
+          video: ws.data.video !== false,
           sentFrames: 0,
           droppedFrames: 0,
           backpressureEvents: 0,
@@ -1508,14 +1646,26 @@ export async function startServer(
         };
         context.clients.add(handle);
         ws.data.handle = handle;
+        if (ws.data.releasePreview && ws.data.control) {
+          sendJson(ws, { type: "control-ready", serial: context.serial });
+        }
+        if (ws.data.releasePreview) {
+          sendJson(ws, {
+            type: "video-session",
+            size: { width: context.screen.width, height: context.screen.height },
+          });
+        }
         const recovery = recoveries.get(context);
-        recovery?.markAwaiting(handle);
-        recovery?.requestVideoReset("client opened");
+        if (handle.video) {
+          recovery?.markAwaiting(handle);
+          recovery?.requestVideoReset("client opened");
+        }
       },
       message(ws, raw) {
         const context = ws.data.context;
-        if (!sessions.isCurrent(context)) {
+        if (!isStreamCurrent(context)) {
           ws.close(1012, "device session changed");
+          ws.data.releasePreview?.();
           return;
         }
         if (typeof raw !== "string") return;
@@ -1560,6 +1710,23 @@ export async function startServer(
               });
             return;
           }
+          if (ws.data.releasePreview && !ws.data.control) {
+            if (acknowledge) {
+              reply({ ok: false, code: "preview_read_only", error: "device previews are read-only" });
+            }
+            return;
+          }
+          if (msg.type === "release-input") {
+            if (!ws.data.handle) throw new Error("WebSocket client is not open");
+            void releaseClientTouches(ws.data.handle, "ws:release")
+              .then(() => {
+                if (acknowledge) reply({ ok: true, status: "completed" });
+              })
+              .catch((err) => {
+                if (acknowledge) reply(inputErrorPayload(err, "failed"));
+              });
+            return;
+          }
           const accepted = enqueueClientGesture(ws, msg, shouldRecord(payload));
           void accepted.completion
             .then((result) => {
@@ -1580,9 +1747,23 @@ export async function startServer(
       },
       close(ws) {
         if (ws.data.handle) {
-          releaseClientTouches(ws.data.handle);
+          const released = releaseClientTouches(ws.data.handle);
           ws.data.context.clients.delete(ws.data.handle);
+          if (ws.data.handle.pendingInput.size > 0 && ws.data.releasePreview) {
+            // The final controller may own the last pool lease. Keep its
+            // writer alive long enough to flush UP packets before disposal,
+            // with a deadline so a blocked device cannot retain the lease.
+            const release = ws.data.releasePreview;
+            const timer = setTimeout(release, INPUT_RELEASE_DRAIN_MS);
+            void Promise.allSettled([...ws.data.handle.pendingInput, released]).finally(() => {
+              clearTimeout(timer);
+              release();
+            }).catch(() => {});
+            return;
+          }
+          void released.catch(() => {});
         }
+        ws.data.releasePreview?.();
       },
     },
   };
@@ -1593,6 +1774,7 @@ export async function startServer(
   } catch (err) {
     stopRequested = true;
     await sessions.close("server startup failed");
+    await previews.close();
     await uploads.close(
       new UploadManagerError("closed", "server startup failed", {
         serial: sessions.current.serial,
@@ -1614,6 +1796,7 @@ export async function startServer(
     });
     stopTask = Promise.all([
       sessions.close("server stopping"),
+      previews.close(),
       uploads.close(error),
     ]).then(() => {});
     return stopTask;
