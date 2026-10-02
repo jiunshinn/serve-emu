@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>serve-emu motion test</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; overflow: hidden; background: #101923; color: white; font-family: system-ui, sans-serif; }
+      .stripes { position: fixed; inset: -100px; background: repeating-linear-gradient(115deg, #203951 0 50px, #152435 50px 100px); animation: drift 2s linear infinite; will-change: transform; }
+      .stage { position: fixed; inset: 15vh 12vw; }
+      .track { width: 100%; height: 100%; animation: horizontal 3s ease-in-out infinite alternate; }
+      .square { width: 64px; height: 64px; border-radius: 12px; background: #b0f0cf; box-shadow: 0 0 45px #a0eed144; animation: vertical 1.7s ease-in-out infinite alternate; }
+      .readout { position: fixed; left: 24px; bottom: 32px; padding: 18px; border: 1px solid #809aad55; background: #101923df; border-radius: 12px; }
+      h1 { margin: 0 0 10px; font-size: 17px; font-weight: 500; }
+      output { display: block; font: 28px ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+      p { margin: 10px 0 0; font-size: 11px; color: #a9bbc9; }
+      @keyframes drift { to { transform: translate(90px, 42px); } }
+      @keyframes horizontal { to { transform: translateX(calc(100% - 64px)); } }
+      @keyframes vertical { to { transform: translateY(calc(70vh - 64px)); } }
+    </style>
+  </head>
+  <body>
+    <div class="stripes"></div><div class="stage"><div class="track"><div class="square"></div></div></div>
+    <div class="readout"><h1>Capture motion test</h1><output id="counter">000000</output><p>Continuous motion · tap anywhere to restart</p></div>
+    <script>
+      let frames = 0;
+      const counter = document.getElementById("counter");
+      function tick() {
+        counter.textContent = String(++frames).padStart(6, "0");
+        requestAnimationFrame(tick);
+      }
+      document.addEventListener("pointerdown", () => {
+        frames = 0;
+        for (const animation of document.getAnimations()) animation.currentTime = 0;
+      });
+      requestAnimationFrame(tick);
+    </script>
+  </body>
+</html>

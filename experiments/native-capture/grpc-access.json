@@ -1,0 +1,14 @@
+{
+  "unprotected": [],
+  "allowlist": [{
+    "iss": "serve-emu-native-capture",
+    "protected": [
+      "/android.emulation.control.EmulatorController/getScreenshot",
+      "/android.emulation.control.EmulatorController/streamScreenshot",
+      "/android.emulation.control.EmulatorController/sendMouse",
+      "/android.emulation.control.EmulatorController/sendKey",
+      "/android.emulation.control.Rtc/sendJsepMessage",
+      "/android.emulation.control.v2.Rtc/SendJsepMessage"
+    ]
+  }]
+}
