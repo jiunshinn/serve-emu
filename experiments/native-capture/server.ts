@@ -2,8 +2,9 @@ import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
-import { createClient } from "./grpc-client.ts";
-import { hostEncoder } from "./host-encoder.ts";
+import { createClient, type NativeCaptureClient } from "./grpc-client.ts";
+import { hostEncoder, verifyVideoToolbox } from "./host-encoder.ts";
+import { parseBackendRequest, selectBackend, type Backend } from "./backend-selection.ts";
 import { startScrcpy, type ScrcpySession } from "../../packages/serve-emu/src/scrcpy.ts";
 import { dispatch, resetVideoPacket, type Gesture } from "../../packages/serve-emu/src/input.ts";
 import { parseWsClientJson } from "../../packages/serve-emu/src/shared/websocket-contracts.ts";
@@ -12,12 +13,35 @@ import { scanAU } from "../../packages/serve-emu/src/ui/lib/h264.ts";
 
 const { values } = parseArgs({ args: Bun.argv.slice(2), options: {
   serial: { type: "string" }, discovery: { type: "string" },
+  backend: { type: "string", default: "auto" },
   "emulator-dir": { type: "string", default: join(process.env.ANDROID_HOME ?? join(homedir(), "Library/Android/sdk"), "emulator") },
   port: { type: "string", default: "3302" }, "max-size": { type: "string", default: "1280" },
   fps: { type: "string", default: "60" }, "bit-rate": { type: "string", default: "8000000" },
   probe: { type: "boolean", default: false },
+  help: { type: "boolean", short: "h", default: false },
 } });
-if (!values.serial) throw new Error("Pass --serial emulator-N (the experiment never selects a device implicitly)");
+if (values.help) {
+  console.log(`Native capture comparison (experimental)
+
+  bun run start --serial <adb-serial> [--backend auto|scrcpy|native]
+
+  --backend auto     Try native on macOS emulators; otherwise use scrcpy (default)
+  --backend scrcpy   Force scrcpy; no gRPC or FFmpeg setup required
+  --backend native   Require macOS, emulator gRPC, and working VideoToolbox
+  --probe            Print backend selection and native RPC results when available
+  --port N           Loopback HTTP port (default 3302)
+  --max-size N       Longest video edge (default 1280)
+  --fps N            Source cap / nominal host encoder rate (default 60)
+  --bit-rate N       Requested H.264 bitrate (default 8000000)
+  --emulator-dir P   SDK emulator directory for native capture
+  --discovery P      Native emulator discovery file
+
+auto falls back to scrcpy when native preparation fails. Explicit native does not.
+The selected flag also controls which sources the comparison page can select.`);
+  process.exit(0);
+}
+const requestedBackend = parseBackendRequest(values.backend);
+if (!values.serial) throw new Error("Pass --serial <adb-serial> (the experiment never selects a device implicitly)");
 const serial = values.serial;
 const bounded = (value: string, min: number, max: number) => {
   const number = Number(value);
@@ -28,19 +52,39 @@ const port = bounded(values.port!, 1024, 65535);
 const maxSize = bounded(values["max-size"]!, 128, 2560);
 const fps = bounded(values.fps!, 1, 120);
 const bitRate = bounded(values["bit-rate"]!, 100_000, 50_000_000);
-const grpc = await createClient({ emulatorDir: values["emulator-dir"]!, discoveryFile: values.discovery, serial });
+let grpc: NativeCaptureClient | null = null;
+let physicalSize = { width: 0, height: 0 };
+const selection = await selectBackend({ requested: requestedBackend, platform: process.platform, serial,
+  prepareNative: async () => {
+    await verifyVideoToolbox();
+    const candidate = await createClient({ emulatorDir: values["emulator-dir"]!, discoveryFile: values.discovery, serial });
+    try {
+      const original = await candidate.screenshot({ maxSize: 0 });
+      if (original.width <= 0 || original.height <= 0) throw new Error("Emulator display is inactive");
+      physicalSize = { width: original.width, height: original.height };
+      grpc = candidate;
+    } catch (error) { await candidate.close(); throw error; }
+  },
+});
+// A function also makes nullable ownership explicit across asynchronous startup.
+const nativeClient = (): NativeCaptureClient => {
+  if (!grpc) throw new Error("Native capture is unavailable for the selected backend");
+  return grpc;
+};
+const closeNative = async () => { await grpc?.close(); };
 if (values.probe) {
   try {
-    const screenshot = await grpc.screenshot({ maxSize: 128 });
-    console.log(JSON.stringify({ capture: { width: screenshot.width, height: screenshot.height, bytes: screenshot.rgba.length }, rtc: await grpc.probeRtc() }, null, 2));
-  } finally { await grpc.close(); }
+    const client = selection.availableBackends.includes("native") ? nativeClient() : null;
+    const screenshot = client ? await client.screenshot({ maxSize: 128 }) : null;
+    console.log(JSON.stringify({ ...selection,
+      capture: screenshot ? { width: screenshot.width, height: screenshot.height, bytes: screenshot.rgba.length } : null,
+      rtc: client ? await client.probeRtc() : null,
+    }, null, 2));
+  } finally { await closeNative(); }
   process.exit(0);
 }
-let physicalSize: { width: number; height: number };
 const assets = new Map<string, Blob>();
 try {
-const original = await grpc.screenshot({ maxSize: 0 });
-physicalSize = { width: original.width, height: original.height };
 for (const [route, entrypoint] of [
   ["/client.js", join(import.meta.dir, "client.ts")],
   ["/worker.js", join(import.meta.dir, "../../packages/serve-emu/src/ui/lib/stream-worker.ts")],
@@ -49,9 +93,8 @@ for (const [route, entrypoint] of [
   if (!build.success) throw new Error(build.logs.join("\n"));
   assets.set(route, build.outputs[0]!);
 }
-} catch (error) { await grpc.close(); throw error; }
+} catch (error) { await closeNative(); throw error; }
 
-type Backend = "scrcpy" | "native";
 type Client = ServerWebSocket<{ backend: Backend }>;
 let active: Client | null = null;
 let acceptedClient: Client | null = null;
@@ -66,7 +109,7 @@ let lastReset = 0;
 let sourceWindow = 0;
 let encodedWindow = 0;
 let previousTick = performance.now();
-const health = { backend: "none" as string, width: 0, height: 0, sourceFps: 0, encodedFps: 0, droppedFrames: 0, clients: 0, error: null as string | null };
+const health = { ...selection, backend: "none" as string, width: 0, height: 0, sourceFps: 0, encodedFps: 0, droppedFrames: 0, clients: 0, error: null as string | null };
 const tick = setInterval(() => {
   const now = performance.now(), seconds = (now - previousTick) / 1000;
   health.sourceFps = Math.round(sourceWindow / seconds * 10) / 10;
@@ -83,7 +126,7 @@ async function stopPipeline() {
   if (nativePointer) {
     const point = nativePointer;
     nativePointer = null;
-    await grpc.sendMouse({ ...point, buttons: 0 }).catch((error) => {
+    await nativeClient().sendMouse({ ...point, buttons: 0 }).catch((error) => {
       console.error("Native pointer release failed:", String(error));
     });
   }
@@ -145,6 +188,7 @@ async function startPipeline(ws: Client) {
         if (!abort.signal.aborted) fail(ws, new Error("scrcpy stream ended"));
       })().catch((error) => { if (!abort.signal.aborted) fail(ws, error); });
     } else {
+      const grpc = nativeClient();
       const first = await grpc.screenshot({ maxSize, signal: abort.signal });
       if (active !== ws || ws.readyState !== WebSocket.OPEN) return;
       session(ws, first.width, first.height);
@@ -173,6 +217,7 @@ async function startPipeline(ws: Client) {
 async function gesture(action: Gesture) {
   if (!active) throw new Error("Connect a viewer first");
   if (scrcpy) return dispatch(scrcpy.controlSocket, action, { width: health.width, height: health.height });
+  const grpc = nativeClient();
   if (action.type === "touch") {
     const point = { x: Math.round(action.x * (physicalSize.width - 1)), y: Math.round(action.y * (physicalSize.height - 1)) };
     // Retain a pressed pointer even if its RPC fails after dispatch. Teardown
@@ -200,12 +245,14 @@ return Bun.serve<{ backend: Backend }>({
     if (url.host !== `127.0.0.1:${port}` || (req.headers.has("origin") && req.headers.get("origin") !== origin)) return Response.json({ ok: false, error: "Origin rejected" }, { status: 403 });
     if (req.method !== "GET") return Response.json({ ok: false, error: "Method not allowed" }, { status: 405 });
     if (url.pathname === "/ws") {
-      const backend = url.searchParams.get("backend");
+      const backend = url.searchParams.get("backend") ?? selection.defaultBackend;
       if (backend !== "native" && backend !== "scrcpy") return Response.json({ ok: false, error: "Unknown backend" }, { status: 400 });
+      if (!selection.availableBackends.includes(backend)) return Response.json({ ok: false, error: `Backend ${backend} is unavailable for --backend ${requestedBackend}` }, { status: 409 });
       if (req.headers.get("origin") !== origin) return Response.json({ ok: false, error: "Origin required" }, { status: 403 });
       return server.upgrade(req, { data: { backend } }) ? undefined : new Response("Upgrade failed", { status: 400 });
     }
     if (url.pathname === "/health") return Response.json(health);
+    if (url.pathname === "/config") return Response.json(selection);
     if (url.pathname === "/") return new Response(Bun.file(join(import.meta.dir, "index.html")));
     if (url.pathname === "/motion" || url.pathname === "/motion.html") return new Response(Bun.file(join(import.meta.dir, "motion.html")));
     if (assets.has(url.pathname)) return new Response(assets.get(url.pathname), { headers: { "content-type": "text/javascript" } });
@@ -243,16 +290,17 @@ return Bun.serve<{ backend: Backend }>({
     },
   },
 });
-} catch (error) { clearInterval(tick); await grpc.close(); throw error; }
+} catch (error) { clearInterval(tick); await closeNative(); throw error; }
 })();
 console.log(`Capture comparison: ${origin} (device ${serial}; max-size ${maxSize}; ${fps} fps)`);
+console.log(`Backend: ${selection.defaultBackend} (--backend ${requestedBackend}; ${selection.reason})`);
 let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
   clearInterval(tick);
   active?.close(1000, "Experiment stopped"); active = null;
-  await switching; await stopPipeline(); await grpc.close();
+  await switching; await stopPipeline(); await closeNative();
   await server.stop(true);
 }
 process.on("SIGINT", () => { void shutdown(); });

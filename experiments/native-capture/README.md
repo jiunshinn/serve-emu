@@ -14,9 +14,10 @@ is a separate experiment for a build that actually provides those services.
 
 ## Run on macOS
 
-Requires Bun, Android Emulator with its installed `lib/emulator_controller.proto`,
-ADB, and FFmpeg built with `h264_videotoolbox`. Hardware encoding is required;
-the experiment does not silently fall back to a software encoder.
+The native path requires Bun, Android Emulator with its installed
+`lib/emulator_controller.proto`, ADB, and FFmpeg built with `h264_videotoolbox`.
+It requires hardware encoding; it does not use a software FFmpeg fallback.
+The scrcpy path needs Bun, ADB, and a connected Android device or emulator.
 
 From the repository root, start an unused AVD in a separate terminal. Replace
 `Pixel8a_API34` and the SDK path for your installation. The read-only launch does
@@ -35,27 +36,29 @@ Then start the comparison server:
 ```sh
 cd experiments/native-capture
 bun install --frozen-lockfile
-bun run start --serial emulator-5556 --max-size 1920
+bun run start --serial emulator-5556 --backend auto --max-size 1920
 ```
 
-Open <http://127.0.0.1:3302>. Select a source, interact with the screen, and inspect
-FPS and source drops. Only one viewer is supported; a second viewer is rejected
+Open <http://127.0.0.1:3302>. The page starts with the server-selected source and
+shows the selection reason. When both sources are available, switch between them
+to compare FPS and source drops. Only one viewer is supported; a second viewer is rejected
 without interrupting the first. Only one capture/encoder pipeline runs at a time.
 
-Options: `--port`, `--max-size`, `--fps`, `--bit-rate`, `--emulator-dir`,
-`--discovery`, and `--probe`. Defaults are port 3302, longest edge 1280,
+Options: `--backend`, `--port`, `--max-size`, `--fps`, `--bit-rate`, `--emulator-dir`,
+`--discovery`, `--probe`, and `--help`. Defaults are backend auto, port 3302, longest edge 1280,
 60 FPS, and 8 Mbps. `--fps` configures the scrcpy cap and the host encoder's
 nominal rate; native screenshot delivery follows emulator updates.
 Use the default 60 for comparisons on a 60 Hz emulator.
 
-Discovery automatically matches the explicit emulator serial. To inspect native
-capture and RTC availability without starting the web server:
+Native discovery automatically matches the explicit emulator serial. To inspect
+backend selection and, when native is ready, capture and RTC availability without
+starting the web server:
 
 ```sh
 bun run start --serial emulator-5556 --probe
 ```
 
-The server registers a temporary public JWK, signs short-lived JWTs with a private
+When native is selected or available for comparison, the server registers a temporary public JWK, signs short-lived JWTs with a private
 key held in memory, and removes its JWK when stopped. The custom allowlist grants
 only capture, input, and non-allocating RTC probes. Tokens stay on the server.
 The web server binds to loopback and checks Host and Origin; it is not a remote
@@ -66,6 +69,43 @@ Stop the server with Ctrl+C. Stop only the disposable emulator when finished:
 ```sh
 adb -s emulator-5556 emu kill
 ```
+
+## Select a backend by platform
+
+```sh
+# Automatic OS and capability selection
+bun run start --serial emulator-5556 --backend auto
+
+# Portable scrcpy path; skips gRPC discovery, SDK proto loading, and FFmpeg checks
+bun run start --serial emulator-5556 --backend scrcpy
+
+# Explicit macOS native path; failure is reported instead of falling back
+bun run start --serial emulator-5556 --backend native
+```
+
+| Flag | macOS emulator | Linux or Windows | Physical Android device |
+| --- | --- | --- | --- |
+| `auto` (default) | Native when startup checks pass, otherwise scrcpy | scrcpy | scrcpy |
+| `scrcpy` | scrcpy | scrcpy | scrcpy |
+| `native` | Native, or a startup error | Unsupported platform error | Unsupported device error |
+
+Native preparation actually encodes a small frame with VideoToolbox, then checks
+authenticated gRPC capture. A failed check makes `auto` choose scrcpy and publish
+a generic fallback reason. An explicit `native` request fails with setup guidance.
+This is startup selection; a later streaming failure is reported and does not
+silently change the backend during a comparison.
+
+An explicit flag locks the page to that backend. With `auto` on a prepared Mac,
+both sources remain selectable. `/config` and `/health` expose the requested
+policy, default source, available sources, OS, and selection reason. Disallowed
+WebSocket source overrides are rejected by the server too. Reasons never include
+raw authentication errors or credentials.
+
+On Linux or Windows, start an emulator normally and run the `--backend scrcpy`
+command above (substitute its actual ADB serial). Native gRPC configuration and
+FFmpeg are unnecessary. Platform selection is covered by automated tests for
+`darwin`, `linux`, and `win32`; live playback validation was performed on macOS.
+These flags belong to this experiment's `bun run start`, not the main serve-emu CLI.
 
 ## Compare moving content
 

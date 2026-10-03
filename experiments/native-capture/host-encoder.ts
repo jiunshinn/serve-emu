@@ -1,5 +1,19 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { Mp4Frames } from "./mp4-frames.ts";
+
+/** Exercise hardware encoding, not just FFmpeg's list of compiled codecs. */
+export async function verifyVideoToolbox(): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    execFile("ffmpeg", [
+      "-hide_banner", "-loglevel", "error", "-nostdin",
+      "-f", "lavfi", "-i", "color=c=black:s=64x64:r=30", "-frames:v", "1",
+      "-an", "-c:v", "h264_videotoolbox", "-allow_sw", "0", "-f", "null", "-",
+    ], { timeout: 5_000, killSignal: "SIGKILL", maxBuffer: 64 * 1024 }, (error) => {
+      if (error) reject(new Error("FFmpeg with working VideoToolbox hardware encoding is required"));
+      else resolve();
+    });
+  });
+}
 
 export function hostEncoder(options: {
   width: number; height: number; fps: number; bitRate: number;

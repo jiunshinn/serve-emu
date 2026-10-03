@@ -1,6 +1,13 @@
 import type { StreamStats, StreamWorkerEvent } from "../../packages/serve-emu/src/ui/lib/stream-worker.ts";
 
 type Backend = "scrcpy" | "native";
+type CaptureConfig = {
+  requestedBackend: "auto" | Backend;
+  defaultBackend: Backend;
+  availableBackends: Backend[];
+  platform: string;
+  reason: string;
+};
 type CaptureHealth = {
   backend: Backend;
   width: number;
@@ -26,6 +33,7 @@ declare global {
     __captureStats: StreamStats | null;
     __captureHistory: CaptureSample[];
     __captureHealth: CaptureHealth | null;
+    __captureConfig: CaptureConfig | null;
   }
 }
 
@@ -37,9 +45,13 @@ const element = <T extends HTMLElement = HTMLElement>(id: string): T => {
 const viewport = element("viewport");
 const status = element("status");
 const errorBox = element("error");
+const reconnect = element<HTMLButtonElement>("reconnect");
 const sourceChoices = document.querySelectorAll<HTMLInputElement>('input[name="backend"]');
-const requestedBackend = new URL(location.href).searchParams.get("backend");
-let backend: Backend = requestedBackend === "native" ? "native" : "scrcpy";
+let config: CaptureConfig | null = null;
+let backend: Backend | null = null;
+let configError: string | null = null;
+let configController: AbortController | null = null;
+let pageClosed = false;
 let worker: Worker | null = null;
 let canvas: HTMLCanvasElement | null = null;
 let epoch = 0;
@@ -57,6 +69,7 @@ let moveHandle = 0;
 window.__captureStats = null;
 window.__captureHistory = [];
 window.__captureHealth = null;
+window.__captureConfig = null;
 
 const format = (value: number | null | undefined) =>
   typeof value === "number" && Number.isFinite(value)
@@ -64,8 +77,109 @@ const format = (value: number | null | undefined) =>
     : "—";
 
 function showError() {
-  errorBox.textContent = workerError ?? healthError ?? "";
+  errorBox.textContent = configError ?? workerError ?? healthError ?? "";
   errorBox.hidden = !errorBox.textContent;
+}
+
+const isBackend = (value: unknown): value is Backend => value === "scrcpy" || value === "native";
+
+function parseConfig(value: unknown): CaptureConfig {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Invalid /config response: expected a capture configuration object.");
+  }
+  const data = value as Record<string, unknown>;
+  if ((data.requestedBackend !== "auto" && !isBackend(data.requestedBackend))
+    || !isBackend(data.defaultBackend)
+    || !Array.isArray(data.availableBackends) || data.availableBackends.length < 1
+    || data.availableBackends.length > 2 || !data.availableBackends.every(isBackend)
+    || new Set(data.availableBackends).size !== data.availableBackends.length
+    || !data.availableBackends.includes(data.defaultBackend)
+    || typeof data.platform !== "string" || !data.platform.trim()
+    || typeof data.reason !== "string" || !data.reason.trim()) {
+    throw new Error("Invalid /config response: backend policy, available sources, platform, or reason is missing or invalid.");
+  }
+  if (data.requestedBackend !== "auto" && data.defaultBackend !== data.requestedBackend) {
+    throw new Error("Invalid /config response: the default source conflicts with the forced backend.");
+  }
+  return {
+    requestedBackend: data.requestedBackend,
+    defaultBackend: data.defaultBackend,
+    availableBackends: [...data.availableBackends],
+    platform: data.platform,
+    reason: data.reason,
+  };
+}
+
+function allowedBackend(value: unknown): value is Backend {
+  return config !== null && isBackend(value) && config.availableBackends.includes(value)
+    && (config.requestedBackend === "auto" || config.requestedBackend === value);
+}
+
+async function loadConfig() {
+  if (configController || pageClosed) return;
+  const controller = new AbortController();
+  configController = controller;
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  reconnect.disabled = true;
+  sourceChoices.forEach((input) => { input.disabled = true; input.checked = false; });
+  element<HTMLButtonElement>("home").disabled = true;
+  element<HTMLButtonElement>("back").disabled = true;
+  configError = null;
+  status.textContent = "Loading backend policy…";
+  element("policy").textContent = "Loading server configuration…";
+  element("policy-reason").textContent = "";
+  showError();
+  let ready = false;
+  try {
+    const response = await fetch("/config", { signal: controller.signal, cache: "no-store" });
+    if (!response.ok) throw new Error(`Could not load capture configuration: HTTP ${response.status}.`);
+    const loaded = parseConfig(await response.json());
+    if (pageClosed) return;
+    config = loaded;
+    window.__captureConfig = loaded;
+    const requested = new URL(location.href).searchParams.get("backend");
+    backend = allowedBackend(requested) ? requested : loaded.defaultBackend;
+    element("policy").textContent = `${loaded.requestedBackend === "auto" ? "Automatic" : `Forced ${loaded.requestedBackend}`} · ${loaded.platform}`;
+    element("policy-reason").textContent = [
+      loaded.reason,
+      requested !== null && !allowedBackend(requested)
+        ? `The source requested in this URL is unavailable under this policy; using ${backend}.`
+        : null,
+    ].filter(Boolean).join(" ");
+    sourceChoices.forEach((input) => {
+      input.disabled = !allowedBackend(input.value);
+      input.checked = input.value === backend;
+      const explanation = input.disabled
+        ? loaded.requestedBackend === "auto"
+          ? `Unavailable on ${loaded.platform}. ${loaded.reason}`
+          : `Locked by --backend ${loaded.requestedBackend}.`
+        : "";
+      input.title = explanation;
+      if (input.parentElement) input.parentElement.title = explanation;
+    });
+    element<HTMLButtonElement>("home").disabled = false;
+    element<HTMLButtonElement>("back").disabled = false;
+    reconnect.textContent = "Reconnect";
+    ready = true;
+  } catch (error) {
+    if (pageClosed) return;
+    config = null;
+    backend = null;
+    window.__captureConfig = null;
+    configError = controller.signal.aborted
+      ? "Capture configuration timed out. Retry to load the server's backend policy."
+      : error instanceof Error ? error.message : "Could not load capture configuration.";
+    status.textContent = "Configuration unavailable";
+    element("policy").textContent = "Configuration unavailable";
+    element("policy-reason").textContent = "Use Retry configuration to try again.";
+    reconnect.textContent = "Retry configuration";
+    showError();
+  } finally {
+    clearTimeout(timeout);
+    configController = null;
+    if (!pageClosed) reconnect.disabled = false;
+  }
+  if (ready && !pageClosed) connect();
 }
 
 function showSession() {
@@ -142,7 +256,7 @@ function bindPointer(target: HTMLCanvasElement) {
   });
 }
 
-async function pollHealth(currentEpoch: number) {
+async function pollHealth(currentEpoch: number, selectedBackend: Backend) {
   const controller = new AbortController();
   healthController = controller;
   const timeout = setTimeout(() => controller.abort(), 4000);
@@ -151,7 +265,7 @@ async function pollHealth(currentEpoch: number) {
     if (!response.ok) throw new Error(`Health request failed: HTTP ${response.status}`);
     const health = await response.json() as CaptureHealth;
     if (currentEpoch !== epoch) return;
-    if (health.backend !== backend) {
+    if (health.backend !== selectedBackend) {
       healthError = "Waiting for the selected capture source to start.";
     } else {
       window.__captureHealth = health;
@@ -168,12 +282,14 @@ async function pollHealth(currentEpoch: number) {
     clearTimeout(timeout);
     if (currentEpoch === epoch) {
       showError();
-      healthTimer = setTimeout(() => void pollHealth(currentEpoch), 1000);
+      healthTimer = setTimeout(() => void pollHealth(currentEpoch, selectedBackend), 1000);
     }
   }
 }
 
 function connect() {
+  if (!allowedBackend(backend) || pageClosed) return;
+  const selectedBackend = backend;
   stopPointer();
   worker?.terminate();
   worker = null;
@@ -188,12 +304,12 @@ function connect() {
   status.textContent = "Connecting…";
   status.dataset.ready = "false";
   for (const id of ["rendered-fps", "source-fps", "encoded-fps", "decode-p95", "present-p95", "drops"]) element(id).textContent = "—";
-  element("pipeline").textContent = backend === "scrcpy"
+  element("pipeline").textContent = selectedBackend === "scrcpy"
     ? "Android screen → scrcpy H.264 → production player"
     : "Emulator framebuffer → gRPC → host H.264 → production player";
-  sourceChoices.forEach((input) => { input.checked = input.value === backend; });
+  sourceChoices.forEach((input) => { input.checked = input.value === selectedBackend; });
   const pageUrl = new URL(location.href);
-  pageUrl.searchParams.set("backend", backend);
+  pageUrl.searchParams.set("backend", selectedBackend);
   history.replaceState(null, "", pageUrl);
   canvas = document.createElement("canvas");
   canvas.width = 432;
@@ -237,7 +353,7 @@ function connect() {
       element("decode-p95").textContent = format(message.stats.decodeMsP95);
       element("present-p95").textContent = format(message.stats.presentMsP95);
       const sample: CaptureSample = {
-        at: new Date().toISOString(), backend, run: currentEpoch,
+        at: new Date().toISOString(), backend: selectedBackend, run: currentEpoch,
         elapsedMs: Math.round(performance.now() - runStartedAt), firstFrameMs,
         stats: message.stats, health: window.__captureHealth,
       };
@@ -249,25 +365,25 @@ function connect() {
   });
   const socketUrl = new URL("/ws", location.href);
   socketUrl.protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  socketUrl.searchParams.set("backend", backend);
+  socketUrl.searchParams.set("backend", selectedBackend);
   socketUrl.searchParams.set("frame-meta", "1");
   const offscreen = canvas.transferControlToOffscreen();
   nextWorker.postMessage({ type: "init", clientEpoch: currentEpoch, canvas: offscreen, url: socketUrl.href }, [offscreen]);
-  void pollHealth(currentEpoch);
+  void pollHealth(currentEpoch, selectedBackend);
 }
 
 sourceChoices.forEach((input) => input.addEventListener("change", () => {
-  if (!input.checked) return;
-  backend = input.value === "native" ? "native" : "scrcpy";
+  if (!input.checked || !allowedBackend(input.value)) return;
+  backend = input.value;
   connect();
 }));
-element("reconnect").addEventListener("click", connect);
+reconnect.addEventListener("click", () => { if (config) connect(); else void loadConfig(); });
 element("home").addEventListener("click", () => send({ type: "home" }));
 element("back").addEventListener("click", () => send({ type: "back" }));
 element("download").addEventListener("click", () => {
   const content = JSON.stringify({
     experiment: "native-capture", exportedAt: new Date().toISOString(),
-    userAgent: navigator.userAgent, samples: window.__captureHistory,
+    userAgent: navigator.userAgent, config: window.__captureConfig, samples: window.__captureHistory,
   }, null, 2);
   const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
   const link = document.createElement("a");
@@ -278,10 +394,12 @@ element("download").addEventListener("click", () => {
 });
 window.addEventListener("blur", stopPointer);
 window.addEventListener("pagehide", () => {
+  pageClosed = true;
+  configController?.abort();
   stopPointer();
   epoch++;
   worker?.terminate();
   healthController?.abort();
   if (healthTimer) clearTimeout(healthTimer);
 });
-connect();
+void loadConfig();
