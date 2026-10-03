@@ -7,10 +7,13 @@
 - Root scripts delegate to the `serve-emu` workspace package.
 - Main package: `packages/serve-emu`.
 - CLI entry point: `packages/serve-emu/src/cli.ts`.
-- HTTP, WebSocket, health, and REST APIs: `packages/serve-emu/src/server.ts`.
+- HTTP entry point, access-control gate, WebSocket handlers, and `/health`: `packages/serve-emu/src/server.ts`.
+- REST API routes: `packages/serve-emu/src/api/routes/*`, dispatched by `src/api/router.ts`; errors in `src/api/api-error.ts`.
+- API method table and body limits: `packages/serve-emu/src/server/api-boundary.ts`; slow-client frame decisions: `src/server/backpressure.ts`.
+- Wire contracts shared by server and UI (API responses, control, frame metadata, WebSocket, worker messages): `packages/serve-emu/src/shared`.
 - scrcpy process, adb forward tunnel, socket setup, and frame parsing: `packages/serve-emu/src/scrcpy.ts`.
 - scrcpy control socket message encoding for taps, swipes, keys, text, and video reset: `packages/serve-emu/src/input.ts`.
-- Android emulator discovery and launch helpers: `packages/serve-emu/src/emulator.ts`.
+- Android emulator discovery, launch, and host webcam/camera helpers: `packages/serve-emu/src/emulator.ts`.
 - ADB helpers: `packages/serve-emu/src/adb.ts`.
 - App install/launch/clear/grant/import helpers: `packages/serve-emu/src/app-management.ts`.
 - Location and route playback: `packages/serve-emu/src/location.ts` and `packages/serve-emu/src/route-playback.ts`.
@@ -29,9 +32,14 @@ bun run packages/serve-emu/src/cli.ts
 bun run dev
 bun run --filter serve-emu dev:ui
 bun run --filter serve-emu test
+bun run --filter serve-emu coverage
 bun run --filter serve-emu typecheck
 bun run --filter serve-emu typecheck:ui
+bun run --filter serve-emu typecheck:tests
 bun run --filter serve-emu build
+bun run --filter serve-emu test:package
+bun run --filter serve-emu test:browser
+bun run docs:sync
 bun run docs:check
 bun run check
 ```
@@ -40,10 +48,15 @@ bun run check
 `packages/serve-emu/vendor/` and builds the browser UI. The CLI also runs the
 scrcpy setup lazily on first start.
 
+`test:browser` runs the Playwright streaming suite in `tests/browser`; run
+`bunx playwright install chromium` once first. The root `README.md` is
+canonical: `packages/serve-emu/README.md` is generated from it, so edit the root
+file and run `docs:sync`.
+
 ## Runtime Assumptions
 
 - Bun is the primary runtime. Keep server-side code compatible with Bun APIs such as `Bun.serve`, `Bun.argv`, and `ServerWebSocket`.
-- The package is ESM. Use explicit `.ts` extensions for local TypeScript imports, following the existing style.
+- The package is ESM. Server-side code uses explicit `.ts` extensions for local TypeScript imports; `src/ui` and `src/shared` are also bundled by Vite and import without extensions. Follow the style of the directory you are in.
 - Default device selection should remain the only booted device. If multiple devices are connected, require or pass `-s <serial>`.
 - Do not shell out to `adb shell input` for input events. Write directly to scrcpy's control socket via `src/input.ts`; this keeps latency low enough for agent workflows.
 - Location control is emulator-only and uses Android Emulator `geo fix`.
@@ -65,19 +78,20 @@ second byte-layout description here that can drift from the tested reference.
 ## Server and API Guidance
 
 - Keep HTTP API inputs bounded. Follow existing `MAX_*_BYTES` limits and explicit payload validation patterns.
+- To add an endpoint, add the handler under `src/api/routes/`, register its path and methods in `API_ROUTE_METHODS` (`src/server/api-boundary.ts`), update the route counts asserted in `tests/server-boundaries.test.ts`, and add a response parser to `src/shared/api-contracts.ts` for the UI client.
 - Gesture API coordinates are normalized unit values from `0` to `1`; convert to screen pixels only in `dispatch`.
 - Preserve session recording behavior. REST and WebSocket actions should record by default unless payloads explicitly set `record: false`.
 - For slow WebSocket clients, keep the backpressure strategy: drop until the next keyframe, request video reset with cooldown, and close clients with excessive buffered bytes.
 - Maintain `/health` as the best machine-readable snapshot for agents: include status, stream metadata, client metrics, route/session state, and last error details when relevant.
-- Prefer structured JSON errors with `ok: false` for API endpoints rather than throwing raw responses.
+- API failures are structured JSON with `ok: false` and a stable code from `API_ERROR_CODES`. In routes, throw `ApiError` (`src/api/api-error.ts`) rather than building raw responses; keep its message free of command output or other internal details, and pass the original error as `cause`.
 - Access control lives in `server.ts` (the `fetch` gate) and `cli.ts` (policy). Defaults bind to loopback (`DEFAULT_HOST`); non-loopback binds require a token unless `--unsafe-no-auth`. Every request passes the token gate when auth is on (bearer header, `semu_session` HttpOnly cookie, or `?token=`); WS upgrades and non-GET requests also require a matching `Origin`. The browser bootstraps by exchanging a `?token=` URL for the cookie, so the bundled UI needs no per-request token wiring. Never leak the token into `/health`, `/api`, error bodies, or reconnect URLs, and keep new endpoints behind the same gate (it runs before routing, so new routes are covered automatically).
 
 ## UI Guidance
 
 - The UI lives under `packages/serve-emu/src/ui` and is built by Vite.
-- Keep streaming decode logic in `src/ui/lib/use-stream.ts` and H.264 helpers in `src/ui/lib/h264.ts`.
+- The stream pipeline (WebSocket → WebCodecs decode → present) runs in a Worker: `src/ui/lib/stream-worker.ts`, with state in `stream-lifecycle.ts` and latency tracking in `stream-performance.ts`. `src/ui/lib/use-stream.ts` is the React hook that owns the worker; keep decode work off the main thread. H.264 helpers live in `src/ui/lib/h264.ts`.
 - Device controls should call the local REST/WebSocket APIs instead of duplicating server-side adb or scrcpy logic in the UI.
-- When changing the stream protocol, update both the server frame metadata writer and the UI reader together.
+- When changing the stream protocol or any wire message, change the shared contract in `src/shared` (for example `frame-meta.ts`) rather than separate server and UI copies.
 
 ## Validation
 
@@ -87,6 +101,10 @@ Run the aggregate check before handing off a change:
 bun run check
 ```
 
+`check` also enforces per-file line-coverage floors from
+`scripts/check-coverage.ts` on critical files such as `server.ts`, `scrcpy.ts`,
+and `input.ts`; add tests rather than lowering a floor.
+
 For runtime or protocol changes, also test manually with a booted emulator or device:
 
 ```sh
@@ -94,4 +112,4 @@ adb devices
 bun run packages/serve-emu/src/cli.ts
 ```
 
-Verify relevant flows: first video frame, browser refresh recovery, multiple tabs, tap/swipe/text/key input, `/api/screenshot`, changed REST APIs, logcat SSE, app management, location, route playback, and session replay when touched.
+Verify relevant flows: first video frame, browser refresh recovery, multiple tabs, tap/swipe/text/key input, `/api/screenshot`, changed REST APIs, logcat SSE, app management, location, route playback, session replay, and `--avd` camera flags when touched.
