@@ -105,6 +105,14 @@ configuration and prepends it to key frames so that a browser joining or
 refreshing mid-stream can initialize its decoder. Slow clients drop frames until
 the next key frame and may request a video reset.
 
+A session packet starts a new encoder session, and the session's first packets
+are a codec configuration and a key frame. `serve-emu` and the browser wait for
+that key frame instead of requesting another reset, which would restart the
+encoder before it can answer. Each reset also restarts the encoder, so while an
+admitted reset has not yet produced a key frame, further reset requests from
+the watchdog or clients are coalesced into it. The wait starts at 2.5 seconds
+and doubles for each reset that produces no frames, up to 30 seconds.
+
 ## Control socket packets
 
 The current scrcpy 4.0 server accepts the following messages written by

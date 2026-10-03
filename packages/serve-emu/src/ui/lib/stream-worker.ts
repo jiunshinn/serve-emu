@@ -621,13 +621,14 @@ const connect = (reason: "connect" | "reconnect") => {
           Number.isFinite(msg.size.width) &&
           Number.isFinite(msg.size.height)
         ) {
+          // The new session's first frame is a key frame. Requesting another
+          // reset here would restart the encoder before it can send it.
           const generation = beginWorkerGeneration(
             "awaiting-keyframe",
             "video-session",
           );
           droppingUntilKeyframe = true;
           postEvent({ type: "session", generation, size: msg.size });
-          requestKeyframe(generation);
         }
       } catch {}
       return;

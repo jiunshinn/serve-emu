@@ -187,6 +187,8 @@ const VIDEO_RESET_COOLDOWN_MS = 500;
 const FIRST_FRAME_RESET_MS = 5000;
 const SOURCE_STALL_RESET_MS = 2500;
 const AWAITING_KEYFRAME_RESET_MS = 2500;
+const RESET_SETTLE_MS = 2500;
+const MAX_RESET_SETTLE_MS = 30_000;
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 const MAX_ROUTE_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_LOGCAT_QUERY_BYTES = 200;
@@ -424,6 +426,8 @@ export async function startServer(
       awaitingClients: 0,
       oldestAwaitingAgeMs: null,
       lastResetAttemptMs: null,
+      pendingResetAgeMs: null,
+      resetBackoffMs: RESET_SETTLE_MS,
     };
     return {
       ok: context.status === "streaming",
@@ -444,6 +448,8 @@ export async function startServer(
           recoverySnapshot.lastResetAttemptMs === null
             ? null
             : new Date(recoverySnapshot.lastResetAttemptMs).toISOString(),
+        pendingResetAgeMs: recoverySnapshot.pendingResetAgeMs,
+        resetBackoffMs: recoverySnapshot.resetBackoffMs,
       },
       frameStats: context.frameStats.summary(),
       configPackets: context.configPacketCount,
@@ -1060,13 +1066,20 @@ export async function startServer(
   const enqueueVideoReset = (context: DeviceContext, reason: string) => {
     sessions.assertCurrent(context);
     context.inputQueue.assertOpen();
-    const now = Date.now();
-    if (now - context.lastVideoResetMs < VIDEO_RESET_COOLDOWN_MS) {
+    const now = recoveryClock.now();
+    // Client requests share the watchdog's gate, so they cannot restart an
+    // encoder whose key frame is still on its way.
+    const recovery = recoveries.get(context);
+    const blocked = recovery
+      ? !recovery.canRequestReset(now)
+      : now - context.lastVideoResetMs < VIDEO_RESET_COOLDOWN_MS;
+    if (blocked) {
       return { completion: Promise.resolve({ status: "coalesced" as const }) };
     }
     const accepted = context.inputQueue.enqueuePacket(resetVideoPacket(), {
       coalesceKey: "reset-video",
     });
+    recovery?.noteResetAdmitted(now);
     context.lastVideoResetMs = now;
     context.videoResetRequests++;
     context.lastVideoResetAt = new Date(now).toISOString();
@@ -1092,6 +1105,8 @@ export async function startServer(
       firstFrameResetMs: FIRST_FRAME_RESET_MS,
       sourceStallResetMs: SOURCE_STALL_RESET_MS,
       awaitingKeyFrameResetMs: AWAITING_KEYFRAME_RESET_MS,
+      resetSettleMs: RESET_SETTLE_MS,
+      maxResetSettleMs: MAX_RESET_SETTLE_MS,
       requestReset: (reason, now) => {
         if (!sessions.isCurrent(context) || context.status !== "streaming") {
           return false;
@@ -1189,6 +1204,9 @@ export async function startServer(
               context.screen.width = f.width;
               context.screen.height = f.height;
               context.cachedConfig = null;
+              // A new encoder session always opens with codec config and a
+              // key frame. Requesting a reset here would restart the encoder
+              // before it can send that key frame.
               for (const c of context.clients) {
                 recoveries.get(context)?.markAwaiting(c);
                 sendJson(c.ws, {
@@ -1196,11 +1214,6 @@ export async function startServer(
                   size: { width: f.width, height: f.height },
                 });
               }
-              recoveries
-                .get(context)
-                ?.requestVideoReset(
-                  `video session resized to ${f.width}×${f.height}`,
-                );
             }
             continue;
           }
@@ -1210,7 +1223,7 @@ export async function startServer(
             continue;
           }
           context.frameCount++;
-          recoveries.get(context)?.recordFrame();
+          recoveries.get(context)?.recordFrame(f.isKey);
           context.frameStats.record(f.data.length, f.isKey);
           const config = f.isKey ? context.cachedConfig : null;
           let rawOut: Buffer | null = null;
