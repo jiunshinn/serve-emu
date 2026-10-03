@@ -44,12 +44,12 @@ Planned:
 
 ## Requirements
 
-- Bun 1.1+
+- Bun 1.3.13+
 - `adb` on PATH from Android platform-tools
 - A booted device/emulator from `adb devices`, or an AVD name passed with `--avd`
 - Chrome, Edge, or Safari 16.4+ for the bundled WebCodecs UI
 
-Node.js 18+ can invoke the published package through `npx`, but local development and server runtime use Bun.
+`npx serve-emu@latest` also works, but the CLI itself runs on Bun, so Bun must be installed either way.
 
 ## Package API
 
@@ -186,6 +186,8 @@ serve-emu --webcam-list
 
 serve-emu --avd Pixel_8 --camera-back webcam0
 ```
+
+The camera flags arrived after the 0.0.6 npm release. Until a newer version is published, run them from a repository checkout (see [Quick Start](#quick-start)).
 
 Open a camera app in the stream and its preview shows the webcam. Use `--camera-front` for apps that open the front camera. One webcam can feed only one of the two.
 
