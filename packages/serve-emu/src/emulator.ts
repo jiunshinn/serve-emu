@@ -33,6 +33,24 @@ export type StartEmulatorOpts = {
    * without a usable GPU.
    */
   gpu?: string;
+  /**
+   * Emulator `-camera-back` mode, such as `webcam0` to show a host webcam in
+   * the Android back camera. The emulator picks cameras at boot, so a running
+   * AVD only gets this through `restartAvd`.
+   */
+  cameraBack?: string;
+  /** Emulator `-camera-front` mode; same values as `cameraBack` except `virtualscene`. */
+  cameraFront?: string;
+};
+
+type CameraDirection = "back" | "front";
+
+/** A host webcam as named by `emulator -webcam-list`. */
+export type HostWebcam = {
+  /** Camera mode that selects this webcam, such as `webcam0`. */
+  name: string;
+  /** Host device behind that name, such as `FaceTime HD Camera`. */
+  device: string;
 };
 
 export type EmulatorResolverDependencies = {
@@ -166,6 +184,103 @@ export async function listAvds(
     await resolveEmulator(emulatorPath, dependencies),
     dependencies.execText,
   );
+}
+
+const WEBCAM_MODE = /^webcam\d+$/;
+const FILE_CAMERA_MODE = /^(?:videofile|imagefile|image360):./;
+const NAMED_CAMERA_MODES = new Set(["emulated", "environment", "none"]);
+const WEBCAM_LIST_LINE = /Camera '(webcam\d+)' is connected to device '(.*)' on channel /;
+
+async function listWebcamsWithEmulator(
+  emulator: string,
+  runExec: typeof execText = execText,
+): Promise<HostWebcam[]> {
+  const r = await runExec(emulator, ["-webcam-list"], {
+    timeout: 10_000,
+    maxBuffer: 64 * 1024,
+  });
+  if (!execSucceeded(r)) {
+    throw new Error(
+      `emulator -webcam-list failed: ${execFailure(r)}`,
+      { cause: r.error ?? undefined },
+    );
+  }
+  return r.stdout.split(/\r?\n/).flatMap((line) => {
+    const match = line.match(WEBCAM_LIST_LINE);
+    return match ? [{ name: match[1], device: match[2] }] : [];
+  });
+}
+
+/** Host webcams the emulator can assign to `-camera-back` or `-camera-front`. */
+export async function listWebcams(
+  emulatorPath?: string,
+  dependencies: EmulatorResolverDependencies = {},
+): Promise<HostWebcam[]> {
+  return listWebcamsWithEmulator(
+    await resolveEmulator(emulatorPath, dependencies),
+    dependencies.execText,
+  );
+}
+
+function validateCameraMode(direction: CameraDirection, mode: string): void {
+  if (
+    NAMED_CAMERA_MODES.has(mode) ||
+    (direction === "back" && mode === "virtualscene") ||
+    WEBCAM_MODE.test(mode) ||
+    FILE_CAMERA_MODE.test(mode)
+  ) {
+    return;
+  }
+  const modes =
+    direction === "back"
+      ? "webcam<N>, emulated, virtualscene, environment, none"
+      : "webcam<N>, emulated, environment, none";
+  throw new Error(
+    `--camera-${direction} must be one of ${modes}, or videofile:/imagefile:/image360:<path> (got "${mode}").`,
+  );
+}
+
+/** Validate camera modes before anything boots or restarts. */
+function cameraArgs(opts: StartEmulatorOpts): string[] {
+  const args: string[] = [];
+  if (opts.cameraBack !== undefined) {
+    validateCameraMode("back", opts.cameraBack);
+    args.push("-camera-back", opts.cameraBack);
+  }
+  if (opts.cameraFront !== undefined) {
+    validateCameraMode("front", opts.cameraFront);
+    args.push("-camera-front", opts.cameraFront);
+  }
+  // The emulator hands each webcam to one camera and leaves the other empty.
+  if (opts.cameraBack === opts.cameraFront && WEBCAM_MODE.test(opts.cameraBack ?? "")) {
+    throw new Error(
+      `${opts.cameraBack} can feed only one camera; use a different webcam for --camera-front.`,
+    );
+  }
+  return args;
+}
+
+/**
+ * The emulator boots without a camera, rather than failing, when a requested
+ * webcam is missing, so check the host list first.
+ */
+async function assertWebcamsConnected(
+  emulator: string,
+  opts: StartEmulatorOpts,
+  runExec: typeof execText = execText,
+): Promise<void> {
+  const requested = [opts.cameraBack, opts.cameraFront].filter(
+    (mode): mode is string => mode !== undefined && WEBCAM_MODE.test(mode),
+  );
+  if (!requested.length) return;
+  const webcams = await listWebcamsWithEmulator(emulator, runExec);
+  for (const name of requested) {
+    if (webcams.some((webcam) => webcam.name === name)) continue;
+    const available = webcams.length
+      ? webcams.map((webcam) => `${webcam.name} (${webcam.device})`).join(", ")
+      : "(none)";
+    throw new Error(`Unknown webcam "${name}". Available webcams: ${available}`);
+  }
 }
 
 function avdName(avd: string): string {
@@ -338,6 +453,7 @@ export async function startEmulator(
   dependencies: EmulatorRuntimeDependencies = {},
 ): Promise<EmulatorLaunch> {
   const runExec = dependencies.execText ?? execText;
+  const camera = cameraArgs(opts);
   const emulator = await resolveEmulator(opts.emulatorPath, dependencies);
   const name = avdName(opts.avd);
   const avds = await listAvdsWithEmulator(emulator, runExec);
@@ -345,10 +461,16 @@ export async function startEmulator(
     const available = avds.length ? avds.join(", ") : "(none)";
     throw new Error(`Unknown AVD "${name}". Available AVDs: ${available}`);
   }
+  await assertWebcamsConnected(emulator, opts, runExec);
 
   const running = await findRunningAvd(name, dependencies);
   if (running) {
     if (!opts.restartAvd) {
+      if (camera.length) {
+        throw new Error(
+          `AVD "${name}" is already running as ${running.serial}, and the emulator picks cameras at boot. Add --restart-avd to relaunch it with the requested camera.`,
+        );
+      }
       return { serial: running.serial, proc: null, ownsProcess: false, stop: () => {} };
     }
     await stopEmulator(running.serial, runExec);
@@ -360,6 +482,7 @@ export async function startEmulator(
 
   const args = [emulatorAvdArg(name), "-port", String(port)];
   if (opts.gpu) args.push("-gpu", opts.gpu);
+  args.push(...camera);
 
   const proc = (dependencies.spawn ?? spawn)(emulator, args, {
     stdio: ["ignore", "inherit", "inherit"],

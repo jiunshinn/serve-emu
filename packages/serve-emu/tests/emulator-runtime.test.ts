@@ -5,6 +5,7 @@ import {
   clearEmulatorResolutionCache,
   listAvds,
   listRunningAvds,
+  listWebcams,
   resolveEmulator,
   resolveRunningAvds,
   startEmulator,
@@ -402,5 +403,246 @@ describe("emulator lifecycle", () => {
     await expect(stopEmulator("emulator-5554", failed)).rejects.toThrow(
       "Failed to stop emulator-5554: console unavailable",
     );
+  });
+});
+
+const WEBCAM_LIST = [
+  "List of web cameras connected to the computer:",
+  " Camera 'webcam0' is connected to device 'FaceTime HD Camera' on channel 0 using pixel format 'YV12'",
+  " Camera 'webcam1' is connected to device 'Team's USB Camera' on channel 0 using pixel format 'YV12'",
+  "",
+].join("\n");
+
+/** Fake emulator binary and an adb that boots or reports Pixel_8 as running. */
+function cameraExec(webcamList = WEBCAM_LIST) {
+  const emulatorCalls: string[][] = [];
+  const adbCalls: string[] = [];
+  const runExec = (async (command, args) => {
+    if (command === "/sdk/emulator") {
+      emulatorCalls.push(args);
+      return result(args[0] === "-webcam-list" ? webcamList : "Pixel_8\n");
+    }
+    const adbCommand = args.slice(2).join(" ");
+    adbCalls.push(adbCommand);
+    if (adbCommand === "emu avd name") return result("Pixel_8\nOK\n");
+    if (adbCommand === "get-state") return result("device\n");
+    if (adbCommand === "shell getprop sys.boot_completed") return result("1\n");
+    return result("");
+  }) as typeof execText;
+  return { runExec, emulatorCalls, adbCalls };
+}
+
+const refuseSpawn = (() => {
+  throw new Error("should not spawn");
+}) as unknown as typeof spawn;
+
+describe("emulator cameras", () => {
+  test("lists host webcams, including device names with quotes", async () => {
+    const calls: unknown[][] = [];
+    const runExec = (async (command, args, options) => {
+      calls.push([command, args, options]);
+      return result(WEBCAM_LIST);
+    }) as typeof execText;
+    await expect(
+      listWebcams("/sdk/emulator", { execText: runExec }),
+    ).resolves.toEqual([
+      { name: "webcam0", device: "FaceTime HD Camera" },
+      { name: "webcam1", device: "Team's USB Camera" },
+    ]);
+    expect(calls).toEqual([
+      [
+        "/sdk/emulator",
+        ["-webcam-list"],
+        { timeout: 10_000, maxBuffer: 64 * 1024 },
+      ],
+    ]);
+
+    const none = (async () =>
+      result("No web cameras are connected to the host.\n")) as typeof execText;
+    await expect(
+      listWebcams("/sdk/emulator", { execText: none }),
+    ).resolves.toEqual([]);
+
+    const failed = (async () =>
+      result("", { status: 1, stderr: "no display" })) as typeof execText;
+    await expect(
+      listWebcams("/sdk/emulator", { execText: failed }),
+    ).rejects.toThrow("emulator -webcam-list failed: no display");
+  });
+
+  test("boots with camera arguments after checking the requested webcam", async () => {
+    const { runExec, emulatorCalls } = cameraExec();
+    const spawnCalls: unknown[][] = [];
+    await startEmulator(
+      {
+        avd: "Pixel_8",
+        emulatorPath: "/sdk/emulator",
+        port: 5554,
+        gpu: "host",
+        cameraBack: "webcam1",
+        cameraFront: "emulated",
+      },
+      {
+        execText: runExec,
+        listAllDevices: async () => [],
+        spawn: spawnWith(fakeProcess().proc, spawnCalls),
+      },
+    );
+    expect(emulatorCalls).toEqual([["-list-avds"], ["-webcam-list"]]);
+    expect(spawnCalls[0]?.[1]).toEqual([
+      "@Pixel_8",
+      "-port",
+      "5554",
+      "-gpu",
+      "host",
+      "-camera-back",
+      "webcam1",
+      "-camera-front",
+      "emulated",
+    ]);
+  });
+
+  test("passes file and built-in camera modes through without listing webcams", async () => {
+    const { runExec, emulatorCalls } = cameraExec();
+    const spawnCalls: unknown[][] = [];
+    await startEmulator(
+      {
+        avd: "Pixel_8",
+        emulatorPath: "/sdk/emulator",
+        port: 5554,
+        cameraBack: "imagefile:/tmp/qr code.png",
+        cameraFront: "none",
+      },
+      {
+        execText: runExec,
+        listAllDevices: async () => [],
+        spawn: spawnWith(fakeProcess().proc, spawnCalls),
+      },
+    );
+    expect(emulatorCalls).toEqual([["-list-avds"]]);
+    expect(spawnCalls[0]?.[1]).toEqual([
+      "@Pixel_8",
+      "-port",
+      "5554",
+      "-camera-back",
+      "imagefile:/tmp/qr code.png",
+      "-camera-front",
+      "none",
+    ]);
+  });
+
+  test("rejects invalid camera modes before running anything", async () => {
+    const runExec = (async () => {
+      throw new Error("should not run");
+    }) as typeof execText;
+    const cases = [
+      [
+        { cameraFront: "virtualscene" },
+        '--camera-front must be one of webcam<N>, emulated, environment, none, or videofile:/imagefile:/image360:<path> (got "virtualscene").',
+      ],
+      [
+        { cameraBack: "webcam" },
+        '--camera-back must be one of webcam<N>, emulated, virtualscene, environment, none, or videofile:/imagefile:/image360:<path> (got "webcam").',
+      ],
+      [{ cameraBack: "imagefile:" }, '(got "imagefile:")'],
+      [{ cameraBack: "" }, '(got "")'],
+      [{ cameraFront: "-gpu" }, '(got "-gpu")'],
+      [
+        { cameraBack: "webcam0", cameraFront: "webcam0" },
+        "webcam0 can feed only one camera; use a different webcam for --camera-front.",
+      ],
+    ] as const;
+    for (const [camera, message] of cases) {
+      await expect(
+        startEmulator(
+          { avd: "Pixel_8", emulatorPath: "/sdk/emulator", ...camera },
+          { execText: runExec, spawn: refuseSpawn },
+        ),
+      ).rejects.toThrow(message);
+    }
+  });
+
+  test("rejects a missing webcam before stopping a running AVD", async () => {
+    const running = async () => [{ serial: "emulator-5554", state: "device" }];
+    const empty = cameraExec("List of web cameras connected to the computer:\n");
+    await expect(
+      startEmulator(
+        {
+          avd: "Pixel_8",
+          emulatorPath: "/sdk/emulator",
+          restartAvd: true,
+          cameraBack: "webcam0",
+        },
+        { execText: empty.runExec, listAllDevices: running, spawn: refuseSpawn },
+      ),
+    ).rejects.toThrow('Unknown webcam "webcam0". Available webcams: (none)');
+    expect(empty.adbCalls).toEqual([]);
+
+    const two = cameraExec();
+    await expect(
+      startEmulator(
+        {
+          avd: "Pixel_8",
+          emulatorPath: "/sdk/emulator",
+          cameraBack: "webcam0",
+          cameraFront: "webcam2",
+        },
+        { execText: two.runExec, listAllDevices: running, spawn: refuseSpawn },
+      ),
+    ).rejects.toThrow(
+      `Unknown webcam "webcam2". Available webcams: webcam0 (FaceTime HD Camera), webcam1 (Team's USB Camera)`,
+    );
+    expect(two.adbCalls).toEqual([]);
+  });
+
+  test("requires a restart to change the camera of a running AVD", async () => {
+    const attach = cameraExec();
+    await expect(
+      startEmulator(
+        { avd: "Pixel_8", emulatorPath: "/sdk/emulator", cameraBack: "webcam0" },
+        {
+          execText: attach.runExec,
+          listAllDevices: async () => [
+            { serial: "emulator-5554", state: "device" },
+          ],
+          spawn: refuseSpawn,
+        },
+      ),
+    ).rejects.toThrow(
+      'AVD "Pixel_8" is already running as emulator-5554, and the emulator picks cameras at boot. Add --restart-avd to relaunch it with the requested camera.',
+    );
+    expect(attach.adbCalls).not.toContain("emu kill");
+
+    const restart = cameraExec();
+    let deviceReads = 0;
+    const spawnCalls: unknown[][] = [];
+    const launch = await startEmulator(
+      {
+        avd: "Pixel_8",
+        emulatorPath: "/sdk/emulator",
+        port: 5556,
+        restartAvd: true,
+        cameraBack: "webcam0",
+      },
+      {
+        execText: restart.runExec,
+        listAllDevices: async () => {
+          deviceReads++;
+          return deviceReads === 1
+            ? [{ serial: "emulator-5554", state: "device" }]
+            : [];
+        },
+        spawn: spawnWith(fakeProcess().proc, spawnCalls),
+      },
+    );
+    expect(launch.serial).toBe("emulator-5556");
+    expect(restart.adbCalls).toContain("emu kill");
+    expect(spawnCalls[0]?.[1]).toEqual([
+      "@Pixel_8",
+      "-port",
+      "5556",
+      "-camera-back",
+      "webcam0",
+    ]);
   });
 });

@@ -92,9 +92,10 @@ bun run packages/serve-emu/src/cli.ts
 
 ```text
 serve-emu [-p <port>] [--host <addr>] [--token <secret>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms] [--max-apk-upload-bytes N] [--max-media-upload-bytes N]
-serve-emu --avd <name> [--gpu <mode>] [--restart-avd]
+serve-emu --avd <name> [--gpu <mode>] [--restart-avd] [--camera-back <mode>] [--camera-front <mode>]
 serve-emu --avd-list
 serve-emu --running-avds
+serve-emu --webcam-list
 ```
 
 | flag | default | meaning |
@@ -117,8 +118,11 @@ serve-emu --running-avds
 | `--avd` | none | Launch this Android Virtual Device before streaming |
 | `--gpu` | `host` | Emulator GPU mode for `--avd` launches. `host` renders on the real GPU for smooth ~60fps; see [Smooth Emulator Playback](#smooth-emulator-playback) |
 | `--restart-avd` | false | Stop a running matching AVD before launching it |
+| `--camera-back` | AVD setting | Back camera for `--avd` launches, such as `webcam0` for a host webcam; see [Camera](#camera) |
+| `--camera-front` | AVD setting | Front camera for `--avd` launches; same modes as `--camera-back` except `virtualscene` |
 | `--avd-list` | false | List available Android Virtual Device names |
 | `--running-avds` | false | List currently running emulator serials and AVD names |
+| `--webcam-list` | false | List host webcams the emulator can use, as `webcam<N>` and device name |
 | `--emulator` | auto | Android Emulator binary path; defaults to PATH or Android SDK env vars |
 | `--emulator-port` | auto | Emulator console port for `--avd`; must be an even port from 5554 through 5682 |
 
@@ -173,6 +177,25 @@ emulator @Pixel_8 -gpu host
 ```
 
 You can confirm the mode in the emulator log (`vulkan_mode_selected:host` = good; `lavapipe`/`llvmpipe` = software fallback) or via `adb shell dumpsys gfxinfo <pkg>` (look for a low "Janky frames" percentage while scrolling). For an extra fps margin, lower `--max-size` to stream at a smaller resolution.
+
+## Camera
+
+An emulator can use your computer's webcam as its Android camera. List the webcams the emulator can see, then pass one when `serve-emu` launches the AVD:
+
+```sh
+serve-emu --webcam-list
+# webcam0	FaceTime HD Camera
+
+serve-emu --avd Pixel_8 --camera-back webcam0
+```
+
+Open a camera app in the stream and its preview shows the webcam. Use `--camera-front` for apps that open the front camera. One webcam can feed only one of the two.
+
+The emulator picks its cameras at boot, so the camera flags require `--avd` and don't apply to devices attached with `-s`. If the AVD is already running, add `--restart-avd`; without it, `serve-emu` exits with an error instead of attaching to an emulator that lacks the camera. Changing an AVD's cameras invalidates its Quick Boot snapshot, so that launch cold-boots.
+
+The flags also accept the emulator's other camera modes, listed by `emulator -help-camera-back`: `emulated`, `virtualscene` (back only), `none`, and `imagefile:<path>` to show a still image, such as a QR code for a scanner test.
+
+On macOS, the first time an Android app opens the webcam, macOS asks whether the app that launched `serve-emu` (usually your terminal) may use the camera. If you denied it, turn it back on under **System Settings → Privacy & Security → Camera**. The emulator can't open a webcam that another app is using.
 
 ## Browser UI
 
