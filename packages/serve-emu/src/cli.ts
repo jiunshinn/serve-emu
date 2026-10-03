@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util";
 import { randomBytes } from "node:crypto";
 import { pickDevice } from "./adb.ts";
-import { listAvds, listRunningAvds, startEmulator } from "./emulator.ts";
+import { listAvds, listRunningAvds, listWebcams, startEmulator } from "./emulator.ts";
 import { SCRCPY_DEFAULTS } from "./scrcpy.ts";
 import {
   DEFAULT_HOST,
@@ -42,6 +42,9 @@ const { values } = parseArgs({
     emulator: { type: "string" },
     "emulator-port": { type: "string" },
     gpu: { type: "string", default: "host" },
+    "camera-back": { type: "string" },
+    "camera-front": { type: "string" },
+    "webcam-list": { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
   allowPositionals: true,
@@ -82,9 +85,10 @@ if (values.help) {
 
 Usage:
   serve-emu [-p <port>] [--host <addr>] [--token <secret>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms]
-  serve-emu --avd <name> [--restart-avd]
+  serve-emu --avd <name> [--restart-avd] [--camera-back <mode>] [--camera-front <mode>]
   serve-emu --avd-list
   serve-emu --running-avds
+  serve-emu --webcam-list
 
 Options:
   -p, --port <port>      Port to listen on (default: 3300)
@@ -126,8 +130,18 @@ Options:
                          own auto often falls back to a software compositor that
                          stutters. Use swiftshader_indirect on headless hosts.
       --restart-avd      Stop a running matching AVD before launching it
+      --camera-back <mode>
+                         Back camera for --avd launches. webcam<N> shows a host
+                         webcam (see --webcam-list); emulated, virtualscene,
+                         none, and imagefile:<path> also work. The emulator
+                         picks cameras at boot, so add --restart-avd if the AVD
+                         is already running.
+      --camera-front <mode>
+                         Front camera for --avd launches; same modes except
+                         virtualscene. Each webcam can feed only one camera.
       --avd-list         Print available Android Virtual Device names
       --running-avds     Print currently running emulator AVDs
+      --webcam-list      Print host webcams the emulator can use
       --emulator <path>  Android Emulator binary (default: PATH or Android SDK)
       --emulator-port <n>
                          Emulator console port for --avd (even 5554-5682)
@@ -150,8 +164,20 @@ async function main() {
     return;
   }
 
+  if (values["webcam-list"]) {
+    const webcams = await listWebcams(values.emulator);
+    console.log(webcams.map((webcam) => `${webcam.name}\t${webcam.device}`).join("\n"));
+    return;
+  }
+
   if ((values["emulator-port"] || values["restart-avd"]) && !values.avd) {
     throw new Error("--emulator-port and --restart-avd require --avd.");
+  }
+
+  if ((values["camera-back"] !== undefined || values["camera-front"] !== undefined) && !values.avd) {
+    throw new Error(
+      "--camera-back and --camera-front require --avd: the emulator picks its cameras at boot.",
+    );
   }
 
   if (values.avd && values.serial) {
@@ -166,6 +192,8 @@ async function main() {
         port: values["emulator-port"] ? Number(values["emulator-port"]) : undefined,
         restartAvd: values["restart-avd"],
         gpu: values.gpu,
+        cameraBack: values["camera-back"],
+        cameraFront: values["camera-front"],
       })).serial
     : await pickDevice(values.serial);
   const port = Number(values.port);
