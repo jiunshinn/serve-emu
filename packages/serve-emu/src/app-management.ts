@@ -39,6 +39,10 @@ export class AppManagementError extends Error {
 const PACKAGE_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 const PERMISSION_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 const ACTIVITY_RE = /^([A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+|\.?[A-Za-z][A-Za-z0-9_.$]*)(\/[A-Za-z0-9_.$]+)?$/;
+// RFC 3986 scheme followed by a non-empty remainder. Control characters are
+// rejected so a link can never smuggle a newline into the device shell line.
+const DEEP_LINK_RE = /^[A-Za-z][A-Za-z0-9+.-]*:[^\x00-\x1f\x7f]+$/;
+const MAX_DEEP_LINK_LENGTH = 4096;
 
 function output(stdout: string, stderr: string): string {
   return `${stdout}${stderr}`.trim();
@@ -117,6 +121,19 @@ export function activityName(value: unknown): string {
 
 export function permissionName(value: unknown): string {
   return validate(value, "permission", PERMISSION_RE);
+}
+
+export function deepLinkUrl(value: unknown): string {
+  if (typeof value === "string" && value.trim().length > MAX_DEEP_LINK_LENGTH) {
+    throw new Error(`url must be at most ${MAX_DEEP_LINK_LENGTH} characters`);
+  }
+  return validate(value, "url", DEEP_LINK_RE);
+}
+
+// `adb shell` joins its argv with spaces and hands the line to the device's
+// `sh`, so `&`, `;`, `$()` and friends in a URL would otherwise be interpreted.
+function deviceShellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
 export async function installApk(
@@ -269,6 +286,40 @@ export function launchApp(
     undefined,
     dependencies.execText,
   );
+}
+
+export async function openDeepLink(
+  serial: string,
+  urlValue: unknown,
+  packageNameValue?: string,
+  dependencies: AppManagementDependencies = {},
+): Promise<AppActionResult> {
+  const url = deepLinkUrl(urlValue);
+  const pkg =
+    packageNameValue === undefined ? undefined : packageName(packageNameValue);
+  const result = await adb(
+    serial,
+    [
+      "shell",
+      "am",
+      "start",
+      "-W",
+      "-a",
+      "android.intent.action.VIEW",
+      "-d",
+      deviceShellQuote(url),
+      ...(pkg ? [pkg] : []),
+    ],
+    30_000,
+    undefined,
+    dependencies.execText,
+  );
+  // Devices without adb's shell protocol always exit 0, so also treat the
+  // activity manager's own error line as a failed launch.
+  if (/^Error:/m.test(result.output)) {
+    throw new AppManagementError("adb-failed", result.output);
+  }
+  return result;
 }
 
 export function clearAppData(

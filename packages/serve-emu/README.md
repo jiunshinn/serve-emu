@@ -181,7 +181,7 @@ Open `http://localhost:3300` after starting the CLI. The UI streams the device i
 - Pointer input, keyboard passthrough (typing, navigation keys, shortcuts, IME composition), hardware buttons, and screenshots
 - Device selection plus AVD start/stop
 - Orientation, night mode, font scale, network, GPS location, and route playback
-- Logcat filtering, pause/copy controls, app management, file import, and session replay
+- Logcat filtering, pause/copy controls, app management, deep links, file import, and session replay
 
 The browser decoder treats every WebSocket reconnect, device video session, and
 hard decoder recovery as a new stream generation. Codec, latency, frame counts,
@@ -392,6 +392,14 @@ curl -X POST "$BASE/api/apps/launch" \
   -H 'Content-Type: application/json' \
   -d '{"packageName":"com.example.app","activity":".MainActivity"}'
 
+curl -X POST "$BASE/api/deep-link" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"myapp://profile/42?tab=posts"}'
+
+curl -X POST "$BASE/api/deep-link" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com/products/7","packageName":"com.example.app"}'
+
 curl -X POST "$BASE/api/apps/clear" \
   -H 'Content-Type: application/json' \
   -d '{"packageName":"com.example.app"}'
@@ -407,6 +415,12 @@ curl -X POST "$BASE/api/apps/grant" \
 curl -X POST "$BASE/api/files/import" \
   -F file=@/path/to/image.png
 ```
+
+`/api/deep-link` fires an `android.intent.action.VIEW` intent for any
+`scheme:` URL (up to 4096 characters) and waits for the launch to finish, so
+`output` reports the resolved activity. Add `packageName` to skip the app
+chooser and target one app. A link that no installed app handles returns
+`502` with `code: "adb-failed"` and the activity manager's error text.
 
 Uploads stream to private asynchronous temporary files and are removed after
 ADB completes. Actual bytes are enforced even without `Content-Length`; a

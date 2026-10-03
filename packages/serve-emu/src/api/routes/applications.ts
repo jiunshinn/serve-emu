@@ -3,6 +3,7 @@ import {
   forceStopApp,
   grantPermission,
   launchApp,
+  openDeepLink,
 } from "../../app-management.ts";
 import type { ApiDependencies } from "../dependencies.ts";
 import type { ApiRoute } from "../router.ts";
@@ -36,6 +37,23 @@ export function applicationRoutes(): ApiRoute<ApiDependencies>[] {
             String(payload.packageName ?? ""),
             typeof payload.activity === "string" && payload.activity.trim()
               ? payload.activity
+              : undefined,
+          ),
+        );
+      },
+    },
+    {
+      method: "POST",
+      path: "/api/deep-link",
+      handler: async ({ request: req, deps }) => {
+        const { appJsonEndpoint, requestContext } = deps;
+        return appJsonEndpoint(requestContext, req, (payload) =>
+          openDeepLink(
+            requestContext.serial,
+            payload.url,
+            typeof payload.packageName === "string" &&
+              payload.packageName.trim()
+              ? payload.packageName
               : undefined,
           ),
         );

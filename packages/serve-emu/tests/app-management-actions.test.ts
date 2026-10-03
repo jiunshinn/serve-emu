@@ -3,11 +3,13 @@ import {
   AppManagementError,
   activityName,
   clearAppData,
+  deepLinkUrl,
   forceStopApp,
   grantPermission,
   importMediaFile,
   installApk,
   launchApp,
+  openDeepLink,
   packageName,
   permissionName,
   type LocalUploadFile,
@@ -273,6 +275,142 @@ describe("app management actions", () => {
         "adb shell pm grant com.example.app android.permission.CAMERA timed out",
       cause: timeoutError,
     });
+  });
+});
+
+describe("deep links", () => {
+  test("accepts any scheme URL and trims surrounding whitespace", () => {
+    expect(deepLinkUrl("  myapp://profile/42?tab=posts  ")).toBe(
+      "myapp://profile/42?tab=posts",
+    );
+    expect(deepLinkUrl("https://example.com/a b")).toBe(
+      "https://example.com/a b",
+    );
+    expect(deepLinkUrl("tel:+15551234")).toBe("tel:+15551234");
+    expect(deepLinkUrl(`x:${"a".repeat(4094)}`)).toHaveLength(4096);
+  });
+
+  test("rejects non-URLs, control characters, and oversized links", () => {
+    for (const value of [
+      undefined,
+      null,
+      42,
+      "",
+      "profile/42",
+      "myapp:",
+      "1app://x",
+      "-n://x",
+      "myapp://a\nreboot",
+      "myapp://a\u0000b",
+      "myapp://a\u007fb",
+    ]) {
+      expect(() => deepLinkUrl(value)).toThrow("url is invalid");
+    }
+    expect(() => deepLinkUrl(`x:${"a".repeat(4095)}`)).toThrow(
+      "url must be at most 4096 characters",
+    );
+  });
+
+  test("starts a VIEW intent, optionally scoped to a package", async () => {
+    const calls: ExecCall[] = [];
+    const run = recordingExec(
+      calls,
+      result({ stdout: "Starting: Intent { ... }\nStatus: ok\n" }),
+    );
+
+    expect(
+      await openDeepLink("device-a", " myapp://home ", undefined, {
+        execText: run,
+      }),
+    ).toEqual({ ok: true, output: "Starting: Intent { ... }\nStatus: ok" });
+    await openDeepLink("device-a", "https://example.com/p/7", " com.example.app ", {
+      execText: run,
+    });
+
+    expect(calls.map((call) => call.args)).toEqual([
+      [
+        "-s",
+        "device-a",
+        "shell",
+        "am",
+        "start",
+        "-W",
+        "-a",
+        "android.intent.action.VIEW",
+        "-d",
+        "'myapp://home'",
+      ],
+      [
+        "-s",
+        "device-a",
+        "shell",
+        "am",
+        "start",
+        "-W",
+        "-a",
+        "android.intent.action.VIEW",
+        "-d",
+        "'https://example.com/p/7'",
+        "com.example.app",
+      ],
+    ]);
+    expect(calls.every((call) => call.opts.timeout === 30_000)).toBe(true);
+    expect(calls.every((call) => call.opts.lane === "background")).toBe(true);
+  });
+
+  test("quotes the URL so the device shell passes it through verbatim", async () => {
+    const hostile = "myapp://x?a=1&b=2;reboot|id`id`$(id)$HOME'q\"z *";
+    const calls: ExecCall[] = [];
+    await openDeepLink("device-a", hostile, undefined, {
+      execText: recordingExec(calls),
+    });
+    const quoted = calls[0]!.args.at(-1)!;
+
+    // adb joins shell argv with spaces and runs the line through `sh -c`.
+    const echoed = Bun.spawnSync(["/bin/sh", "-c", `printf '%s' ${quoted}`]);
+    expect(echoed.stdout.toString()).toBe(hostile);
+  });
+
+  test("validates inputs before invoking adb", async () => {
+    const calls: ExecCall[] = [];
+    const dependencies = { execText: recordingExec(calls) };
+
+    await expect(
+      openDeepLink("device-a", "not a link", undefined, dependencies),
+    ).rejects.toThrow("url is invalid");
+    await expect(
+      openDeepLink("device-a", "myapp://x", "invalid", dependencies),
+    ).rejects.toThrow("packageName is invalid");
+    expect(calls).toEqual([]);
+  });
+
+  test("fails unresolved intents even when adb exits 0", async () => {
+    const unresolved =
+      "Starting: Intent { act=android.intent.action.VIEW dat=nope://x/... }\n" +
+      "Error: Activity not started, unable to resolve Intent { ... }";
+
+    await expect(
+      openDeepLink("device-a", "nope://x", undefined, {
+        execText: async () => result({ stdout: unresolved }),
+      }),
+    ).rejects.toMatchObject({
+      name: "AppManagementError",
+      code: "adb-failed",
+      message: unresolved,
+    });
+    await expect(
+      openDeepLink("device-a", "nope://x", undefined, {
+        execText: async () => result({ status: 1, stderr: unresolved }),
+      }),
+    ).rejects.toMatchObject({ code: "adb-failed", message: unresolved });
+
+    const delivered =
+      "Warning: Activity not started, intent has been delivered to currently running top-most instance.";
+    expect(
+      await openDeepLink("device-a", "myapp://x", undefined, {
+        execText: async () => result({ stdout: delivered }),
+      }),
+    ).toEqual({ ok: true, output: delivered });
   });
 });
 

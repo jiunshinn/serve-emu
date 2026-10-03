@@ -31,6 +31,7 @@ const EXPECTED_ROUTES = [
   ["POST", "/api/apps/install"],
   ["POST", "/api/files/import"],
   ["POST", "/api/apps/launch"],
+  ["POST", "/api/deep-link"],
   ["POST", "/api/apps/clear"],
   ["POST", "/api/apps/force-stop"],
   ["POST", "/api/apps/grant"],

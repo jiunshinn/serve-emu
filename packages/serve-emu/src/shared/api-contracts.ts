@@ -384,6 +384,9 @@ export type ApiContractMap = {
   "/api/apps/launch": {
     POST: EndpointContract<{ packageName: string; activity?: string }, AppActionResponse>;
   };
+  "/api/deep-link": {
+    POST: EndpointContract<{ url: string; packageName?: string }, AppActionResponse>;
+  };
   "/api/apps/clear": {
     POST: EndpointContract<{ packageName: string }, AppActionResponse>;
   };
@@ -1080,6 +1083,7 @@ export const API_SUCCESS_PARSERS = {
   "/api/apps/install": { POST: parseAppActionResponse },
   "/api/files/import": { POST: parseFileImportResponse },
   "/api/apps/launch": { POST: parseAppActionResponse },
+  "/api/deep-link": { POST: parseAppActionResponse },
   "/api/apps/clear": { POST: parseAppActionResponse },
   "/api/apps/force-stop": { POST: parseAppActionResponse },
   "/api/apps/grant": { POST: parseAppActionResponse },

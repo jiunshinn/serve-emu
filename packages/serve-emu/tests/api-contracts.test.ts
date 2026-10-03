@@ -85,6 +85,7 @@ describe("API contracts", () => {
       error: { code: "downstream_failure", message: "adb unavailable" },
     });
     expect(() => parseApiResponse("/api/apps/launch", "POST", { ok: true })).toThrow("output");
+    expect(() => parseApiResponse("/api/deep-link", "POST", { ok: true })).toThrow("output");
   });
 
   test("request/response lookup types stay endpoint-specific", () => {
@@ -98,7 +99,7 @@ describe("API contracts", () => {
     ) as Record<ApiPath, true>;
     expect(request.latitude).toBe(51.5072);
     expect(response.ok).toBe(true);
-    expect(Object.keys(paths).length).toBe(31);
+    expect(Object.keys(paths).length).toBe(32);
   });
 
   test("validates health and logcat network boundaries without casts", () => {

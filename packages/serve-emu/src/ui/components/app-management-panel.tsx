@@ -41,6 +41,7 @@ export function AppManagementPanel() {
   const apkRef = useRef<HTMLInputElement>(null);
   const [packageName, setPackageName] = useState("");
   const [activity, setActivity] = useState("");
+  const [deepLink, setDeepLink] = useState("");
   const [permission, setPermission] = useState("android.permission.POST_NOTIFICATIONS");
   const [status, setStatus] = useState("Ready");
   const [dragOver, setDragOver] = useState(false);
@@ -118,6 +119,9 @@ export function AppManagementPanel() {
   };
 
   const packageBody = () => ({ packageName: packageName.trim() });
+
+  const openDeepLink = () =>
+    void run("Opening link", () => postJson("/api/deep-link", { url: deepLink.trim() }));
 
   return (
     <section className="tool-panel app-management-panel">
@@ -232,6 +236,18 @@ export function AppManagementPanel() {
           Stop
         </button>
       </div>
+      <label className="stacked-field">
+        Deep link
+        <input
+          onChange={(e) => setDeepLink(e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.nativeEvent.isComposing) openDeepLink();
+          }}
+          placeholder="myapp://path or https://example.com/path"
+          value={deepLink}
+        />
+      </label>
+      <button onClick={openDeepLink}>Open Link</button>
       <label className="stacked-field">
         Permission
         <input
