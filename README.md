@@ -36,6 +36,10 @@ Working:
 - Session recording and replay for REST, WebSocket, and location events
 - APK install, app launch, clear data, force stop, permission grant, and media/file import helpers
 
+Experimental:
+
+- Host webcam or still image as the emulator's Android camera (`--camera-back`, `--camera-front`). The preview can be slow; see [Camera](#camera)
+
 Planned:
 
 - Multi-device routing
@@ -116,11 +120,11 @@ serve-emu --webcam-list
 | `--avd` | none | Launch this Android Virtual Device before streaming |
 | `--gpu` | `host` | Emulator GPU mode for `--avd` launches. `host` renders on the real GPU for smooth ~60fps; see [Smooth Emulator Playback](#smooth-emulator-playback) |
 | `--restart-avd` | false | Stop a running matching AVD before launching it |
-| `--camera-back` | AVD setting | Back camera for `--avd` launches, such as `webcam0` for a host webcam; see [Camera](#camera) |
-| `--camera-front` | AVD setting | Front camera for `--avd` launches; same modes as `--camera-back` except `virtualscene` |
+| `--camera-back` | AVD setting | Experimental. Back camera for `--avd` launches, such as `webcam0` for a host webcam; see [Camera](#camera) |
+| `--camera-front` | AVD setting | Experimental. Front camera for `--avd` launches; same modes as `--camera-back` except `virtualscene` |
 | `--avd-list` | false | List available Android Virtual Device names |
 | `--running-avds` | false | List currently running emulator serials and AVD names |
-| `--webcam-list` | false | List host webcams the emulator can use, as `webcam<N>` and device name |
+| `--webcam-list` | false | Experimental. List host webcams the emulator can use, as `webcam<N>` and device name |
 | `--emulator` | auto | Android Emulator binary path; defaults to PATH or Android SDK env vars |
 | `--emulator-port` | auto | Emulator console port for `--avd`; must be an even port from 5554 through 5682 |
 
@@ -178,6 +182,8 @@ You can confirm the mode in the emulator log (`vulkan_mode_selected:host` = good
 
 ## Camera
 
+**Experimental.** Camera support is new in 0.1.0, and the camera preview can be slow. The camera flags may change in a later release. Please report problems in [GitHub issues](https://github.com/jiunshinn/serve-emu/issues).
+
 An emulator can use your computer's webcam as its Android camera. List the webcams the emulator can see, then pass one when `serve-emu` launches the AVD:
 
 ```sh
@@ -187,8 +193,6 @@ serve-emu --webcam-list
 serve-emu --avd Pixel_8 --camera-back webcam0
 ```
 
-The camera flags arrived after the 0.0.6 npm release. Until a newer version is published, run them from a repository checkout (see [Quick Start](#quick-start)).
-
 Open a camera app in the stream and its preview shows the webcam. Use `--camera-front` for apps that open the front camera. One webcam can feed only one of the two.
 
 The emulator picks its cameras at boot, so the camera flags require `--avd` and don't apply to devices attached with `-s`. If the AVD is already running, add `--restart-avd`; without it, `serve-emu` exits with an error instead of attaching to an emulator that lacks the camera. Changing an AVD's cameras invalidates its Quick Boot snapshot, so that launch cold-boots.
@@ -196,6 +200,13 @@ The emulator picks its cameras at boot, so the camera flags require `--avd` and 
 The flags also accept the emulator's other camera modes, listed by `emulator -help-camera-back`: `emulated`, `virtualscene` (back only), `none`, and `imagefile:<path>` to show a still image, such as a QR code for a scanner test.
 
 On macOS, the first time an Android app opens the webcam, macOS asks whether the app that launched `serve-emu` (usually your terminal) may use the camera. If you denied it, turn it back on under **System Settings → Privacy & Security → Camera**. The emulator can't open a webcam that another app is using.
+
+Known limitations:
+
+- The preview updates no faster than the webcam, usually 30 fps, while the rest of the stream can reach 60 fps.
+- On Apple Silicon, Android Emulator 36.6 slows the preview to a few frames per second about 10 seconds after a camera app opens it, once the rest of the guest goes idle. The whole Android UI slows down too; the camera just makes it obvious. Emulator 37.2.12 holds about 30 fps, so update with `sdkmanager --install emulator`. If you can't update, lower the AVD to 2 CPU cores (`hw.cpu.ncore=2` in its `config.ini`).
+- The webcam is the one on the computer running `serve-emu`. A remote viewer's browser camera can't feed the emulator.
+- AVDs started from the browser UI's device panel keep their own camera settings.
 
 ## Browser UI
 
