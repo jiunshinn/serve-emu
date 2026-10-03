@@ -368,7 +368,7 @@ async function pushFrame(
 }
 
 describe("server recovery watchdog", () => {
-  test("retries across three windows with continuous deltas and a staggered client", async () => {
+  test("a staggered client joins the pending restart, then retries continue every window", async () => {
     const harness = await createHarness();
     const session = harness.sessions.get("A")!;
     try {
@@ -383,19 +383,21 @@ describe("server recovery watchdog", () => {
         if (second === 1) await harness.openWebSocket();
       }
 
-      await waitFor(() => session.fakeControlSocket.writes.length === 5);
-      expect(session.fakeControlSocket.writes).toHaveLength(5);
+      await waitFor(() => session.fakeControlSocket.writes.length === 4);
+      expect(session.fakeControlSocket.writes).toHaveLength(4);
       const health = await harness.health();
       expect(health).toMatchObject({
         status: "streaming",
         sourceFps: 1,
         sourceFrameAgeMs: 0,
-        videoResetRequests: 5,
+        videoResetRequests: 4,
         lastVideoResetReason: "client awaiting keyframe",
         keyFrameRecovery: {
           awaitingClients: 2,
           oldestAwaitingAgeMs: 10_000,
-          lastResetAttemptAt: "1970-01-01T00:00:10.000Z",
+          lastResetAttemptAt: "1970-01-01T00:00:09.000Z",
+          pendingResetAgeMs: 1_000,
+          resetBackoffMs: 2_500,
         },
       });
       expect(health.clientsDetail).toEqual([
@@ -403,15 +405,92 @@ describe("server recovery watchdog", () => {
           awaitingKeyFrame: true,
           awaitingKeyFrameSinceAt: "1970-01-01T00:00:00.000Z",
           awaitingKeyFrameAgeMs: 10_000,
-          lastKeyFrameRequestAt: "1970-01-01T00:00:10.000Z",
+          lastKeyFrameRequestAt: "1970-01-01T00:00:09.000Z",
         }),
         expect.objectContaining({
           awaitingKeyFrame: true,
           awaitingKeyFrameSinceAt: "1970-01-01T00:00:01.000Z",
           awaitingKeyFrameAgeMs: 9_000,
-          lastKeyFrameRequestAt: "1970-01-01T00:00:10.000Z",
+          lastKeyFrameRequestAt: "1970-01-01T00:00:09.000Z",
         }),
       ]);
+    } finally {
+      harness.started.stop();
+    }
+  });
+
+  test("a session packet waits for its key frame instead of restarting the encoder", async () => {
+    const harness = await createHarness();
+    const session = harness.sessions.get("A")!;
+    try {
+      const ws = await harness.openWebSocket();
+      await waitFor(() => session.fakeControlSocket.writes.length === 1);
+      await pushFrame(harness, "A", keyFrame(), 1);
+      harness.clock.advance(1_000);
+
+      session.feed.push({
+        type: "session",
+        width: 1280,
+        height: 720,
+        clientResized: false,
+      });
+      await waitFor(
+        () => ws.sentJson.length === 1,
+        "video-session was not broadcast",
+      );
+      expect(ws.sentJson[0]).toEqual({
+        type: "video-session",
+        size: { width: 1280, height: 720 },
+      });
+      harness.clock.advance(1_000);
+      harness.clock.fireActive();
+      let health = await harness.health();
+      expect(session.fakeControlSocket.writes).toHaveLength(1);
+      expect(health).toMatchObject({
+        size: { width: 1280, height: 720 },
+        videoResetRequests: 1,
+        keyFrameRecovery: { awaitingClients: 1 },
+      });
+
+      await pushFrame(harness, "A", keyFrame(), 2);
+      health = await harness.health();
+      expect(health.keyFrameRecovery.awaitingClients).toBe(0);
+      expect(ws.sentFrames).toHaveLength(2);
+      expect(session.fakeControlSocket.writes).toHaveLength(1);
+    } finally {
+      harness.started.stop();
+    }
+  });
+
+  test("coalesces a client reset-video request while a restart is pending", async () => {
+    const harness = await createHarness();
+    const session = harness.sessions.get("A")!;
+    try {
+      const ws = await harness.openWebSocket();
+      await waitFor(() => session.fakeControlSocket.writes.length === 1);
+
+      harness.clock.advance(1_000);
+      harness.handlers.websocket.message(
+        ws,
+        JSON.stringify({ type: "reset-video" }),
+      );
+      await waitFor(() => ws.sentJson.length === 1, "coalesced ACK missing");
+      expect(ws.sentJson[0]).toEqual({ ok: true, status: "coalesced" });
+      expect(session.fakeControlSocket.writes).toHaveLength(1);
+
+      await pushFrame(harness, "A", keyFrame(), 1);
+      harness.handlers.websocket.message(
+        ws,
+        JSON.stringify({ type: "reset-video" }),
+      );
+      await waitFor(() => ws.sentJson.length === 2, "reset ACK missing");
+      expect(ws.sentJson[1]).toEqual({ ok: true, status: "completed" });
+      expect(session.fakeControlSocket.writes).toHaveLength(2);
+      expect(await harness.health()).toMatchObject({
+        videoResetRequests: 2,
+        lastVideoResetReason: "client requested keyframe",
+        keyFrameRecovery: { pendingResetAgeMs: 0 },
+      });
     } finally {
       harness.started.stop();
     }

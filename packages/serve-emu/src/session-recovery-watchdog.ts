@@ -29,6 +29,8 @@ export type SessionRecoveryWatchdogOptions<
   firstFrameResetMs?: number;
   sourceStallResetMs?: number;
   awaitingKeyFrameResetMs?: number;
+  resetSettleMs?: number;
+  maxResetSettleMs?: number;
 };
 
 export type SessionRecoverySnapshot = {
@@ -38,6 +40,8 @@ export type SessionRecoverySnapshot = {
   awaitingClients: number;
   oldestAwaitingAgeMs: number | null;
   lastResetAttemptMs: number | null;
+  pendingResetAgeMs: number | null;
+  resetBackoffMs: number;
 };
 
 const DEFAULT_INTERVAL_MS = 1_000;
@@ -45,6 +49,8 @@ const DEFAULT_SESSION_RESET_COOLDOWN_MS = 500;
 const DEFAULT_FIRST_FRAME_RESET_MS = 5_000;
 const DEFAULT_SOURCE_STALL_RESET_MS = 2_500;
 const DEFAULT_AWAITING_KEYFRAME_RESET_MS = 2_500;
+const DEFAULT_RESET_SETTLE_MS = 2_500;
+const DEFAULT_MAX_RESET_SETTLE_MS = 30_000;
 
 /**
  * Owns the timer and recovery timing for exactly one scrcpy session.
@@ -53,6 +59,12 @@ const DEFAULT_AWAITING_KEYFRAME_RESET_MS = 2_500;
  * admitted to the active session's writer. Every attempt consumes the
  * session-level cooldown so a throwing writer cannot create a hot loop, while
  * only admitted requests update clients' last-request timestamps.
+ *
+ * A reset restarts scrcpy's encoder, and the new session opens with a key
+ * frame. Until that key frame arrives, further requests are coalesced into the
+ * pending restart: issuing another reset would kill the encoder before it can
+ * answer, which livelocks a slow device. The settle window doubles for each
+ * reset that produces no frames at all, up to `maxResetSettleMs`.
  */
 export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
   readonly startedMs: number;
@@ -65,6 +77,8 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
   #firstFrameResetMs: number;
   #sourceStallResetMs: number;
   #awaitingKeyFrameResetMs: number;
+  #resetSettleMs: number;
+  #maxResetSettleMs: number;
   #timer: unknown | null = null;
   #runEpoch = 0;
   #frameCount = 0;
@@ -73,6 +87,8 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
   #lastFpsFrameCount = 0;
   #lastFpsSampleMs: number;
   #lastSessionResetAttemptMs: number | null = null;
+  #pendingResetSinceMs: number | null = null;
+  #resetsWithoutFrame = 0;
 
   constructor(options: SessionRecoveryWatchdogOptions<TClient>) {
     this.#clock = options.clock ?? SYSTEM_RECOVERY_WATCHDOG_CLOCK;
@@ -90,6 +106,9 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
     this.#awaitingKeyFrameResetMs =
       options.awaitingKeyFrameResetMs ??
       DEFAULT_AWAITING_KEYFRAME_RESET_MS;
+    this.#resetSettleMs = options.resetSettleMs ?? DEFAULT_RESET_SETTLE_MS;
+    this.#maxResetSettleMs =
+      options.maxResetSettleMs ?? DEFAULT_MAX_RESET_SETTLE_MS;
   }
 
   get running(): boolean {
@@ -112,9 +131,11 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
     this.#timer = null;
   }
 
-  recordFrame(): void {
+  recordFrame(isKeyFrame = false): void {
     this.#frameCount++;
     this.#lastFrameMs = this.#clock.now();
+    this.#resetsWithoutFrame = 0;
+    if (isKeyFrame) this.#pendingResetSinceMs = null;
   }
 
   markAwaiting(client: TClient): void {
@@ -134,14 +155,39 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
     client.lastKeyFrameRequestMs = null;
   }
 
-  requestVideoReset(reason: string): boolean {
-    const now = this.#clock.now();
+  /**
+   * True when neither the session cooldown nor a restart that is still
+   * waiting for its key frame blocks another reset.
+   */
+  canRequestReset(nowMs = this.#clock.now()): boolean {
     if (
       this.#lastSessionResetAttemptMs !== null &&
-      now - this.#lastSessionResetAttemptMs < this.#sessionResetCooldownMs
+      nowMs - this.#lastSessionResetAttemptMs < this.#sessionResetCooldownMs
     ) {
       return false;
     }
+    return (
+      this.#pendingResetSinceMs === null ||
+      nowMs - this.#pendingResetSinceMs >= this.#resetSettleWindowMs()
+    );
+  }
+
+  /**
+   * Records an admitted reset. Callers that write the reset packet themselves
+   * use this to share the pending-restart gate.
+   */
+  noteResetAdmitted(nowMs = this.#clock.now()): void {
+    this.#lastSessionResetAttemptMs = nowMs;
+    this.#pendingResetSinceMs = nowMs;
+    this.#resetsWithoutFrame++;
+    for (const client of this.#clients()) {
+      if (client.awaitingKeyFrame) client.lastKeyFrameRequestMs = nowMs;
+    }
+  }
+
+  requestVideoReset(reason: string): boolean {
+    const now = this.#clock.now();
+    if (!this.canRequestReset(now)) return false;
 
     this.#lastSessionResetAttemptMs = now;
     let admitted = false;
@@ -152,10 +198,13 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
     }
     if (!admitted) return false;
 
-    for (const client of this.#clients()) {
-      if (client.awaitingKeyFrame) client.lastKeyFrameRequestMs = now;
-    }
+    this.noteResetAdmitted(now);
     return true;
+  }
+
+  #resetSettleWindowMs(): number {
+    const doublings = Math.min(Math.max(this.#resetsWithoutFrame, 1) - 1, 16);
+    return Math.min(this.#resetSettleMs * 2 ** doublings, this.#maxResetSettleMs);
   }
 
   tick(): void {
@@ -224,6 +273,11 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
       awaitingClients,
       oldestAwaitingAgeMs,
       lastResetAttemptMs: this.#lastSessionResetAttemptMs,
+      pendingResetAgeMs:
+        this.#pendingResetSinceMs === null
+          ? null
+          : Math.max(0, nowMs - this.#pendingResetSinceMs),
+      resetBackoffMs: this.#resetSettleWindowMs(),
     };
   }
 }
