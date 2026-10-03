@@ -131,17 +131,18 @@ Options:
                          stutters. Use swiftshader_indirect on headless hosts.
       --restart-avd      Stop a running matching AVD before launching it
       --camera-back <mode>
-                         Back camera for --avd launches. webcam<N> shows a host
-                         webcam (see --webcam-list); emulated, virtualscene,
-                         none, and imagefile:<path> also work. The emulator
-                         picks cameras at boot, so add --restart-avd if the AVD
-                         is already running.
+                         Experimental. Back camera for --avd launches. webcam<N>
+                         shows a host webcam (see --webcam-list); emulated,
+                         virtualscene, none, and imagefile:<path> also work. The
+                         emulator picks cameras at boot, so add --restart-avd if
+                         the AVD is already running.
       --camera-front <mode>
-                         Front camera for --avd launches; same modes except
-                         virtualscene. Each webcam can feed only one camera.
+                         Experimental. Front camera for --avd launches; same
+                         modes except virtualscene. Each webcam can feed only
+                         one camera.
       --avd-list         Print available Android Virtual Device names
       --running-avds     Print currently running emulator AVDs
-      --webcam-list      Print host webcams the emulator can use
+      --webcam-list      Experimental. Print host webcams the emulator can use
       --emulator <path>  Android Emulator binary (default: PATH or Android SDK)
       --emulator-port <n>
                          Emulator console port for --avd (even 5554-5682)
@@ -174,7 +175,8 @@ async function main() {
     throw new Error("--emulator-port and --restart-avd require --avd.");
   }
 
-  if ((values["camera-back"] !== undefined || values["camera-front"] !== undefined) && !values.avd) {
+  const cameraRequested = values["camera-back"] !== undefined || values["camera-front"] !== undefined;
+  if (cameraRequested && !values.avd) {
     throw new Error(
       "--camera-back and --camera-front require --avd: the emulator picks its cameras at boot.",
     );
@@ -182,6 +184,13 @@ async function main() {
 
   if (values.avd && values.serial) {
     throw new Error("Use either --avd to launch an emulator or --serial to attach to an existing device, not both.");
+  }
+
+  if (cameraRequested) {
+    console.error(
+      "Camera support is experimental, and the camera preview can be slow. " +
+        "Known limitations: https://github.com/jiunshinn/serve-emu#camera",
+    );
   }
 
   let emulatorLaunch: Awaited<ReturnType<typeof startEmulator>> | null = null;
