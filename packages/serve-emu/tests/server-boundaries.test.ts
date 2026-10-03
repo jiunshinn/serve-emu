@@ -23,8 +23,8 @@ import {
 describe("server API boundaries", () => {
   test("the complete API method table is enforced before business routing", async () => {
     const entries = Object.entries(API_ROUTE_METHODS);
-    expect(entries).toHaveLength(31);
-    expect(entries.reduce((total, [, methods]) => total + methods.length, 0)).toBe(40);
+    expect(entries).toHaveLength(32);
+    expect(entries.reduce((total, [, methods]) => total + methods.length, 0)).toBe(41);
     for (const [path, methods] of entries) {
       for (const method of methods) {
         expect(apiMethodGate(path, method)).toBeNull();
