@@ -137,8 +137,9 @@ Options:
       --max-queued-uploads <n>      Queued uploads (default: ${DEFAULT_MAX_QUEUED_UPLOADS})
       --upload-queue-timeout-ms <ms> Upload queue wait limit (default: ${DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS})
       --avd <name>       Launch this Android Virtual Device before streaming.
-                         serve-emu exits if that emulator exits while it is
-                         still the streamed device.
+                         If serve-emu started the emulator, serve-emu exits
+                         when it exits while it is still the streamed device
+                         (not for an AVD that was already running).
       --gpu <mode>       Emulator GPU mode for --avd launches (default: host).
                          host uses the real GPU for smooth ~60fps; the AVD's
                          own auto often falls back to a software compositor that
@@ -322,6 +323,9 @@ async function main(values: CliValues) {
         .catch((err) => console.error("Shutdown cleanup failed:", err))
         .finally(() => process.exit(1));
     });
+    // It exited while the server was starting: watchEmulator already began
+    // the shutdown, so don't print a URL that is about to stop working.
+    if (lifecycle.signal.aborted) return;
   }
 
   const base = `http://${displayHost(host)}:${server.port}`;

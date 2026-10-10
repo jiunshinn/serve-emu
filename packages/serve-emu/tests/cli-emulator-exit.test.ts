@@ -51,13 +51,28 @@ describe("an --avd emulator exiting (#73)", () => {
     expect(exits).toEqual([{ serial: "emulator-5554", code: null, signal: "SIGKILL" }]);
   });
 
-  test("is ignored after a switch to another device or a requested stop", () => {
+  test("is ignored after a switch to another device", () => {
+    const { launch, exit } = launchedEmulator();
+    const { exits } = watch(launch, () => "emulator-5556");
+    exit(0);
+    expect(exits).toEqual([]);
+  });
+
+  test("is ignored after a client stopped the device on purpose", () => {
+    const { launch, exit } = launchedEmulator();
+    const { exits } = watch(launch, () => null);
+    exit(0);
+    expect(exits).toEqual([]);
+  });
+
+  test("checks the server's device when the emulator exits, not when watching starts", () => {
     let current: string | null = "emulator-5556";
     const { launch, exit } = launchedEmulator();
     const { exits } = watch(launch, () => current);
-    current = null;
+    // Switched back to the launched emulator before it exited.
+    current = "emulator-5554";
     exit(0);
-    expect(exits).toEqual([]);
+    expect(exits).toHaveLength(1);
   });
 
   test("is ignored while the CLI itself is stopping", async () => {
@@ -154,6 +169,32 @@ describe("a port another server already uses", () => {
       );
     } finally {
       await other.stop();
+    }
+  });
+
+  test("prints only plain values from the probed body", async () => {
+    const replies: unknown[] = [
+      { serial: "emulator-5554\u001b[2J", status: "streaming", startedAt: "2026-10-10T00:00:00.000Z" },
+      { serial: "emulator-5554", status: "streaming", startedAt: "\u001b]8;;x\u0007" },
+      { ok: false, error: { code: "forbidden" } },
+    ];
+    let reply = 0;
+    const other = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => Response.json(replies[reply++], { status: 503 }),
+    });
+    try {
+      const port = other.port!;
+      expect(await describePortOwner("127.0.0.1", port)).toBeNull();
+      expect(await describePortOwner("127.0.0.1", port)).toBe(
+        `Port ${port} is already used by another serve-emu (device emulator-5554, status streaming).`,
+      );
+      expect(await describePortOwner("127.0.0.1", port)).toBe(
+        `Port ${port} is already used by another serve-emu.`,
+      );
+    } finally {
+      other.stop(true);
     }
   });
 
