@@ -35,6 +35,11 @@ export const SYSTEM_UPLOAD_MANAGER_CLOCK: UploadManagerClock = {
     clearTimeout(timer as ReturnType<typeof setTimeout>),
 };
 
+// Disposed generations are also rejected through their aborted session
+// signal; this set only closes the window before that signal is observed, so
+// remembering the most recent ones is enough.
+const MAX_REMEMBERED_CANCELLED_GENERATIONS = 32;
+
 export type UploadManagerOptions = {
   maxActive?: number;
   maxQueued?: number;
@@ -292,6 +297,10 @@ export class UploadManager {
   ): Promise<void> {
     nonNegativeInteger(generation, "generation");
     this.#cancelledGenerations.add(generation);
+    if (this.#cancelledGenerations.size > MAX_REMEMBERED_CANCELLED_GENERATIONS) {
+      const [oldest] = this.#cancelledGenerations;
+      this.#cancelledGenerations.delete(oldest!);
+    }
     const cleanups: Promise<void>[] = [];
 
     for (const job of [...this.#queue]) {

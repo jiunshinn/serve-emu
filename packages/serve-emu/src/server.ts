@@ -1302,16 +1302,10 @@ export async function startServer(
   };
 
   const switchSession = async (serial: string) => {
-    const previous = sessions.current;
-    if (serial !== previous.serial) {
-      await uploads.cancelGeneration(
-        previous.generation,
-        new UploadManagerError("device-session-changed", "device switched", {
-          serial: previous.serial,
-          generation: previous.generation,
-        }),
-      );
-    }
+    // Uploads for the previous generation are cancelled by its context
+    // cleanup (see createContext) once the switch commits. Cancelling here,
+    // before the candidate is prepared, would strand the still-current
+    // session's uploads whenever the switch fails.
     const context = await sessions.switch(
       serial,
       async (targetSerial, generation, signal) => {

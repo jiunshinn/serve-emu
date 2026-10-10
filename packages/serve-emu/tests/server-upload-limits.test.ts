@@ -445,16 +445,21 @@ describe("server request and upload limits", () => {
     expect(events.slice(0, 2)).toEqual(["staging-cleanup", "old-close"]);
   });
 
-  test("switching during ADB keeps the captured old serial and waits for cleanup", async () => {
+  test("switching during ADB keeps the captured old serial and cancels it once the switch commits", async () => {
     const events: string[] = [];
     const cleanupGate = deferred<void>();
+    const nextReady = deferred<void>();
     const old = fakeSession("device-old", () => events.push("old-close"));
     const next = fakeSession("device-new");
     let adbStarted = false;
     let actionSerial = "";
     const harness = await createHarness({}, {
-      startScrcpy: async ({ serial }) =>
-        serial === "device-old" ? old.session : next.session,
+      startScrcpy: async ({ serial }) => {
+        if (serial === "device-old") return old.session;
+        events.push("next-prepare");
+        await nextReady.promise;
+        return next.session;
+      },
       stageMultipartUpload: async () =>
         stagedFile("switch.apk", async () => {
           events.push("cleanup-start");
@@ -483,22 +488,52 @@ describe("server request and upload limits", () => {
       .finally(() => {
         switchSettled = true;
       });
-    await flushUntil(() => events.includes("cleanup-start"));
 
+    // While the candidate is prepared, the still-current device keeps its
+    // upload: a switch that fails here must leave it untouched.
+    await flushUntil(() => events.includes("next-prepare"));
+    expect(events).toEqual(["next-prepare"]);
+
+    nextReady.resolve();
+    await flushUntil(() => events.includes("cleanup-start"));
     expect(actionSerial).toBe("device-old");
     expect(switchSettled).toBe(false);
-    expect(old.closeCalls).toBe(0);
 
     cleanupGate.resolve();
     const [uploadResponse, switchResponse] = await Promise.all([upload, switching]);
     expect(uploadResponse.status).toBe(409);
     expect(switchResponse.status).toBe(200);
-    expect(events).toEqual([
-      "adb-abort",
-      "cleanup-start",
-      "cleanup-done",
-      "old-close",
-    ]);
+    expect(events.indexOf("adb-abort")).toBeGreaterThan(0);
+    expect(events.indexOf("cleanup-start")).toBeGreaterThan(
+      events.indexOf("adb-abort"),
+    );
+    expect(events.indexOf("cleanup-done")).toBeGreaterThan(
+      events.indexOf("cleanup-start"),
+    );
+    expect(old.closeCalls).toBe(1);
+  });
+
+  test("a failed switch leaves uploads on the current device working", async () => {
+    const installs: string[] = [];
+    const harness = await createHarness({}, {
+      stageMultipartUpload: async () => stagedFile("again.apk"),
+      installApk: async (serial) => {
+        installs.push(serial);
+        return { ok: true, output: "Success" };
+      },
+    });
+
+    const before = await harness.fetch(fakeUploadRequest("/api/apps/install"));
+    expect(before.status).toBe(200);
+
+    const failedSwitch = await harness.fetch(
+      jsonRequest("/api/devices/select", { serial: "device-missing" }),
+    );
+    expect(failedSwitch.status).toBe(400);
+
+    const after = await harness.fetch(fakeUploadRequest("/api/apps/install"));
+    expect(after.status).toBe(200);
+    expect(installs).toEqual(["device-old", "device-old"]);
   });
 
   test("request abort cancels active work and cleans its staged file", async () => {
