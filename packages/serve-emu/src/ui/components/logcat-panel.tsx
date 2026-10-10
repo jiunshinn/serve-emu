@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useDeviceSessionSnapshot } from "../lib/device-session-store";
+import { settledSessionKey, useDeviceSessionSnapshot } from "../lib/device-session-store";
 import {
   LogcatBatchPublisher,
   LogcatRingBuffer,
@@ -146,10 +146,7 @@ export function LogcatPanel() {
   // device's lines and resubscribe once a different session is settled.
   // Transitional snapshots (no generation yet) are ignored.
   const deviceSession = useDeviceSessionSnapshot();
-  const settledSession =
-    !deviceSession.transitioning && deviceSession.sessionGeneration !== null
-      ? `${deviceSession.serial}#${deviceSession.sessionGeneration}`
-      : null;
+  const settledSession = settledSessionKey(deviceSession);
   const lastSessionRef = useRef<string | null>(null);
   const connectRef = useRef(connect);
   connectRef.current = connect;
