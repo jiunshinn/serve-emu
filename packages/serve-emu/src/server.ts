@@ -16,6 +16,7 @@ import type { ApplyLocationOptions } from "./api/dependencies.ts";
 import { createDeviceService, type DeviceService } from "./device-service.ts";
 import { ApiError, apiErrorResponse } from "./api/api-error.ts";
 import { toApiError, type ApiErrorFallback } from "./api/error-mapping.ts";
+import { MAX_ROUTE_BODY_BYTES } from "./shared/route-limits.ts";
 import { createApiRoutes } from "./api/routes/index.ts";
 import { importMediaFile, installApk } from "./app-management.ts";
 import { logApiFailure } from "./command-failure.ts";
@@ -162,7 +163,6 @@ const AWAITING_KEYFRAME_RESET_MS = 2500;
 const RESET_SETTLE_MS = 2500;
 const MAX_RESET_SETTLE_MS = 30_000;
 const MAX_JSON_BODY_BYTES = 8 * 1024;
-const MAX_ROUTE_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_LOGCAT_QUERY_BYTES = 200;
 
 export type ServerDependencies = {

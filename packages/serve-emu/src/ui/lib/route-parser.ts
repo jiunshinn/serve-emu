@@ -1,8 +1,8 @@
-export type RoutePoint = {
-  latitude: number;
-  longitude: number;
-  altitude?: number;
-};
+import type { RouteWaypoint } from "../../shared/api-contracts";
+import { MAX_ROUTE_FILE_BYTES, MAX_ROUTE_WAYPOINTS } from "../../shared/route-limits";
+
+/** A parsed waypoint, sent as-is in a route playback request. */
+export type RoutePoint = RouteWaypoint;
 
 export type RouteFormat = "gpx" | "kml" | "json";
 
@@ -13,15 +13,14 @@ export type RouteParseLimits = {
 };
 
 const DEFAULT_ROUTE_PARSE_LIMITS: Readonly<RouteParseLimits> = Object.freeze({
-  maxWaypoints: 10_000,
+  maxWaypoints: MAX_ROUTE_WAYPOINTS,
   maxComplexity: 100_000,
   maxDepth: 128,
 });
 
-// Keep local route input below the server's bounded request-body budget. The
-// UI can use this constant for a preflight check; the worker enforces it again
-// before calling File.text().
-export const DEFAULT_MAX_ROUTE_FILE_BYTES = 2 * 1024 * 1024;
+// The UI uses this for a preflight check; the worker enforces it again before
+// calling File.text(). See shared/route-limits.ts.
+export const DEFAULT_MAX_ROUTE_FILE_BYTES = MAX_ROUTE_FILE_BYTES;
 
 export type RouteParseErrorCode =
   | "cancelled"

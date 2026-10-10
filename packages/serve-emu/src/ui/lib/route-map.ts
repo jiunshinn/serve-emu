@@ -1,8 +1,7 @@
-export type LocationPoint = {
-  latitude: number;
-  longitude: number;
-  altitude?: number;
-};
+import type { GeoFix } from "../../shared/api-contracts";
+
+/** A point on the route map: the shared location fix. */
+export type LocationPoint = GeoFix;
 
 export type WorldPoint = {
   x: number;
