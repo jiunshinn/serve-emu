@@ -11,6 +11,7 @@ const CRITICAL_SOURCE_FILES = {
   "src/api/routes/inspection.ts": 80,
   "src/api/routes/session.ts": 75,
   "src/device-service.ts": 95,
+  "src/server/auth.ts": 95,
   "src/server/backpressure.ts": 95,
   "src/request-body.ts": 95,
   "src/server/health.ts": 95,
