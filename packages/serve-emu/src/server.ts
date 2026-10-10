@@ -23,7 +23,6 @@ import { ControlInputError, ControlInputQueue } from "./control-input-queue.ts";
 import {
   ActiveDeviceSession,
   DeviceSessionManager,
-  SessionChangedError,
 } from "./device-session-context.ts";
 import {
   listAvds,
@@ -40,7 +39,7 @@ import {
   MultipartUploadError,
   stageMultipartUpload,
 } from "./multipart-upload.ts";
-import { HttpBodyError, readJsonLimited } from "./request-body.ts";
+import { readJsonLimited } from "./request-body.ts";
 import { shouldRecordPayload } from "./session-api.ts";
 import {
   closeScrcpySession,
