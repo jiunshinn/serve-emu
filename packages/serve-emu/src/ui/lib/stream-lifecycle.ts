@@ -484,6 +484,8 @@ export class StreamSessionResources<
     this.#timings.clear();
     this.#frameHead = 0;
     this.#frameCount = 0;
+    // Skips not yet reported belong to the ended generation too.
+    this.#skippedFrames = 0;
     return { closedFrames, clearedTimings };
   }
 

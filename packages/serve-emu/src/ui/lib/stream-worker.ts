@@ -3,7 +3,7 @@ import {
   StreamClockSync,
   VsyncEstimator,
   admitDuringRecovery,
-  presentOldestFrame,
+  nextPresentation,
 } from "./stream-performance";
 import { parseWsServerJson } from "../../shared/websocket-contracts";
 import { buildCodecString, scanAU } from "./h264";
@@ -300,20 +300,14 @@ const renderFromQueue = (generation: number, vsyncAt?: number) => {
   // present the NEWEST frame and discard the staler ones: they were
   // superseded before they could be shown, and drawing them would only add
   // display lag. The queue stays as a small burst absorber.
-  const oldest = resources.peekOldestFrame();
-  const oldestDecodedAt = oldest
-    ? (resources.peekTiming(oldest.timestamp)?.decodedAt ?? null)
-    : null;
-  const frame = presentOldestFrame({
-    queued: resources.queuedFrameCount,
-    oldestAgeMs: oldestDecodedAt === null ? null : epochNowMs() - oldestDecodedAt,
-    vsyncMs: vsync.intervalMs,
-  })
-    ? resources.takeOldestFrame()
-    : resources.takeLatestFrame();
+  const { frame, reschedule } = nextPresentation(
+    resources,
+    (queued) => resources.peekTiming(queued.timestamp)?.decodedAt ?? null,
+    epochNowMs(),
+    vsync.intervalMs,
+  );
   if (!frame) return;
-  // A frame kept for the next vsync needs that vsync scheduled.
-  if (resources.queuedFrameCount > 0 && !renderHandle) {
+  if (reschedule && !renderHandle) {
     renderHandle = scheduleFrame((at) => renderFromQueue(generation, at));
   }
   if (!isCurrentStreamGeneration(lifecycle, generation)) {

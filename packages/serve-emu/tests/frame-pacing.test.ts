@@ -3,7 +3,7 @@ import {
   StreamSessionResources,
   type ClosableStreamFrame,
 } from "../src/ui/lib/stream-lifecycle.ts";
-import { presentOldestFrame, VsyncEstimator } from "../src/ui/lib/stream-performance.ts";
+import { nextPresentation, VsyncEstimator } from "../src/ui/lib/stream-performance.ts";
 
 const VSYNC = 1000 / 60;
 
@@ -15,22 +15,47 @@ class Frame implements ClosableStreamFrame {
   }
 }
 
-describe("presentOldestFrame (#75)", () => {
+/**
+ * One vsync over `queued` frames (timestamps 0, 1, …) at t = 100 ms, the
+ * oldest decoded `ageMs` earlier and the others just now.
+ */
+function presentOnce(queued: number, ageMs: number | null, vsyncMs = VSYNC) {
+  const resources = new StreamSessionResources<Frame, number | null>({ frameCapacity: 3 });
+  for (let timestamp = 0; timestamp < queued; timestamp++) {
+    resources.rememberTiming(timestamp, timestamp > 0 ? 100 : ageMs === null ? null : 100 - ageMs);
+    resources.pushFrame(new Frame(timestamp));
+  }
+  const { frame, reschedule } = nextPresentation(
+    resources,
+    (oldest) => resources.peekTiming(oldest.timestamp) ?? null,
+    100,
+    vsyncMs,
+  );
+  return { frame: frame?.timestamp ?? null, reschedule, skipped: resources.takeSkippedFrames() };
+}
+
+describe("nextPresentation (#75)", () => {
   test.each([
-    [{ queued: 2, oldestAgeMs: 10 }, true],
-    [{ queued: 2, oldestAgeMs: 24.9 }, true],
-    [{ queued: 1, oldestAgeMs: 5 }, false],
-    [{ queued: 3, oldestAgeMs: 5 }, false],
-    [{ queued: 2, oldestAgeMs: 25.1 }, false],
-    [{ queued: 2, oldestAgeMs: null }, false],
-  ])("%p at 60 Hz → oldest: %p", (input, expected) => {
-    expect(presentOldestFrame({ ...input, vsyncMs: VSYNC })).toBe(expected);
+    // Keeping up: the older of two, and the newer on the next vsync.
+    [2, 10, { frame: 0, reschedule: true, skipped: 0 }],
+    [2, 24.9, { frame: 0, reschedule: true, skipped: 0 }],
+    [1, 5, { frame: 0, reschedule: false, skipped: 0 }],
+    // Behind (a deeper queue, an older frame, or no age): the newest.
+    [3, 5, { frame: 2, reschedule: false, skipped: 2 }],
+    [2, 25.1, { frame: 1, reschedule: false, skipped: 1 }],
+    [2, null, { frame: 1, reschedule: false, skipped: 1 }],
+  ] as const)("%p queued, the oldest %p ms old, at 60 Hz → %p", (queued, ageMs, expected) => {
+    expect(presentOnce(queued, ageMs)).toEqual(expected);
   });
 
   test("scales the age limit with the display interval", () => {
     // 120 Hz: 12.5 ms is 1.5 intervals.
-    expect(presentOldestFrame({ queued: 2, oldestAgeMs: 12, vsyncMs: 1000 / 120 })).toBe(true);
-    expect(presentOldestFrame({ queued: 2, oldestAgeMs: 13, vsyncMs: 1000 / 120 })).toBe(false);
+    expect(presentOnce(2, 12, 1000 / 120).frame).toBe(0);
+    expect(presentOnce(2, 13, 1000 / 120).frame).toBe(1);
+  });
+
+  test("an empty queue presents nothing", () => {
+    expect(presentOnce(0, null)).toEqual({ frame: null, reschedule: false, skipped: 0 });
   });
 });
 
@@ -41,6 +66,19 @@ describe("VsyncEstimator", () => {
     // Callbacks are requested only when frames wait, so gaps span 1–3 vsyncs.
     for (const at of [0, 8.3, 25, 33.3, 41.7, 66.7]) vsync.observe(at);
     expect(vsync.intervalMs).toBeCloseTo(8.3, 1);
+  });
+
+  test("forgets gaps older than 2 s, so a slower display shows", () => {
+    const vsync = new VsyncEstimator();
+    // 120 Hz, then the tab moves to a 60 Hz display and frames arrive only
+    // now and then: far fewer than the 32-gap window, over more than 2 s.
+    for (let at = 0; at <= 100; at += 1000 / 120) vsync.observe(at);
+    expect(vsync.intervalMs).toBeCloseTo(8.3, 1);
+    for (let at = 300; at <= 2_300; at += 250) {
+      vsync.observe(at);
+      vsync.observe(at + VSYNC);
+    }
+    expect(vsync.intervalMs).toBeCloseTo(16.7, 1);
   });
 
   test("ignores pauses and impossible gaps", () => {
@@ -77,35 +115,39 @@ describe("the frame queue for pacing", () => {
     resources.pushFrame(new Frame(6));
     resources.reset();
     expect(resources.takeSkippedFrames()).toBe(0);
+    // Skips not yet reported when a generation ends are not the next one's.
+    for (let timestamp = 7; timestamp <= 10; timestamp++) resources.pushFrame(new Frame(timestamp));
+    resources.reset();
+    expect(resources.takeSkippedFrames()).toBe(0);
   });
 });
 
 /**
  * Plays decode completion times through the worker's per-vsync choice and
- * reports what was drawn. `adaptive: false` is the old newest-only policy.
+ * reports what was drawn. Like the worker, a vsync is handled only when it
+ * was requested: by a decoder output, or by the previous vsync keeping a
+ * frame. `adaptive: false` is the old newest-only policy.
  */
 function play(decodedAt: number[], adaptive: boolean, vsyncMs = VSYNC) {
   const resources = new StreamSessionResources<Frame, number>({ frameCapacity: 3 });
+  const decodedAtOf = (frame: Frame) => resources.peekTiming(frame.timestamp) ?? null;
   const drawn: number[] = [];
   const addedLatency: number[] = [];
+  let requested = false;
   let next = 0;
   const end = decodedAt.at(-1)! + 5 * vsyncMs;
   for (let now = vsyncMs; now <= end; now += vsyncMs) {
     while (next < decodedAt.length && decodedAt[next]! <= now) {
       resources.rememberTiming(next, decodedAt[next]!);
       resources.pushFrame(new Frame(next));
+      requested = true;
       next++;
     }
-    const oldest = resources.peekOldestFrame();
-    const oldestDecodedAt = oldest ? resources.peekTiming(oldest.timestamp)! : null;
-    const useOldest =
-      adaptive &&
-      presentOldestFrame({
-        queued: resources.queuedFrameCount,
-        oldestAgeMs: oldestDecodedAt === null ? null : now - oldestDecodedAt,
-        vsyncMs,
-      });
-    const frame = useOldest ? resources.takeOldestFrame() : resources.takeLatestFrame();
+    if (!requested) continue;
+    const { frame, reschedule } = adaptive
+      ? nextPresentation(resources, decodedAtOf, now, vsyncMs)
+      : { frame: resources.takeLatestFrame(), reschedule: false };
+    requested = reschedule;
     if (!frame) continue;
     drawn.push(frame.timestamp);
     addedLatency.push(now - resources.takeTiming(frame.timestamp)!);
@@ -140,6 +182,13 @@ describe("pacing with synthetic decode times", () => {
     expect(adaptive.skipped).toBe(0);
     expect(adaptive.drawn).toHaveLength(600);
     expect(adaptive.maxLatencyMs).toBeLessThan(1.5 * VSYNC);
+  });
+
+  test("two frames in one vsync, then a static screen: both are drawn", () => {
+    // Nothing follows the pair, so only the kept frame's own request can
+    // bring the vsync that draws it.
+    expect(play([3, 5], true)).toMatchObject({ drawn: [0, 1], skipped: 0 });
+    expect(play([3, 5], false)).toMatchObject({ drawn: [1], skipped: 1 });
   });
 
   test("after a stall and a burst it skips to the newest frame at once", () => {
