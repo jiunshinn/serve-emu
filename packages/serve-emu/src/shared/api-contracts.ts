@@ -212,7 +212,6 @@ export type LocationSessionEvent = {
   location: GeoFix;
 };
 export type SessionEvent = GestureSessionEvent | LocationSessionEvent;
-export type RecordedEvent = SessionEvent;
 export type SessionReplayStatus =
   | "idle"
   | "running"

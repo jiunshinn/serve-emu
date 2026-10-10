@@ -8,7 +8,7 @@ export const UPDATE_CHECK_FAILURE_BACKOFF_MS = 60 * 60 * 1000;
 const UPDATE_CHECK_TIMEOUT_MS = 1_500;
 
 /** Resolved on use, not at import, so tests and opted-out runs never touch $HOME. */
-export function defaultUpdateCachePath(): string {
+function defaultUpdateCachePath(): string {
   return join(homedir(), ".cache", "serve-emu", "update-check.json");
 }
 
