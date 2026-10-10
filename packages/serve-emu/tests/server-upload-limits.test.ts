@@ -8,8 +8,9 @@ import {
   startServer,
   type ServerDependencies,
   type ServerOpts,
-  type StartedServer,
 } from "../src/server.ts";
+
+type StartedServer = Awaited<ReturnType<typeof startServer>>;
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -754,6 +755,7 @@ describe("server request and upload limits", () => {
     await expect(
       startServer({
         serial: "device-old",
+        port: 0,
         maxMediaUploadBytes: unsafeUploadLimit,
       }),
     ).rejects.toThrow("upload byte limit is too large");
@@ -763,6 +765,7 @@ describe("server request and upload limits", () => {
     await expect(
       startServer({
         serial: "device-old",
+        port: 0,
         uploadQueueTimeoutMs: 2_147_483_648,
       }),
     ).rejects.toThrow("uploadQueueTimeoutMs must be at most 2147483647");

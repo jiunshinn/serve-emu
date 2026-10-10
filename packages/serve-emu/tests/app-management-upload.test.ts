@@ -10,7 +10,7 @@ import type { ExecOpts, ExecResult } from "../src/exec.ts";
 type ExecCall = {
   cmd: string;
   args: string[];
-  opts: ExecOpts;
+  opts: ExecOpts | undefined;
 };
 
 function result(
@@ -43,7 +43,7 @@ describe("staged app management uploads", () => {
   test("installs the staged APK path without materializing the file", async () => {
     const calls: ExecCall[] = [];
     const controller = new AbortController();
-    const run = async (cmd: string, args: string[], opts: ExecOpts) => {
+    const run = async (cmd: string, args: string[], opts?: ExecOpts) => {
       calls.push({ cmd, args, opts });
       return result({ stdout: "Success\n" });
     };
@@ -87,7 +87,7 @@ describe("staged app management uploads", () => {
 
   test("imports through a hidden partial path before the final atomic rename", async () => {
     const calls: ExecCall[] = [];
-    const run = async (cmd: string, args: string[], opts: ExecOpts) => {
+    const run = async (cmd: string, args: string[], opts?: ExecOpts) => {
       calls.push({ cmd, args, opts });
       return result();
     };
@@ -129,7 +129,7 @@ describe("staged app management uploads", () => {
 
   test("removes a remote partial file after an ADB failure", async () => {
     const calls: ExecCall[] = [];
-    const run = async (cmd: string, args: string[], opts: ExecOpts) => {
+    const run = async (cmd: string, args: string[], opts?: ExecOpts) => {
       calls.push({ cmd, args, opts });
       if (args.includes("push")) {
         return result({ status: 1, stderr: "push failed" });
@@ -156,7 +156,7 @@ describe("staged app management uploads", () => {
       "-f",
       "/sdcard/Movies/.serve-emu-failed-clip.mp4.part",
     ]);
-    expect(calls.at(-1)?.opts.signal).toBeUndefined();
+    expect(calls.at(-1)?.opts?.signal).toBeUndefined();
   });
 
   test.each([".", "..", "/"])(

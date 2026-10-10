@@ -242,7 +242,7 @@ describe("ActiveDeviceSession disposal", () => {
     const context = activeSession("device-a", 8, () => {
       closeCalls += 1;
     });
-    let nested: Promise<void> | null = null;
+    let nested = null as Promise<void> | null;
     context.signal.addEventListener("abort", () => {
       nested = context.dispose("abort listener");
     });

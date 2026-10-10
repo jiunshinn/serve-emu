@@ -392,8 +392,8 @@ describe("scrcpy async lifecycle", () => {
       first.localPort,
       first.localPort,
     ]);
-    expect(first.videoReader.sock).toBe(harness.state.sockets[0]);
-    expect(first.controlSocket).toBe(harness.state.sockets[1]);
+    expect(first.videoReader.sock as unknown).toBe(harness.state.sockets[0]);
+    expect(first.controlSocket as unknown).toBe(harness.state.sockets[1]);
 
     const frame = await first.readFrame();
     expect(frame).toEqual({

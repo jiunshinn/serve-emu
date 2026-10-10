@@ -22,7 +22,10 @@ type MultipartPart = {
   data: string | Uint8Array;
 };
 
-function multipartBody(boundary: string, parts: MultipartPart[]): Uint8Array {
+function multipartBody(
+  boundary: string,
+  parts: readonly MultipartPart[],
+): Uint8Array {
   const chunks: Uint8Array[] = [];
   for (const part of parts) {
     const disposition =

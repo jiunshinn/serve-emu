@@ -28,7 +28,7 @@ test("device grid performs one adb discovery and reuses its snapshot", async () 
   let avdQueries = 0;
   let runningQueries = 0;
   let avdListStarted = false;
-  let receivedSnapshot: readonly Device[] | null = null;
+  let receivedSnapshot = null as readonly Device[] | null;
   const dependencies: DeviceGridDependencies = {
     listAllDevices: async () => {
       deviceQueries++;
