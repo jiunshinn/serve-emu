@@ -6,7 +6,7 @@ import {
   ACCESSIBILITY_VIEWPORT_HEIGHT,
   AccessibilityNodeList,
 } from "../src/ui/components/accessibility-node-list";
-import type { AccessibilityNode } from "../src/ui/components/accessibility-panel";
+import type { AccessibilityNode } from "../src/shared/api-contracts";
 import {
   getFixedNavigationIndex,
   getFixedRovingIndex,

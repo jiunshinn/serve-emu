@@ -11,7 +11,7 @@ import {
   type RefObject,
 } from "react";
 import { StatusBar } from "./components/status-bar";
-import type { AccessibilityNode } from "./components/accessibility-panel";
+import type { AccessibilityNode } from "../shared/api-contracts";
 import { DevicePanel } from "./components/device-panel";
 import { ErrorBoundary } from "./components/error-boundary";
 import { DeviceStream } from "./components/device-stream";
