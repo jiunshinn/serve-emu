@@ -39,19 +39,40 @@ export function spawnAdb(
   }) as AdbChild;
 }
 
-const DEVICE_UNAVAILABLE_RE = /\b(?:offline|unauthorized|not found|no devices?|closed)\b/i;
+// adb's own client messages for a device it cannot reach, printed on stderr
+// behind an "adb: " or "error: " prefix. Matched as whole phrases so a device
+// command's output ("sh: pidof: not found", "package com.foo not found") never
+// reads as a lost device.
+const DEVICE_UNAVAILABLE_RE =
+  /\bdevice offline\b|\bdevice unauthorized\b|\bdevice (?:'[^'\n]*' )?not found\b|\bno (?:devices\/emulators|devices|emulators) found\b/i;
+// adb's "error: closed": the server dropped the connection to the device.
+const CONNECTION_CLOSED_RE = /^(?:adb: )?error: closed\s*$/im;
+
+type AdbStderr = { stderr?: string } | string;
+
+function stderrOf(result: AdbStderr): string {
+  return typeof result === "string" ? result : (result.stderr ?? "");
+}
 
 /**
- * Whether adb's output says the device itself is unavailable (offline,
- * unauthorized, not found, none attached, or its connection closed), as
- * opposed to the command failing on a reachable device.
+ * Whether adb's stderr says its connection to the device closed
+ * (`error: closed`). Right after another channel exits this can be a brief
+ * transport race, so callers may retry it once before treating it as
+ * {@link isDeviceUnavailable}.
  */
-export function isDeviceUnavailable(
-  result: { stdout?: string; stderr?: string } | string,
-): boolean {
-  const output =
-    typeof result === "string" ? result : `${result.stderr ?? ""} ${result.stdout ?? ""}`;
-  return DEVICE_UNAVAILABLE_RE.test(output);
+export function isConnectionClosed(result: AdbStderr): boolean {
+  return CONNECTION_CLOSED_RE.test(stderrOf(result));
+}
+
+/**
+ * Whether adb's stderr says the device itself is unavailable (offline,
+ * unauthorized, not found, none attached, or its connection closed), as
+ * opposed to the command failing on a reachable device. Only adb's own
+ * messages count, and stdout is never read: it carries the command's data.
+ */
+export function isDeviceUnavailable(result: AdbStderr): boolean {
+  const stderr = stderrOf(result);
+  return DEVICE_UNAVAILABLE_RE.test(stderr) || CONNECTION_CLOSED_RE.test(stderr);
 }
 
 export type TerminateChildOptions = {

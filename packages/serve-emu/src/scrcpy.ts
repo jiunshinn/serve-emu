@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { SCRCPY_VERSION, ensureScrcpyServer } from "../scripts/fetch-scrcpy.ts";
 import {
+  isConnectionClosed,
   isDeviceUnavailable,
   runAdb,
   spawnAdb,
@@ -538,7 +539,7 @@ async function removeWorkingJars(
     // ADB occasionally closes the first shell channel immediately after the
     // long-running app_process channel exits. `rm -f` is idempotent, so retry
     // once to distinguish that transport race from a real cleanup failure.
-    if (attempt === 0 && /\bclosed\b/i.test(result.stderr ?? "")) {
+    if (attempt === 0 && isConnectionClosed(result)) {
       await runtime.sleep(100, cleanupController.signal);
       continue;
     }
@@ -554,6 +555,7 @@ async function waitForAbstractSocketAsync(
   name: string,
   signal: AbortSignal,
 ): Promise<void> {
+  let closedBefore = false;
   while (true) {
     throwIfAborted(signal, `waiting for @${name} aborted`);
     const result = await runAdbRaw(
@@ -564,13 +566,19 @@ async function waitForAbstractSocketAsync(
       signal,
     );
     if (result.status === 0 && result.stdout.includes(`@${name}`)) return;
-    if (isDeviceUnavailable(result)) {
+    // Only a failed poll can say the device is gone: a successful one's
+    // stdout is the socket table. A single `closed` is the transport race
+    // removeWorkingJars also retries, so only a repeated one fails startup.
+    const failed = result.status !== 0;
+    const closed = failed && isConnectionClosed(result);
+    if (failed && isDeviceUnavailable(result) && (!closed || closedBefore)) {
       throw commandFailure(
         serial,
         ["shell", "cat", "/proc/net/unix"],
         result,
       );
     }
+    closedBefore = closed;
     await runtime.sleep(100, signal);
   }
 }

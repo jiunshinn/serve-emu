@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { spawn } from "node:child_process";
 import {
+  isConnectionClosed,
   isDeviceUnavailable,
   runAdb,
   spawnAdb,
@@ -44,21 +45,45 @@ describe("runAdb and spawnAdb", () => {
 describe("isDeviceUnavailable", () => {
   test.each([
     ["adb: device offline", true],
+    ["adb: error: failed to get feature set: device offline", true],
     ["adb: device unauthorized.\nThis adb server's $ADB_VENDOR_KEYS is not set", true],
     ["adb: device 'emulator-5554' not found", true],
+    ["error: device not found", true],
     ["adb: no devices/emulators found", true],
+    ["error: no devices found", true],
     ["error: closed", true],
-    ["adb: error: listener 'tcp:27183' not found", true],
+    ["adb: error: closed\n", true],
+    // removeForwards ignores a missing listener separately; the device is fine.
+    ["adb: error: listener 'tcp:27183' not found", false],
+    ["/system/bin/sh: pidof: not found", false],
+    ["Error: package com.foo not found", false],
+    ["00000000: 00000002 00000000 00010000 0001 01 12345 @android.net.wifi.closed", false],
+    ["Error: the connection was closed by the app", false],
     ["rm: /data/local/tmp/x: Permission denied", false],
     ["Error: Activity class does not exist", false],
     ["", false],
   ])("%p → %p", (stderr, unavailable) => {
-    expect(isDeviceUnavailable({ stdout: "", stderr })).toBe(unavailable);
+    expect(isDeviceUnavailable({ stderr })).toBe(unavailable);
     expect(isDeviceUnavailable(stderr)).toBe(unavailable);
   });
 
-  test("reads stdout too", () => {
-    expect(isDeviceUnavailable({ stdout: "error: device offline", stderr: "" })).toBe(true);
+  test("ignores stdout, which carries the command's own data", () => {
+    const result = { status: 0, stdout: "error: device offline\nerror: closed\n", stderr: "" };
+    expect(isDeviceUnavailable(result)).toBe(false);
+    expect(isConnectionClosed(result)).toBe(false);
+  });
+});
+
+describe("isConnectionClosed", () => {
+  test.each([
+    ["error: closed", true],
+    ["adb: error: closed", true],
+    ["adb: device offline", false],
+    ["sh: socket closed", false],
+    ["", false],
+  ])("%p → %p", (stderr, closed) => {
+    expect(isConnectionClosed({ stderr })).toBe(closed);
+    expect(isConnectionClosed(stderr)).toBe(closed);
   });
 });
 

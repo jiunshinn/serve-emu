@@ -166,6 +166,8 @@ type HarnessOptions = {
   cacheInitially?: boolean;
   deferProbe?: boolean;
   deferSocketPoll?: boolean;
+  /** Socket-poll results returned, in order, before the listing has the socket. */
+  socketPollResults?: AdbCommandResult[];
   blockConnectIndex?: number;
   deferFirstRemove?: boolean;
   dynamicResult?: AdbCommandResult;
@@ -203,6 +205,7 @@ function createHarness(options: HarnessOptions = {}) {
     fixedAttempt: 0,
     removeWasDeferred: false,
     rmAttempt: 0,
+    socketPollAttempt: 0,
     scidIndex: 0,
   };
 
@@ -290,6 +293,8 @@ function createHarness(options: HarnessOptions = {}) {
         socketPollReached.resolve(call);
         return waitForDeferred(socketPollDeferred, commandOptions.signal);
       }
+      const scripted = options.socketPollResults?.[state.socketPollAttempt++];
+      if (scripted) return scripted;
       const spawn = state.spawnCalls.at(-1);
       const scid = spawn?.args.find((arg) => arg.startsWith("scid="))?.slice(5);
       return ok(`00000000: @scrcpy_${scid}\n`);
@@ -520,6 +525,42 @@ describe("scrcpy async lifecycle", () => {
           call.args[0] === "forward" && call.args[1] === "--remove",
       ),
     ).toBe(true);
+  });
+
+  test("socket discovery retries a single transiently closed poll", async () => {
+    const harness = createHarness({
+      socketPollResults: [failed("error: closed")],
+    });
+    const session = await startWith(harness);
+
+    expect(harness.state.socketPollAttempt).toBe(2);
+    await session.close();
+  });
+
+  test("socket discovery keeps polling while a successful listing lacks the socket", async () => {
+    const harness = createHarness({
+      socketPollResults: [
+        ok("00000000: 00000002 00000000 00010000 0001 01 1 @android.net.wifi.closed\n"),
+        ok("00000000: 00000002 00000000 00010000 0001 01 2 @device.not found offline\n"),
+      ],
+    });
+    const session = await startWith(harness);
+
+    expect(harness.state.socketPollAttempt).toBe(3);
+    await session.close();
+  });
+
+  test.each([
+    ["the device goes offline", [failed("adb: device offline")]],
+    ["adb closes the device connection twice", [failed("error: closed"), failed("error: closed")]],
+  ])("socket discovery fails fast when %s", async (_, socketPollResults) => {
+    const harness = createHarness({ socketPollResults });
+
+    await expect(startWith(harness)).rejects.toThrow(
+      /^adb shell cat failed: adb -s device-test-serial shell cat \/proc\/net\/unix: (?:adb: device offline|error: closed)$/,
+    );
+    expect(harness.state.socketPollAttempt).toBe(socketPollResults.length);
+    expect(harness.state.activeForwards.size).toBe(0);
   });
 
   test("external cancellation during the control connection tears down acquired resources", async () => {
