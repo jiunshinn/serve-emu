@@ -3,6 +3,7 @@ import {
   getNetworkStatus,
   getNightMode,
   getUserRotation,
+  listScrcpySockets,
   screencapPng,
   setFontScale,
   setNetworkEnabled,
@@ -48,6 +49,8 @@ export type DeviceService = {
   clearAppData(serial: string, packageName: string, signal: AbortSignal): Promise<AppActionResponse>;
   forceStopApp(serial: string, packageName: string, signal: AbortSignal): Promise<AppActionResponse>;
   grantPermission(serial: string, packageName: string, permission: string, signal: AbortSignal): Promise<AppActionResponse>;
+  /** Abstract socket names of the scrcpy sessions on the device, this server's included. */
+  scrcpySockets(serial: string, signal: AbortSignal): Promise<string[]>;
 };
 
 export type DeviceServiceRunners = Pick<AdbDeps, "execText" | "execBuffer">;
@@ -74,5 +77,6 @@ export function createDeviceService(runners: DeviceServiceRunners = {}): DeviceS
       forceStopApp(serial, packageName, deps(signal)),
     grantPermission: (serial, packageName, permission, signal) =>
       grantPermission(serial, packageName, permission, deps(signal)),
+    scrcpySockets: (serial, signal) => listScrcpySockets(serial, deps(signal)),
   };
 }

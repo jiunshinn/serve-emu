@@ -232,3 +232,39 @@ export async function setNetworkEnabled(
   }
   return getNetworkStatus(serial, deps);
 }
+
+// One /proc/net/unix read per probe; a busy device lists a few hundred lines.
+const SCRCPY_SOCKET_PROBE_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The scrcpy sessions on a device, by abstract socket name (`scrcpy_<scid>`,
+ * or `scrcpy` for a client without a scid), read from `/proc/net/unix`. The
+ * listening socket and its accepted connections share the name, so each
+ * session counts once.
+ */
+export function parseScrcpySocketNames(procNetUnix: string): string[] {
+  const names = new Set<string>();
+  for (const line of procNetUnix.split("\n")) {
+    const match = /\s@(scrcpy(?:_[0-9a-f]{8})?)\s*$/.exec(line);
+    if (match) names.add(match[1]!);
+  }
+  return [...names].sort();
+}
+
+export async function listScrcpySockets(
+  serial: string,
+  deps: AdbDeps = {},
+): Promise<string[]> {
+  const stdout = await adbText(
+    serial,
+    ["shell", "cat", "/proc/net/unix"],
+    {
+      operation: "cat /proc/net/unix",
+      timeout: ADB_QUERY_TIMEOUT_MS,
+      maxBuffer: SCRCPY_SOCKET_PROBE_MAX_BYTES,
+      lane: "background",
+    },
+    deps,
+  );
+  return parseScrcpySocketNames(stdout);
+}

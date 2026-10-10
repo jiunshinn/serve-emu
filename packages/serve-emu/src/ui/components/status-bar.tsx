@@ -7,6 +7,7 @@ type Props = {
   deviceSize: DeviceSize | null;
   fps: number;
   stats?: StreamStats | null;
+  otherScrcpySessions?: number;
 };
 
 export function StatusBar({
@@ -16,6 +17,7 @@ export function StatusBar({
   stats,
   controlError,
   onDismissError,
+  otherScrcpySessions = 0,
 }: Props) {
   const frameRate = status === "streaming" && fps === 0 ? "idle" : `${fps} fps`;
   const latency = stats?.e2eMs != null ? ` • ${Math.round(stats.e2eMs)}ms` : "";
@@ -51,6 +53,17 @@ export function StatusBar({
           <button onClick={onDismissError} aria-label="Dismiss input error">
             Dismiss
           </button>
+        </span>
+      )}
+      {otherScrcpySessions > 0 && (
+        <span
+          className="contention"
+          role="status"
+          title="Every scrcpy session encodes the screen again, so each stream gets slower. Stop the other server or scrcpy client."
+        >
+          {otherScrcpySessions === 1
+            ? "Another scrcpy session is streaming this device"
+            : `${otherScrcpySessions} other scrcpy sessions are streaming this device`}
         </span>
       )}
       <div className="meta" title={detail}>
