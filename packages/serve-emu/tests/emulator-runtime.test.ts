@@ -376,8 +376,10 @@ describe("emulator lifecycle", () => {
     };
 
     const timeoutProcess = fakeProcess();
+    const timeoutAdbCalls: string[] = [];
     const timeoutExec = (async (command, args) => {
       if (command === "/sdk/emulator") return result("Pixel_8\n");
+      timeoutAdbCalls.push(args.slice(2).join(" "));
       if (args.includes("get-state")) return result("offline\n");
       return result("", { status: 1 });
     }) as typeof execText;
@@ -385,6 +387,10 @@ describe("emulator lifecycle", () => {
       "Timed out waiting for emulator-5554 to boot.",
     );
     expect(timeoutProcess.killSignals).toEqual(["SIGTERM"]);
+    // The AVD on the port was never confirmed, so `emu kill` could reach
+    // someone else's emulator.
+    expect(timeoutAdbCalls).toContain("get-state");
+    expect(timeoutAdbCalls).not.toContain("emu kill");
 
     const exitedProcess = fakeProcess({ exitCode: 9, throwOnKill: true });
     const exitExec = (async (command) =>
@@ -447,8 +453,83 @@ describe("emulator lifecycle", () => {
           spawn: spawnWith(proc),
         },
       ),
-    ).rejects.toThrow('emulator-5556 is running AVD "Tablet", not "Pixel_8"');
+    ).rejects.toThrow(
+      'emulator-5556 is running AVD "Tablet", not "Pixel_8"; AVD "Tablet" was left running.',
+    );
     expect(adbCalls.some((call) => call.endsWith("emu kill"))).toBe(false);
+    expect(killSignals).toEqual(["SIGTERM"]);
+  });
+
+  test("keeps polling while the booted device's AVD name cannot be read yet", async () => {
+    let nameReads = 0;
+    const runExec = (async (command, args) => {
+      if (command === "/sdk/emulator") return result("Pixel_8\n");
+      const adbCommand = args.slice(2).join(" ");
+      if (adbCommand === "get-state") return result("device\n");
+      if (adbCommand === "shell getprop sys.boot_completed") return result("1\n");
+      if (adbCommand === "emu avd name") {
+        // Both lookups fail on the first poll, as an adb timeout would.
+        return ++nameReads === 1
+          ? result("", { status: null, error: new Error("timed out") })
+          : result("Pixel_8\nOK\n");
+      }
+      return result("", { status: null, error: new Error("timed out") });
+    }) as typeof execText;
+    const { proc, killSignals } = fakeProcess();
+    let now = 0;
+    const launch = await startEmulator(
+      { avd: "Pixel_8", emulatorPath: "/sdk/emulator", port: 5554 },
+      {
+        execText: runExec,
+        listAllDevices: async () => [],
+        spawn: spawnWith(proc),
+        now: () => now,
+        sleep: async (delay) => {
+          now += delay;
+        },
+      },
+    );
+    expect(launch.serial).toBe("emulator-5554");
+    expect(launch.ownsProcess).toBe(true);
+    expect(nameReads).toBe(2);
+    expect(killSignals).toEqual([]);
+  });
+
+  test("times out without emu kill when the booted device never reports its AVD", async () => {
+    const adbCalls: string[] = [];
+    const runExec = (async (command, args) => {
+      if (command === "/sdk/emulator") return result("Pixel_8\n");
+      const adbCommand = args.slice(2).join(" ");
+      adbCalls.push(adbCommand);
+      if (adbCommand === "get-state") return result("device\n");
+      if (adbCommand === "shell getprop sys.boot_completed") return result("1\n");
+      return result("", { status: null, error: new Error("timed out") });
+    }) as typeof execText;
+    const { proc, killSignals } = fakeProcess();
+    let now = 0;
+    await expect(
+      startEmulator(
+        {
+          avd: "Pixel_8",
+          emulatorPath: "/sdk/emulator",
+          port: 5554,
+          bootTimeoutMs: 3_000,
+        },
+        {
+          execText: runExec,
+          listAllDevices: async () => [],
+          spawn: spawnWith(proc),
+          now: () => now,
+          sleep: async (delay) => {
+            now += delay;
+          },
+        },
+      ),
+    ).rejects.toThrow(
+      'Timed out waiting for emulator-5554 to report AVD "Pixel_8": it booted, but its AVD name could not be read.',
+    );
+    expect(adbCalls.filter((call) => call === "emu avd name")).toHaveLength(3);
+    expect(adbCalls).not.toContain("emu kill");
     expect(killSignals).toEqual(["SIGTERM"]);
   });
 

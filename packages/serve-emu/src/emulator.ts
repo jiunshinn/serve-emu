@@ -458,6 +458,7 @@ async function waitForBoot(
   const pause = dependencies.sleep ?? sleep;
   const runExec = dependencies.execText ?? execText;
   const startedAt = now();
+  let nameUnreadable = false;
   while (now() - startedAt < timeoutMs) {
     if (proc.exitCode !== null || proc.signalCode !== null) {
       throw new Error(`emulator exited before boot completed (code ${proc.exitCode ?? "null"})`);
@@ -472,25 +473,32 @@ async function waitForBoot(
       );
       if (execSucceeded(boot) && boot.stdout.trim() === "1") {
         // Another emulator that was already booted on this port also answers
-        // here; only the requested AVD counts as ours.
+        // here; only the requested AVD counts as ours. An unreadable name
+        // (an adb timeout while the device settles) is not a verdict either
+        // way, so keep polling until the boot timeout.
         const running = await runningAvdName(serial, runExec);
         if (running === avd) return;
-        throw new EmulatorIdentityError(serial, avd, running);
+        if (running !== null) throw new EmulatorIdentityError(serial, avd, running);
+        nameUnreadable = true;
       }
     }
 
     await pause(1_000);
   }
 
-  throw new Error(`Timed out waiting for ${serial} to boot.`);
+  throw new Error(
+    nameUnreadable
+      ? `Timed out waiting for ${serial} to report AVD "${avd}": it booted, but its AVD name could not be read.`
+      : `Timed out waiting for ${serial} to boot.`,
+  );
 }
 
-/** The booted emulator on the launch's port is not the requested AVD. */
+/** The booted emulator on the launch's port is another AVD, which is left running. */
 export class EmulatorIdentityError extends Error {
-  constructor(serial: string, expected: string, actual: string | null) {
+  constructor(serial: string, expected: string, actual: string) {
     super(
-      `${serial} is running AVD "${actual ?? "unknown"}", not "${expected}"; ` +
-        "it was left running.",
+      `${serial} is running AVD "${actual}", not "${expected}"; ` +
+        `AVD "${actual}" was left running.`,
     );
     this.name = "EmulatorIdentityError";
   }
