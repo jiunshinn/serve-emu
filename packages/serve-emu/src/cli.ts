@@ -24,6 +24,7 @@ const { values } = parseArgs({
     host: { type: "string" },
     token: { type: "string" },
     "unsafe-no-auth": { type: "boolean" },
+    "allowed-host": { type: "string", multiple: true },
     serial: { type: "string", short: "s" },
     "max-fps": { type: "string", default: String(SCRCPY_DEFAULTS.maxFps) },
     "bit-rate": { type: "string", default: String(SCRCPY_DEFAULTS.bitRate) },
@@ -102,6 +103,11 @@ Options:
                          bind a token is generated automatically if omitted.
       --unsafe-no-auth   Allow a non-loopback bind with NO authentication.
                          Anyone who can reach the port can control the device.
+      --allowed-host <name>
+                         Without --token, also answer requests for this host
+                         name (repeatable), e.g. behind a reverse proxy. IP
+                         addresses, localhost, and --host are always accepted;
+                         other names are rejected to block DNS rebinding.
   -s, --serial <serial>  adb device serial (defaults to the only booted device)
       --max-fps <n>      Cap source frame rate (default: ${SCRCPY_DEFAULTS.maxFps})
       --bit-rate <bps>   H.264 bit rate (default: ${SCRCPY_DEFAULTS.bitRate})
@@ -270,6 +276,7 @@ async function main() {
     port,
     host,
     token,
+    allowedHosts: values["allowed-host"],
     signal: lifecycleController.signal,
     maxFps,
     bitRate,

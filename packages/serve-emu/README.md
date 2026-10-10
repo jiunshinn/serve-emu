@@ -108,6 +108,7 @@ serve-emu --webcam-list
 | `--host` | `127.0.0.1` | Address to bind. Defaults to loopback so the device is not exposed. Set `0.0.0.0` to serve over the LAN — see [Access control](#access-control) |
 | `--token` | none | Shared secret required on every request. Auto-generated for non-loopback binds if omitted |
 | `--unsafe-no-auth` | false | Allow a non-loopback bind with **no** authentication (dangerous) |
+| `--allowed-host` | none | Without `--token`, also serve requests for this host name (repeatable), e.g. behind a reverse proxy. IP addresses, `localhost`, and `--host` are always served |
 | `-s, --serial` | auto | adb device serial; required when multiple devices are online |
 | `--max-fps` | `60` | Cap source frame rate |
 | `--bit-rate` | `8000000` | H.264 bit rate in bps |
@@ -136,7 +137,11 @@ By default, `serve-emu` attaches to the only online device. If more than one dev
 
 `serve-emu` grants full control of the connected device — input, screenshots, APK installation, file import, app-data clearing, logcat, and session controls. Treat access to the port as access to the device.
 
-**Default (loopback).** With no flags the server binds to `127.0.0.1`, so only processes on the same machine can reach it. No authentication is required, and local CLI/agent workflows keep working with no setup. Cross-origin browser requests and WebSocket upgrades are still rejected (the Origin must match the host), so a random web page cannot drive your device through the local port.
+**Default (loopback).** With no flags the server binds to `127.0.0.1`, so only processes on the same machine can reach it. No authentication is required, and local CLI/agent workflows keep working with no setup. Browser pages still cannot drive your device through the local port:
+
+- Cross-origin WebSocket upgrades and state-changing requests are rejected (the `Origin` must match the host).
+- Requests whose `Host` is a DNS name are rejected with `403`, so a page that rebinds its own domain to `127.0.0.1` (DNS rebinding) is turned away. IP addresses, `localhost`, `*.localhost`, the `--host` value, and any `--allowed-host` names are served. Behind a reverse proxy that keeps its public host name, either pass `--allowed-host <name>` or use `--token`.
+- Cross-site subresource requests (images, scripts, `fetch` from another site) are rejected using the browser's `Sec-Fetch-Site` header. Opening the UI from a link or in an IDE's embedded browser still works, and clients that send no such header (CLI, agents) are unaffected.
 
 **Exposing over the LAN or a tunnel.** Pass `--host 0.0.0.0` (or a specific interface address). A non-loopback bind **requires authentication**:
 
@@ -154,7 +159,7 @@ How clients authenticate:
 - **Browser (bundled UI):** open the printed `?token=` URL once. The server exchanges the token for a `HttpOnly; SameSite=Strict` session cookie and redirects to a clean URL, so the secret is not kept in local storage or the address bar. Same-origin API, SSE, and WebSocket calls then carry the cookie automatically.
 - **Agents / CLI (`curl`, HTTP clients):** send `Authorization: Bearer <token>`, or append `?token=<token>` to the URL.
 
-Requests without a valid token get `401`; WebSocket upgrades and state-changing requests from a mismatched `Origin` get `403` before any work is done.
+Requests without a valid token get `401`; WebSocket upgrades and state-changing requests from a mismatched `Origin`, and cross-site subresource requests, get `403` before any work is done. With a token, any host name is served: a rebound page has neither the secret nor the host-scoped cookie.
 
 **Unauthenticated LAN exposure.** `--host 0.0.0.0 --unsafe-no-auth` binds to all interfaces with no authentication. Anyone who can reach the port can control the device. Only use this on a trusted, isolated network; the CLI prints a warning at startup.
 
