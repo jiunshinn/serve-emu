@@ -43,7 +43,7 @@ function gestureHandler(
   };
 }
 
-const key: ApiRouteHandler<ApiDependencies> = async ({
+const keyHandler: ApiRouteHandler<ApiDependencies> = async ({
   request: req,
   deps,
 }) => {
@@ -102,6 +102,6 @@ export function inputRoutes(): ApiRoute<ApiDependencies>[] {
       path: "/api/text",
       handler: gestureHandler("text", "rest:text"),
     },
-    { method: "POST", path: "/api/key", handler: key },
+    { method: "POST", path: "/api/key", handler: keyHandler },
   ];
 }

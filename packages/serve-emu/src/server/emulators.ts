@@ -55,10 +55,10 @@ export function createEmulatorRegistry(deps: {
     return owned;
   };
 
-  const killEmulator: typeof stopEmulator = async (serial, deps) => {
+  const killEmulator: typeof stopEmulator = async (serial, adbDeps) => {
     const owned = launchedEmulators.get(serial);
     if (owned) return owned.stop();
-    return stopEmulatorBySerial(serial, deps);
+    return stopEmulatorBySerial(serial, adbDeps);
   };
 
   /**
