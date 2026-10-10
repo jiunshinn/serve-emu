@@ -20,6 +20,7 @@
 - Session recording/replay: `packages/serve-emu/src/session-recorder.ts`.
 - React UI: `packages/serve-emu/src/ui`.
 - Vendored scrcpy downloader and pinned version: `packages/serve-emu/scripts/fetch-scrcpy.ts`.
+- Streaming performance limits and the emulator host-capture plan: `packages/serve-emu/docs/streaming-performance.md`.
 
 Prefer kebab-case for TypeScript and JavaScript filenames.
 
