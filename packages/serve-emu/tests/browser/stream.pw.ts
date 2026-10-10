@@ -287,8 +287,9 @@ test("a device switch clears the previous session's route state at once", async 
   await page.goto("/");
   await streaming(page);
   const locationToggle = page.getByRole("button", { name: "Location", exact: true });
-  // Until tool panels stay mounted across a switch (#96), the switch remounts
-  // the section collapsed; reopening it keeps this test valid either way.
+  // Tool panels stay mounted across a switch (#96), so the section is still
+  // open afterwards; reopening it only if needed keeps the test independent
+  // of that.
   const openLocation = async () => {
     if ((await locationToggle.getAttribute("aria-expanded")) !== "true") await locationToggle.click();
   };
