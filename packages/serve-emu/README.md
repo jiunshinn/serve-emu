@@ -113,8 +113,8 @@ serve-emu --webcam-list
 | `--max-fps` | `60` | Cap source frame rate |
 | `--bit-rate` | `8000000` | H.264 bit rate in bps |
 | `--max-size` | `1280` | Downscale the longest edge to N pixels; `0` keeps native size. The emulator's software H.264 encoder sustains 60fps only below ~1 megapixel, hence the 1280 default |
-| `--key-frame-interval` | `10` | Ask the encoder for regular keyframes; `0` disables this codec option. Late joiners get keyframes on demand, so a long interval avoids periodic keyframe bursts |
-| `--repeat-frame-ms` | `0` | Re-encode the previous frame after N ms without screen changes (`16` ≈ steady 60fps on static screens, at extra CPU/bandwidth cost); `0` keeps the encoder default of one repeat per 100ms |
+| `--key-frame-interval` | `10` | Advisory keyframe interval; `0` omits this codec option, which leaves scrcpy's own 10 s default. The emulator's encoder counts it in frames at a nominal 60fps, so keyframes arrive later at lower frame rates. Clients get keyframes on demand via `reset-video` and never wait for a periodic one |
+| `--repeat-frame-ms` | `0` | Re-encode the previous frame after N ms without screen changes; `0` keeps the encoder default of 100ms. Android repeats a frame at most 10 times, so a static screen still stops sending frames |
 | `--max-apk-upload-bytes` | `536870912` | Maximum APK file bytes accepted by the streaming multipart endpoint |
 | `--max-media-upload-bytes` | `1073741824` | Maximum media/file bytes accepted by the streaming multipart endpoint |
 | `--max-active-uploads` | `2` | Maximum upload operations reading, staging, or running through ADB concurrently |
