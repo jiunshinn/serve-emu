@@ -79,8 +79,13 @@ bun run check
 
 The aggregate check verifies generated documentation, runs package coverage,
 checks the server, browser, and test TypeScript projects, builds the production
-UI, and exercises the packed package. The default CI suite is entirely
-device-free: fake clocks, timers, sockets, processes, and sessions exercise
+UI, and exercises the packed package. CI's "Package check" job runs each of
+those commands as its own step, in the same order, and keeps going after a
+failure, so every failing command is reported once by name. A separate
+"Browser streaming integration" job runs `test:browser`. When you change the
+`check` script, update the job's steps to match;
+`tests/ci-workflow.test.ts` fails until they agree. The default CI suite is
+entirely device-free: fake clocks, timers, sockets, processes, and sessions exercise
 lifecycle and protocol behavior without an Android SDK, ADB, an emulator, or a
 connected device.
 
