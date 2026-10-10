@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ScrcpyStreamError } from "../src/scrcpy.ts";
 import { startServer } from "../src/server.ts";
@@ -454,13 +455,24 @@ describe("server HTTP and WebSocket boundaries", () => {
   });
 
   test("serves existing UI files and returns stable missing-file responses", async () => {
-    const harness = await createHarness();
-    const uiDir = join(import.meta.dir, "..", "dist", "ui");
-    const fixtureName = "__server-request-gates-fixture__.txt";
-    const fixturePath = join(uiDir, fixtureName);
-    await mkdir(uiDir, { recursive: true });
-    await writeFile(fixturePath, "static fixture\n", "utf8");
+    // A private UI directory: concurrent runs and `vite build --emptyOutDir`
+    // must not see (or remove) this fixture, and it must never reach the
+    // published dist/ui.
+    const base = await mkdtemp(join(tmpdir(), "serve-emu-ui-"));
     try {
+      const uiDir = join(base, "ui");
+      await mkdir(uiDir);
+      // A file next to the UI directory that traversal must never reach.
+      await writeFile(join(base, "secret.txt"), "outside the UI\n", "utf8");
+      const harness = await createHarness({}, { uiDir });
+      const fixtureName = "__server-request-gates-fixture__.txt";
+      await writeFile(join(uiDir, fixtureName), "static fixture\n", "utf8");
+      await writeFile(join(uiDir, "index.html"), "<!doctype html>fixture ui", "utf8");
+
+      const index = await response(harness.request("/"));
+      expect(index.status).toBe(200);
+      expect(await index.text()).toBe("<!doctype html>fixture ui");
+
       const existing = await response(harness.request(`/${fixtureName}`));
       expect(existing.status).toBe(200);
       expect(await existing.text()).toBe("static fixture\n");
@@ -471,12 +483,17 @@ describe("server HTTP and WebSocket boundaries", () => {
       expect(missing.status).toBe(404);
       expect(await missing.text()).toBe("not found");
 
-      const encodedTraversal = await response(
-        harness.request("/%2e%2e%2fpackage.json"),
-      );
-      expect(encodedTraversal.status).toBe(404);
+      // URL parsing already folds `/../` and `/%2e%2e/` into `/secret.txt`,
+      // so those only prove the file stays outside the UI directory. The
+      // encoded-slash form reaches the handler as-is and guards against a
+      // future change that decodes the path before the `..` check.
+      for (const traversal of ["/%2e%2e%2fsecret.txt", "/../secret.txt", "/%2e%2e/secret.txt"]) {
+        const escaped = await response(harness.request(traversal));
+        expect(escaped.status, traversal).toBe(404);
+        expect(await escaped.text(), traversal).not.toContain("outside the UI");
+      }
     } finally {
-      await rm(fixturePath, { force: true });
+      await rm(base, { recursive: true, force: true });
     }
   });
 

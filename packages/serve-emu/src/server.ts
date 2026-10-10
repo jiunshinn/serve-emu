@@ -237,6 +237,8 @@ export type ServerDependencies = {
   stageMultipartUpload?: typeof stageMultipartUpload;
   installApk?: typeof installApk;
   importMediaFile?: typeof importMediaFile;
+  /** Directory the bundled UI is served from; tests point it at a temp dir. */
+  uiDir?: string;
 };
 
 function serverLimit(
@@ -346,6 +348,7 @@ export async function startServer(
     queueTimeoutMs: uploadQueueTimeoutMs,
   });
 
+  const uiDir = dependencies.uiDir ?? UI_DIR;
   const host = opts.host ?? DEFAULT_HOST;
   const authToken = opts.token && opts.token.length > 0 ? opts.token : null;
   for (const name of opts.allowedHosts ?? []) {
@@ -1544,7 +1547,7 @@ export async function startServer(
       const reqPath = url.pathname === "/" ? "/index.html" : url.pathname;
       if (reqPath.includes(".."))
         return new Response("not found", { status: 404 });
-      const file = Bun.file(join(UI_DIR, reqPath));
+      const file = Bun.file(join(uiDir, reqPath));
       if (await file.exists()) return new Response(file);
       return new Response("not found", { status: 404 });
     },
