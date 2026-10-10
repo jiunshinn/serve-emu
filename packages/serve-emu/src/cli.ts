@@ -9,7 +9,14 @@ import {
 } from "./access-policy.ts";
 import { pickDevice } from "./adb.ts";
 import { CliLifecycle } from "./cli-lifecycle.ts";
-import { listAvds, listRunningAvds, listWebcams, startEmulator } from "./emulator.ts";
+import {
+  emulatorWindowDefault,
+  listAvds,
+  listRunningAvds,
+  listWebcams,
+  startEmulator,
+  type StartEmulatorOpts,
+} from "./emulator.ts";
 import { describePortOwner } from "./port-owner.ts";
 import { SCRCPY_DEFAULTS } from "./scrcpy.ts";
 import {
@@ -52,17 +59,45 @@ export function parseCliArgs(argv: string[]) {
       emulator: { type: "string" },
       "emulator-port": { type: "string" },
       gpu: { type: "string", default: "host" },
+      // No default: unset means emulatorWindowDefault().
+      "emulator-window": { type: "boolean" },
       "camera-back": { type: "string" },
       "camera-front": { type: "string" },
       "webcam-list": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
     allowPositionals: true,
+    // For --no-emulator-window; the check below rejects other --no- forms.
+    allowNegative: true,
   });
+  for (const [name, value] of Object.entries(values)) {
+    // No boolean flag has a default, so false means a --no- form was given.
+    if (value === false && name !== "emulator-window") {
+      throw Object.assign(new TypeError(`Unknown option '--no-${name}'`), {
+        code: "ERR_PARSE_ARGS_UNKNOWN_OPTION",
+      });
+    }
+  }
   return values;
 }
 
 export type CliValues = ReturnType<typeof parseCliArgs>;
+
+/**
+ * The emulator binary, `-gpu`, and window for every emulator this process
+ * launches: the --avd emulator and those started through /api/avds/start.
+ */
+export function emulatorLaunchSettings(
+  values: CliValues,
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window"> {
+  return {
+    emulatorPath: values.emulator,
+    gpu: values.gpu,
+    window: values["emulator-window"] ?? emulatorWindowDefault(platform, env),
+  };
+}
 
 function numberOption(values: CliValues, name: string, fallback: number): number {
   const value = values[name as keyof CliValues];
@@ -140,7 +175,7 @@ Options:
                          If serve-emu started the emulator, serve-emu exits
                          when it exits while it is still the streamed device
                          (not for an AVD that was already running).
-      --gpu <mode>       Emulator GPU mode for --avd launches (default: host).
+      --gpu <mode>       GPU mode for emulators serve-emu launches (default: host).
                          host uses the real GPU for smooth ~60fps; the AVD's
                          own auto often falls back to a software compositor that
                          stutters. Use swiftshader_indirect on headless hosts.
@@ -161,6 +196,11 @@ Options:
       --emulator <path>  Android Emulator binary (default: PATH or Android SDK)
       --emulator-port <n>
                          Emulator console port for --avd (even 5554-5682)
+      --emulator-window, --no-emulator-window
+                         Show or hide the window of emulators serve-emu
+                         launches (--avd and /api/avds/start). Default: shown
+                         when a display exists; hidden on Linux without DISPLAY
+                         or WAYLAND_DISPLAY.
   -h, --help             Show this help
 `);
 }
@@ -218,6 +258,8 @@ async function main(values: CliValues) {
     generateToken: () => randomBytes(24).toString("base64url"),
   });
 
+  const emulatorSettings = emulatorLaunchSettings(values);
+
   type ActiveServer = Awaited<ReturnType<typeof startServer>>;
   // Installed before the emulator boots: a signal during the boot wait must
   // still stop the emulator this process started, and wait until it exits.
@@ -240,11 +282,10 @@ async function main(values: CliValues) {
     serial = values.avd
       ? (emulatorLaunch = await lifecycle.trackEmulator(
           startEmulator({
+            ...emulatorSettings,
             avd: values.avd,
-            emulatorPath: values.emulator,
             port: values["emulator-port"] ? Number(values["emulator-port"]) : undefined,
             restartAvd: values["restart-avd"],
-            gpu: values.gpu,
             cameraBack: values["camera-back"],
             cameraFront: values["camera-front"],
             signal: lifecycle.signal,
@@ -289,6 +330,7 @@ async function main(values: CliValues) {
     maxActiveUploads,
     maxQueuedUploads,
     uploadQueueTimeoutMs,
+    emulator: emulatorSettings,
   }));
   let activeServer: ActiveServer;
   try {

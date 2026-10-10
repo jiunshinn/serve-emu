@@ -1,5 +1,6 @@
 import type {
   EmulatorLaunch,
+  StartEmulatorOpts,
   startEmulator,
   stopEmulator,
 } from "../emulator.ts";
@@ -11,10 +12,13 @@ import type {
 export function createEmulatorRegistry(deps: {
   startEmulator: typeof startEmulator;
   stopEmulator: typeof stopEmulator;
+  /** The CLI's emulator binary, `-gpu`, and window, for every launch here. */
+  settings?: Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window">;
 }) {
   const {
     startEmulator: startEmulatorProcess,
     stopEmulator: stopEmulatorBySerial,
+    settings = {},
   } = deps;
   const launchedEmulators = new Map<string, EmulatorLaunch>();
   // Launches still booting; on stop they abort and stop their own child, and
@@ -26,7 +30,10 @@ export function createEmulatorRegistry(deps: {
     const signal = opts.signal
       ? AbortSignal.any([opts.signal, emulatorShutdown.signal])
       : emulatorShutdown.signal;
-    const booting = startEmulatorProcess({ ...opts, signal }, runtime);
+    const booting = startEmulatorProcess(
+      { ...settings, ...opts, signal },
+      runtime,
+    );
     bootingEmulators.add(booting);
     let launch: EmulatorLaunch;
     try {

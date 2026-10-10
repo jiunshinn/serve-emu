@@ -121,7 +121,7 @@ serve-emu --webcam-list
 | `--max-queued-uploads` | `4` | Maximum uploads waiting for an active slot; further requests receive `429` |
 | `--upload-queue-timeout-ms` | `5000` | Maximum time an upload may wait for a slot before receiving `503` |
 | `--avd` | none | Launch this Android Virtual Device before streaming; if `serve-emu` started it, `serve-emu` exits when it exits while it is still the streamed device |
-| `--gpu` | `host` | Emulator GPU mode for `--avd` launches. `host` renders on the real GPU for smooth ~60fps; see [Smooth Emulator Playback](#smooth-emulator-playback) |
+| `--gpu` | `host` | Emulator GPU mode for emulators `serve-emu` launches (`--avd` and `/api/avds/start`). `host` renders on the real GPU for smooth ~60fps; see [Smooth Emulator Playback](#smooth-emulator-playback) |
 | `--restart-avd` | false | Stop a running matching AVD before launching it |
 | `--camera-back` | AVD setting | Experimental. Back camera for `--avd` launches, such as `webcam0` for a host webcam; see [Camera](#camera) |
 | `--camera-front` | AVD setting | Experimental. Front camera for `--avd` launches; same modes as `--camera-back` except `virtualscene` |
@@ -130,6 +130,7 @@ serve-emu --webcam-list
 | `--webcam-list` | false | Experimental. List host webcams the emulator can use, as `webcam<N>` and device name |
 | `--emulator` | auto | Android Emulator binary path; defaults to PATH or Android SDK env vars |
 | `--emulator-port` | auto | Emulator console port for `--avd`; must be an even port from 5554 through 5682 |
+| `--emulator-window`, `--no-emulator-window` | auto | Show or hide the window of emulators `serve-emu` launches (`--avd` and `/api/avds/start`); see [Emulator Window](#emulator-window) |
 
 By default, `serve-emu` attaches to the only online device. If more than one device is online, pass `-s <serial>` or select another running device later through the HTTP API/UI.
 
@@ -169,11 +170,31 @@ Requests without a valid token get `401`; WebSocket upgrades and state-changing 
 
 **Token handling.** The token is never included in `/health`, `/api` responses, error payloads, or reconnect URLs — only in the one-time startup line. Rotate it by restarting with a new `--token` (or letting a fresh one be generated); existing cookies stop working immediately. When exposing beyond your machine, prefer an SSH tunnel or an authenticating reverse proxy over a raw `0.0.0.0` bind.
 
+## Emulator Window
+
+The browser is the display, so an emulator's own window is optional.
+`--no-emulator-window` launches emulators with `-no-window`, and
+`--emulator-window` asks for the window. Without either flag, the window
+opens wherever a display exists. On Linux without `DISPLAY` or
+`WAYLAND_DISPLAY` (SSH sessions without X forwarding, CI, servers),
+emulators launch headless, because the emulator aborts there when it tries
+to open a window. A forwarded or stale `DISPLAY` (`ssh -X`, an old tmux
+session) still counts as a display; pass `--no-emulator-window` there. The
+setting, like `--gpu` and `--emulator`, applies to `--avd` and to emulators
+started from the UI or `/api/avds/start`, so those launches also get
+`-gpu host` unless `--gpu` says otherwise. It has no effect on an AVD that is
+already running.
+
+```sh
+# no emulator window, even on a desktop
+serve-emu --avd Pixel_8 --no-emulator-window
+```
+
 ## Smooth Emulator Playback
 
 The single biggest factor for stutter-free emulator streaming is the **emulator GPU mode**, not the bit rate or the transport. Many AVDs default to `auto`, which on some hosts (notably Apple Silicon) falls back to a **software Vulkan compositor** (`llvmpipe`/`lavapipe`). That caps the guest at a janky ~20fps with dropped frames, so the stream stutters no matter how high you set `--max-fps` or `--bit-rate`.
 
-`serve-emu` launches `--avd` emulators with **`-gpu host`** by default, which renders on the real GPU (Metal/Vulkan) for smooth ~60fps playback (measured: guest jank dropped from 10–19% to 0%). Override with `--gpu <mode>` when needed:
+`serve-emu` launches emulators (`--avd` and `/api/avds/start`) with **`-gpu host`** by default, which renders on the real GPU (Metal/Vulkan) for smooth ~60fps playback (measured: guest jank dropped from 10–19% to 0%). Override with `--gpu <mode>` when needed:
 
 ```sh
 # default — real GPU, smooth
