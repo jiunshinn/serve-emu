@@ -12,7 +12,11 @@ import { listAllDevices } from "./adb.ts";
 import { createApiRouter } from "./api/router.ts";
 import { createApiRoutes } from "./api/routes/index.ts";
 import { importMediaFile, installApk } from "./app-management.ts";
-import { CommandFailureError } from "./command-failure.ts";
+import {
+  CommandFailureError,
+  commandFailureStatus,
+  logApiFailure,
+} from "./command-failure.ts";
 import { ControlInputError, ControlInputQueue } from "./control-input-queue.ts";
 import {
   ActiveDeviceSession,
@@ -656,7 +660,11 @@ export async function startServer(
     return value;
   };
 
-  const errorResponse = (err: unknown, fallbackStatus = 400) => {
+  const errorResponse = (
+    err: unknown,
+    req: Request,
+    fallbackStatus = 400,
+  ) => {
     const error = err instanceof Error ? err.message : String(err);
     if (err instanceof SessionChangedError) {
       return Response.json(
@@ -688,10 +696,11 @@ export async function startServer(
     } else if (err instanceof CommandFailureError) {
       // Command output can carry device paths, argument lists, and stack
       // traces: log it here and send only the operation name.
-      console.error(`[api] ${err.publicMessage}:`, err);
+      const commandStatus = commandFailureStatus(err);
+      logApiFailure(req, commandStatus, err.publicMessage, err);
       return Response.json(
         { ok: false, code: err.code, error: err.publicMessage },
-        { status: err.code === "adb-timeout" ? 504 : 502 },
+        { status: commandStatus },
       );
     }
     return Response.json(
@@ -707,8 +716,14 @@ export async function startServer(
     error: err instanceof Error ? err.message : String(err),
   });
 
-  const inputErrorResponse = (err: unknown, status: "rejected" | "failed") => {
-    if (err instanceof HttpBodyError) return errorResponse(err);
+  const inputErrorResponse = (
+    err: unknown,
+    status: "rejected" | "failed",
+    req: Request,
+  ) => {
+    if (err instanceof HttpBodyError || err instanceof CommandFailureError) {
+      return errorResponse(err, req);
+    }
     return Response.json(inputErrorPayload(err, status), {
       status:
         err instanceof ControlInputError &&
@@ -886,10 +901,10 @@ export async function startServer(
         const result = await accepted.completion;
         return Response.json({ ok: true, status: result.status });
       } catch (err) {
-        return inputErrorResponse(err, "failed");
+        return inputErrorResponse(err, "failed", req);
       }
     } catch (err) {
-      return inputErrorResponse(err, "rejected");
+      return inputErrorResponse(err, "rejected", req);
     }
   };
 
@@ -918,10 +933,10 @@ export async function startServer(
         const result = await accepted.completion;
         return Response.json({ ok: true, status: result.status });
       } catch (err) {
-        return inputErrorResponse(err, "failed");
+        return inputErrorResponse(err, "failed", req);
       }
     } catch (err) {
-      return inputErrorResponse(err, "rejected");
+      return inputErrorResponse(err, "rejected", req);
     }
   };
 
@@ -985,10 +1000,10 @@ export async function startServer(
           capturedAt: snapshot.capturedAt,
         });
       } catch (err) {
-        return inputErrorResponse(err, "failed");
+        return inputErrorResponse(err, "failed", req);
       }
     } catch (err) {
-      return inputErrorResponse(err, "rejected");
+      return inputErrorResponse(err, "rejected", req);
     }
   };
 
@@ -1010,7 +1025,7 @@ export async function startServer(
       sessions.assertCurrent(context);
       return Response.json(result);
     } catch (err) {
-      return errorResponse(err);
+      return errorResponse(err, req);
     }
   };
 
@@ -1076,7 +1091,7 @@ export async function startServer(
       if (req.body && !req.body.locked) {
         await req.body.cancel(error).catch(() => {});
       }
-      return errorResponse(error);
+      return errorResponse(error, req);
     }
   };
 
@@ -1390,7 +1405,6 @@ export async function startServer(
   const apiServices = {
     runForPublishedContext,
     listDevices,
-    errorResponse,
     deviceGrid,
     readJsonBody,
     MAX_JSON_BODY_BYTES,
@@ -1499,6 +1513,8 @@ export async function startServer(
           ...apiServices,
           requestContext,
           srv,
+          errorResponse: (err: unknown, fallbackStatus?: number) =>
+            errorResponse(err, req, fallbackStatus),
         });
         if (apiResponse) return apiResponse;
       }

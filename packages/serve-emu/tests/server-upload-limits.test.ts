@@ -682,7 +682,12 @@ describe("server request and upload limits", () => {
       expect(cleanupCalls).toBe(2);
       // The detail is kept for the server log.
       expect(errorLog).toHaveBeenCalledTimes(2);
-      expect(String(errorLog.mock.calls[0]?.[0])).toBe("[api] adb install failed:");
+      expect(String(errorLog.mock.calls[0]?.[0])).toBe(
+        "[api] POST /api/apps/install -> 502 adb install failed:",
+      );
+      expect(String(errorLog.mock.calls[1]?.[0])).toBe(
+        "[api] POST /api/apps/install -> 504 adb install timed out:",
+      );
       expect((errorLog.mock.calls[0]?.[1] as Error).message).toBe(adbOutput);
     } finally {
       errorLog.mockRestore();

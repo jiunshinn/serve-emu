@@ -31,6 +31,15 @@ function resultDetail(result: ExecResult<string | Buffer>): string {
   );
 }
 
+/**
+ * Names an adb invocation by its subcommand (`adb push`, `adb shell mv`) so
+ * paths and other arguments stay out of public messages. `args` must be
+ * code-supplied: `args[1]` of a shell call is the command name.
+ */
+export function adbOperation(args: readonly string[]): string {
+  return args[0] === "shell" ? `adb shell ${args[1]}` : `adb ${args[0]}`;
+}
+
 /** Wraps a failed adb invocation; `operation` must not contain user input. */
 export function adbCommandFailure(
   operation: string,
@@ -55,4 +64,37 @@ export function adbCommandFailure(
 export function publicErrorMessage(err: unknown): string {
   if (err instanceof CommandFailureError) return err.publicMessage;
   return err instanceof Error ? err.message : String(err);
+}
+
+/** The command failure `err` is or wraps (through `cause`), if any. */
+export function commandFailureOf(err: unknown): CommandFailureError | null {
+  let current = err;
+  for (let depth = 0; current instanceof Error && depth < 8; depth++) {
+    if (current instanceof CommandFailureError) return current;
+    current = current.cause;
+  }
+  return null;
+}
+
+/** HTTP status for a command failure: a timeout is 504, anything else 502. */
+export function commandFailureStatus(err: CommandFailureError): 502 | 504 {
+  return err.code === "adb-timeout" ? 504 : 502;
+}
+
+/**
+ * Logs a failed API request with its method, path, and the original error,
+ * whose message and `cause` keep the detail the response leaves out. Only the
+ * pathname is logged: the query string can carry the auth token.
+ */
+export function logApiFailure(
+  request: Pick<Request, "method" | "url">,
+  status: number,
+  publicMessage: string,
+  err: unknown,
+): void {
+  const path = new URL(request.url).pathname;
+  console.error(
+    `[api] ${request.method} ${path} -> ${status} ${publicMessage}:`,
+    err,
+  );
 }

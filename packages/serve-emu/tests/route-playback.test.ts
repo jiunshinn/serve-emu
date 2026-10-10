@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { CommandFailureError } from "../src/command-failure.ts";
 import {
   RoutePlayback,
   RoutePlaybackConflictError,
@@ -342,28 +343,85 @@ describe("RoutePlayback lifecycle", () => {
     });
   });
 
+  test("command failures keep their code and status but not their output", async () => {
+    const output = "KO: /home/me/.emulator_console_auth_token";
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      for (const [failure, status] of [
+        [new CommandFailureError("adb-failed", "adb emu geo fix failed", output), 502],
+        [new CommandFailureError("adb-timeout", "adb emu geo fix timed out"), 504],
+      ] as const) {
+        const playback = new RoutePlayback({
+          clock: new ManualClock(),
+          applyLocation: () => {
+            throw failure;
+          },
+          onLocation: () => {},
+        });
+        const error = await playback.start(request).then(
+          () => null,
+          (reason: unknown) => reason,
+        );
+        expect(playback.snapshot().lastError).toBe(failure.publicMessage);
+
+        const response = routePlaybackErrorResponse(
+          error,
+          undefined,
+          new Request("http://127.0.0.1/api/route?token=secret-token", {
+            method: "POST",
+          }),
+        );
+        expect(response.status).toBe(status);
+        expect(await response.json()).toEqual({
+          ok: false,
+          code: failure.code,
+          error: failure.publicMessage,
+        });
+        expect(errorLog).toHaveBeenLastCalledWith(
+          `[api] POST /api/route -> ${status} ${failure.publicMessage}:`,
+          error,
+        );
+        expect((error as Error).cause).toBe(failure);
+      }
+      expect(String(errorLog.mock.calls)).not.toContain("secret-token");
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   test("periodic apply failure stops the owned timer", async () => {
     const clock = new ManualClock();
     let applyCount = 0;
+    const failure = new Error("periodic geo fix failed");
     const playback = new RoutePlayback({
       clock,
       applyLocation: () => {
         applyCount++;
-        if (applyCount === 2) throw new Error("periodic geo fix failed");
+        if (applyCount === 2) throw failure;
       },
       onLocation: () => {},
     });
 
-    await playback.start(request);
-    clock.advance(250);
-    clock.fireActive();
-    await flushMicrotasks();
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await playback.start(request);
+      clock.advance(250);
+      clock.fireActive();
+      await flushMicrotasks();
 
-    expect(playback.snapshot()).toMatchObject({
-      status: "error",
-      lastError: "periodic geo fix failed",
-    });
-    expect(clock.active.size).toBe(0);
+      expect(playback.snapshot()).toMatchObject({
+        status: "error",
+        lastError: "periodic geo fix failed",
+      });
+      expect(clock.active.size).toBe(0);
+      // No API response reports a periodic failure, so it is logged here.
+      expect(errorLog).toHaveBeenCalledWith(
+        "[route] playback stopped: could not apply location:",
+        failure,
+      );
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   test("close during a periodic apply suppresses the late location callback", async () => {

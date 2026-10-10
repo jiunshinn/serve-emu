@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { CommandFailureError } from "./command-failure.ts";
+import { adbOperation, CommandFailureError } from "./command-failure.ts";
 import { execText } from "./exec.ts";
 import type {
   AppActionResponse,
@@ -47,11 +47,6 @@ export class AppManagementError extends CommandFailureError {
     this.message = message;
     this.name = "AppManagementError";
   }
-}
-
-/** `adb install`, `adb shell am`: only fixed, code-supplied arguments. */
-function adbOperation(args: string[]): string {
-  return args[0] === "shell" ? `adb shell ${args[1]}` : `adb ${args[0]}`;
 }
 
 const PACKAGE_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;

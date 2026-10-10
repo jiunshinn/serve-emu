@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { SCRCPY_VERSION, ensureScrcpyServer } from "../scripts/fetch-scrcpy.ts";
+import { adbOperation, CommandFailureError } from "./command-failure.ts";
 import { execText } from "./exec.ts";
 
 // Canonical scrcpy wire layouts and upgrade checklist: ../docs/protocol.md
@@ -220,6 +221,8 @@ async function withDeadline<T>(
   label: string,
   operation: (signal: AbortSignal) => Promise<T>,
   settleAfterAbortMs = 0,
+  timeoutError: () => Error = () =>
+    new Error(`${label} timed out after ${timeoutMs}ms`),
 ): Promise<T> {
   const controller = new AbortController();
   const abortFromParent = () =>
@@ -227,7 +230,7 @@ async function withDeadline<T>(
   parentSignal?.addEventListener("abort", abortFromParent, { once: true });
   if (parentSignal?.aborted) abortFromParent();
   const timer = runtime.setTimer(
-    () => controller.abort(new Error(`${label} timed out after ${timeoutMs}ms`)),
+    () => controller.abort(timeoutError()),
     timeoutMs,
   );
 
@@ -272,17 +275,28 @@ async function withDeadline<T>(
   }
 }
 
+/**
+ * A scrcpy startup step's adb failure. Its arguments (the host jar path for
+ * `push`) and output stay in `message` for the server log; API responses only
+ * name the subcommand.
+ */
 function commandFailure(
   serial: string,
   args: string[],
   result: AdbCommandResult,
-): Error {
+): CommandFailureError {
   const detail =
     result.stderr?.trim() ||
     result.stdout?.trim() ||
     result.error?.message ||
     (result.timedOut ? "timed out" : `status ${result.status}`);
-  return new Error(`adb -s ${serial} ${args.join(" ")} failed: ${detail}`);
+  const timedOut = result.timedOut === true;
+  return new CommandFailureError(
+    timedOut ? "adb-timeout" : "adb-failed",
+    `${adbOperation(args)} ${timedOut ? "timed out" : "failed"}`,
+    `adb -s ${serial} ${args.join(" ")}: ${detail}`,
+    { cause: result.error ?? undefined },
+  );
 }
 
 function deviceUnavailable(result: AdbCommandResult): boolean {
@@ -307,6 +321,12 @@ async function runAdbRaw(
     (commandSignal) =>
       runtime.runAdb(serial, args, { timeoutMs, signal: commandSignal }),
     ADB_CANCELLATION_SETTLE_MS,
+    () =>
+      new CommandFailureError(
+        "adb-timeout",
+        `${adbOperation(args)} timed out`,
+        `adb -s ${serial} ${args.join(" ")} timed out after ${timeoutMs}ms`,
+      ),
   );
 }
 
@@ -391,7 +411,11 @@ async function forwardAbstractSocket(
     if (fixed.status === 0) return port;
     lastError = fixed.stderr?.trim() || fixed.error?.message || lastError;
   }
-  throw new Error(`Failed to create adb forward for ${target}: ${lastError}`);
+  throw new CommandFailureError(
+    "adb-failed",
+    "adb forward failed",
+    `${target}: ${lastError}`,
+  );
 }
 
 async function removeForwards(
@@ -1104,10 +1128,13 @@ export async function startScrcpy(
         settle(new Error(`scrcpy process failed during startup: ${err.message}`)),
       );
       proc!.once("exit", (code, signal) => {
-        const suffix = stderrTail.trim() ? `: ${stderrTail.trim()}` : "";
+        // The server's stderr (often a Java stack trace) is echoed to our
+        // stderr and kept in the message, but stays out of the public message.
         settle(
-          new Error(
-            `scrcpy process exited during startup (code=${code ?? "null"}, signal=${signal ?? "none"})${suffix}`,
+          new CommandFailureError(
+            "adb-failed",
+            `scrcpy process exited during startup (code=${code ?? "null"}, signal=${signal ?? "none"})`,
+            stderrTail.trim() || undefined,
           ),
         );
       });

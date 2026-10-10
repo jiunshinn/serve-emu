@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import {
   SessionRecorder,
   SessionReplayConflictError,
@@ -273,40 +273,50 @@ describe("SessionRecorder asynchronous replay lifecycle", () => {
       clock: immediateClock(() => now),
     });
     recorder.recordGesture({ type: "home" }, "test");
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const gestureFailure = new Error("gesture failed");
+    try {
+      const first = await recorder.startReplay({
+        dispatchGesture: () => {
+          throw gestureFailure;
+        },
+        setLocation: () => {},
+      }).completion;
+      expect(first).toMatchObject({
+        replayStatus: "error",
+        replayCompletedAt: null,
+        replayCancelledAt: null,
+        lastError: "gesture failed",
+      });
 
-    const first = await recorder.startReplay({
-      dispatchGesture: () => {
-        throw new Error("gesture failed");
-      },
-      setLocation: () => {},
-    }).completion;
-    expect(first).toMatchObject({
-      replayStatus: "error",
-      replayCompletedAt: null,
-      replayCancelledAt: null,
-      lastError: "gesture failed",
-    });
+      now = 2_000;
+      const second = await recorder.startReplay({
+        dispatchGesture: () => {
+          throw "string failure";
+        },
+        setLocation: () => {},
+      }).completion;
+      expect(second).toMatchObject({
+        replayStatus: "error",
+        replayStartedAt: new Date(2_000).toISOString(),
+        lastError: "string failure",
+      });
 
-    now = 2_000;
-    const second = await recorder.startReplay({
-      dispatchGesture: () => {
-        throw "string failure";
-      },
-      setLocation: () => {},
-    }).completion;
-    expect(second).toMatchObject({
-      replayStatus: "error",
-      replayStartedAt: new Date(2_000).toISOString(),
-      lastError: "string failure",
-    });
-
-    now = 3_000;
-    const recovered = await recorder.startReplay(noopHandlers).completion;
-    expect(recovered).toMatchObject({
-      replayStatus: "completed",
-      replayCompletedAt: new Date(3_000).toISOString(),
-      lastError: null,
-    });
+      now = 3_000;
+      const recovered = await recorder.startReplay(noopHandlers).completion;
+      expect(recovered).toMatchObject({
+        replayStatus: "completed",
+        replayCompletedAt: new Date(3_000).toISOString(),
+        lastError: null,
+      });
+      // The replay outlives its API response, so its failures are logged.
+      expect(errorLog.mock.calls).toEqual([
+        ["[session] replay failed:", gestureFailure],
+        ["[session] replay failed:", "string failure"],
+      ]);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   test("uses the default abortable clock when only now is overridden", async () => {

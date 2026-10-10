@@ -200,11 +200,12 @@ describe("production API routing", () => {
         error: "adb emu geo fix failed",
       });
       expect(errorLog).toHaveBeenCalledWith(
-        "[api] adb emu geo fix failed:",
+        "[api] POST /api/location -> 502 adb emu geo fix failed:",
         expect.objectContaining({
           message: `adb emu geo fix failed: ${geoFixOutput}`,
         }),
       );
+      errorLog.mockClear();
 
       const route = await response(
         h.request("/api/route", {
@@ -220,8 +221,20 @@ describe("production API routing", () => {
       );
       expect(route.status).toBe(502);
       const routeBody = await route.text();
-      expect(routeBody).toContain("adb emu geo fix failed");
+      expect(JSON.parse(routeBody)).toEqual({
+        ok: false,
+        code: "adb-failed",
+        error: "adb emu geo fix failed",
+      });
       expect(routeBody).not.toContain("emulator_console_auth_token");
+      // Logged once, by the response, with the geo fix output as the cause.
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      expect(errorLog.mock.calls[0]?.[0]).toBe(
+        "[api] POST /api/route -> 502 adb emu geo fix failed:",
+      );
+      expect((errorLog.mock.calls[0]?.[1] as Error).cause).toMatchObject({
+        message: `adb emu geo fix failed: ${geoFixOutput}`,
+      });
       const status = await response(h.request("/api/route"));
       const statusBody = await status.text();
       expect(statusBody).toContain('"lastError":"adb emu geo fix failed"');

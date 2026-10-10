@@ -439,6 +439,9 @@ export class SessionRecorder {
       } else {
         outcome = "error";
         this.#lastError = publicErrorMessage(err);
+        // The replay runs after its API response; `lastError` keeps only the
+        // public message, so the detail is logged here.
+        console.error("[session] replay failed:", err);
       }
     } finally {
       if (this.#activeReplay?.id === replay.id) {

@@ -84,7 +84,7 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
         } catch (err) {
           return err instanceof SessionChangedError
             ? errorResponse(err)
-            : routePlaybackErrorResponse(err);
+            : routePlaybackErrorResponse(err, undefined, req);
         }
       },
     },

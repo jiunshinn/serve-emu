@@ -241,6 +241,13 @@ All examples assume the default port:
 BASE=http://localhost:3300
 ```
 
+Failed requests return JSON with `ok: false` and an `error` message. Invalid
+input gets `400`. When an adb or emulator command fails, the response is `502`
+with `code: "adb-failed"` (or `"emulator-failed"`), or `504` with
+`code: "adb-timeout"` when the command timed out. Its `error` names only the
+operation, such as `screencap failed`; the command's output goes to the server
+log with the request's method and path.
+
 ### Health And Discovery
 
 ```sh
