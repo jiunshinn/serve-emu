@@ -236,7 +236,7 @@ describe("server request gates", () => {
     ).rejects.toThrow('invalid allowed host "devbox.lan/admin"');
   });
 
-  test("rejects cross-site subresource requests but not navigations", async () => {
+  test("rejects cross-site subresource requests and API navigations, but not UI navigations", async () => {
     const harness = await createHarness();
     const image = await response(
       harness.request("/api", {
@@ -253,16 +253,24 @@ describe("server request gates", () => {
       error: "forbidden cross-site request",
     });
 
-    const navigation = await response(
-      harness.request("/api", {
-        headers: {
-          "sec-fetch-site": "cross-site",
-          "sec-fetch-mode": "navigate",
-          "sec-fetch-dest": "document",
-        },
-      }),
+    const navigationHeaders = {
+      "sec-fetch-site": "cross-site",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-dest": "iframe",
+    };
+    const apiNavigation = await response(
+      harness.request("/api", { headers: navigationHeaders }),
     );
-    expect(navigation.status).toBe(200);
+    expect(apiNavigation.status).toBe(403);
+    expect(await apiNavigation.json()).toEqual({
+      ok: false,
+      error: "forbidden cross-site request",
+    });
+
+    const uiNavigation = await response(
+      harness.request("/", { headers: navigationHeaders }),
+    );
+    expect(uiNavigation.status).not.toBe(403);
   });
 });
 

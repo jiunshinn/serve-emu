@@ -30,6 +30,7 @@ describe("normalizeHostname", () => {
       "local host",
       "localhost:notaport",
       "back\\slash",
+      "*.example.com",
     ]) {
       expect(normalizeHostname(value)).toBeNull();
     }
@@ -80,8 +81,9 @@ describe("fetchMetadataAllowed", () => {
   const request = (
     headers: Record<string, string>,
     method = "GET",
+    path = "/api/screenshot",
   ): Request =>
-    new Request("http://127.0.0.1:3300/api/screenshot", { method, headers });
+    new Request(`http://127.0.0.1:3300${path}`, { method, headers });
 
   test("allows clients that send no Fetch Metadata", () => {
     expect(fetchMetadataAllowed(request({}))).toBe(true);
@@ -98,17 +100,43 @@ describe("fetchMetadataAllowed", () => {
     }
   });
 
-  test("allows cross-site navigations into documents and frames", () => {
-    for (const dest of ["document", "iframe"]) {
-      expect(
-        fetchMetadataAllowed(
-          request({
-            "sec-fetch-site": "cross-site",
-            "sec-fetch-mode": "navigate",
-            "sec-fetch-dest": dest,
-          }),
-        ),
-      ).toBe(true);
+  test("allows cross-site navigations to the UI in documents and frames", () => {
+    for (const path of ["/", "/?token=secret", "/index.html"]) {
+      for (const dest of ["document", "iframe"]) {
+        expect(
+          fetchMetadataAllowed(
+            request(
+              {
+                "sec-fetch-site": "cross-site",
+                "sec-fetch-mode": "navigate",
+                "sec-fetch-dest": dest,
+              },
+              "GET",
+              path,
+            ),
+          ),
+        ).toBe(true);
+      }
+    }
+  });
+
+  test("rejects cross-site navigations to the API, /health, and /ws", () => {
+    for (const path of ["/api", "/api/screenshot", "/api/logcat", "/health", "/ws"]) {
+      for (const dest of ["document", "iframe"]) {
+        expect(
+          fetchMetadataAllowed(
+            request(
+              {
+                "sec-fetch-site": "cross-site",
+                "sec-fetch-mode": "navigate",
+                "sec-fetch-dest": dest,
+              },
+              "GET",
+              path,
+            ),
+          ),
+        ).toBe(false);
+      }
     }
   });
 

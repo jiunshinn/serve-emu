@@ -7,7 +7,9 @@ import { isIP } from "node:net";
  */
 export function normalizeHostname(value: string): string | null {
   const trimmed = value.trim();
-  if (!trimmed || /[\s/?#@\\]/.test(trimmed)) return null;
+  // `*` is rejected so a wildcard `--allowed-host` fails at startup instead
+  // of silently matching nothing.
+  if (!trimmed || /[\s/?#@\\*]/.test(trimmed)) return null;
   // `--host ::1` is a bare IPv6 address, which is not a valid URL authority.
   if (isIP(trimmed) === 6) return trimmed.toLowerCase();
   let hostname: string;
@@ -55,17 +57,31 @@ export function createHostAllowlist(
 
 /**
  * Fetch Metadata resource isolation. Browsers label requests started by
- * another site `Sec-Fetch-Site: cross-site`; only navigations may cross sites
- * (opening the UI from a link, or an IDE browser that frames it). Clients that
- * send no Fetch Metadata, such as the CLI and agents, are unaffected.
+ * another site `Sec-Fetch-Site: cross-site`; only navigations to the UI may
+ * cross sites (opening it from a link, or an IDE browser that frames it).
+ * Navigating a cross-site frame to `/api`, `/health`, or `/ws` is refused: the
+ * framing page cannot read the result, but each load would still run device
+ * work such as a screencap or a logcat child. Clients that send no Fetch
+ * Metadata, such as the CLI and agents, are unaffected.
  */
 export function fetchMetadataAllowed(req: Request): boolean {
   if (req.headers.get("sec-fetch-site") !== "cross-site") return true;
   const dest = req.headers.get("sec-fetch-dest");
+  const { pathname } = new URL(req.url);
   return (
+    !isServicePath(pathname) &&
     (req.method === "GET" || req.method === "HEAD") &&
     req.headers.get("sec-fetch-mode") === "navigate" &&
     dest !== "object" &&
     dest !== "embed"
+  );
+}
+
+function isServicePath(pathname: string): boolean {
+  return (
+    pathname === "/api" ||
+    pathname.startsWith("/api/") ||
+    pathname === "/health" ||
+    pathname === "/ws"
   );
 }
