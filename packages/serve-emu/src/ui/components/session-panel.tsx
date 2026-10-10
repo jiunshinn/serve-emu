@@ -1,69 +1,26 @@
 import { useEffect, useRef, useState } from "react";
+import type {
+  SessionEvent,
+  SessionPage,
+  SessionSummary,
+} from "../../shared/api-contracts";
+import { apiErrorMessage, apiRequest } from "../lib/api-client";
 import { VisibilityPoller } from "../lib/visibility-poller";
-
-type SessionEvent = {
-  id: number;
-  at: string;
-  delayMs: number;
-  source: string;
-  kind: "gesture" | "location";
-  gesture?: { type: string };
-  location?: { latitude: number; longitude: number };
-};
-
-type SessionSummary = {
-  eventCount: number;
-  recording: boolean;
-  replaying: boolean;
-  lastError: string | null;
-};
-
-type SessionPage = {
-  session: SessionSummary;
-  events: SessionEvent[];
-  nextBefore: number | null;
-  hasMore: boolean;
-};
-
-type SessionMutation = {
-  ok?: boolean;
-  error?: string;
-  session?: SessionSummary;
-};
-
-type SessionExport = {
-  session: SessionSummary;
-  events: SessionEvent[];
-};
 
 const RECENT_EVENT_LIMIT = 6;
 const POLL_INTERVAL_MS = 1_000;
 
 function labelForEvent(event: SessionEvent): string {
   if (event.kind === "gesture") {
-    return `${event.gesture?.type ?? "gesture"} • ${event.source}`;
+    return `${event.gesture.type} • ${event.source}`;
   }
-  const lat = event.location?.latitude.toFixed(5) ?? "?";
-  const lng = event.location?.longitude.toFixed(5) ?? "?";
+  const lat = event.location.latitude.toFixed(5);
+  const lng = event.location.longitude.toFixed(5);
   return `location ${lat}, ${lng}`;
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
-}
-
-async function readJson<T>(response: Response, fallback: string): Promise<T> {
-  let data: T;
-  try {
-    data = await response.json() as T;
-  } catch {
-    throw new Error(fallback);
-  }
-  if (!response.ok) {
-    const error = (data as { error?: unknown }).error;
-    throw new Error(typeof error === "string" && error ? error : fallback);
-  }
-  return data;
+  return apiErrorMessage(error) || fallback;
 }
 
 export function SessionPanel() {
@@ -80,13 +37,12 @@ export function SessionPanel() {
     mountedRef.current = true;
     const poller = new VisibilityPoller<SessionPage>({
       intervalMs: POLL_INTERVAL_MS,
-      poll: async (signal) => {
-        const response = await fetch(
-          `/api/session?limit=${RECENT_EVENT_LIMIT}`,
-          { signal },
-        );
-        return readJson<SessionPage>(response, "Session unavailable");
-      },
+      poll: (signal) =>
+        apiRequest("/api/session", {
+          method: "GET",
+          query: { limit: RECENT_EVENT_LIMIT },
+          signal,
+        }),
       onResult: (page) => {
         setSession(page.session);
         setEvents(page.events.slice(-RECENT_EVENT_LIMIT));
@@ -139,9 +95,10 @@ export function SessionPanel() {
     };
   }, []);
 
+  // Replay responses carry the full snapshot and clear carries the summary;
+  // the poll that follows every mutation refreshes the summary either way.
   const mutate = async (
-    url: string,
-    init: RequestInit,
+    request: () => Promise<{ session: { replaying: boolean } & Partial<SessionSummary> }>,
     successStatus: string,
     failureStatus: string,
     clearEvents = false,
@@ -149,18 +106,13 @@ export function SessionPanel() {
     const generation = ++actionGenerationRef.current;
     pollerRef.current?.invalidate();
     try {
-      const response = await fetch(url, init);
-      const data = await readJson<SessionMutation>(
-        response,
-        failureStatus,
-      );
-      if (!data.ok || !data.session) {
-        throw new Error(data.error ?? failureStatus);
-      }
+      const data = await request();
       if (!mountedRef.current || generation !== actionGenerationRef.current) {
         return;
       }
-      setSession(data.session);
+      setSession((current) =>
+        current ? { ...current, ...data.session } : current,
+      );
       if (clearEvents) setEvents([]);
       setStatus(successStatus);
     } catch (error) {
@@ -184,12 +136,11 @@ export function SessionPanel() {
       return;
     }
     await mutate(
-      "/api/session/replay",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ multiplier: rate }),
-      },
+      () =>
+        apiRequest("/api/session/replay", {
+          method: "POST",
+          body: { multiplier: rate },
+        }),
       "Replaying",
       "Replay failed",
     );
@@ -197,8 +148,7 @@ export function SessionPanel() {
 
   const stopReplay = async () => {
     await mutate(
-      "/api/session/replay/stop",
-      { method: "POST" },
+      () => apiRequest("/api/session/replay/stop", { method: "POST" }),
       "Replay stopped",
       "Stop failed",
     );
@@ -206,8 +156,7 @@ export function SessionPanel() {
 
   const clear = async () => {
     await mutate(
-      "/api/session",
-      { method: "DELETE" },
+      () => apiRequest("/api/session", { method: "DELETE" }),
       "Cleared",
       "Clear failed",
       true,
@@ -217,8 +166,7 @@ export function SessionPanel() {
   const copy = async () => {
     setStatus("Copying");
     try {
-      const response = await fetch("/api/session/export");
-      const data = await readJson<SessionExport>(response, "Copy failed");
+      const data = await apiRequest("/api/session/export", { method: "GET" });
       await navigator.clipboard.writeText(
         JSON.stringify(data.events, null, 2),
       );

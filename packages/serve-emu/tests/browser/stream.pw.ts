@@ -172,3 +172,26 @@ test("a slow decoder recovers by elapsed time with a shallow queue", async ({
   expect(Number(detail!.match(/decode queue (\d+)/)?.[1])).toBeLessThan(12);
   expect(Number(detail!.match(/pending (\d+)ms/)?.[1])).toBeGreaterThan(250);
 });
+
+test("structured API errors render as text and keep the stream mounted", async ({
+  page,
+}) => {
+  await page.route("**/api/orientation", (route) =>
+    route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        error: { code: "not_found", message: "API route not found" },
+      }),
+    }),
+  );
+  await page.goto("/");
+  await streaming(page);
+  await page.getByRole("button", { name: "Orientation" }).click();
+  await expect(page.locator(".orientation-panel .location-status")).toHaveText(
+    "API route not found",
+  );
+  await expect(page.locator("canvas").first()).toBeVisible();
+  await expect(page.locator("header .meta")).toContainText("streaming");
+});

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ApiClientError,
+  apiErrorMessage,
   createApiClient,
   type FetchLike,
 } from "../src/ui/lib/api-client.ts";
@@ -63,6 +64,66 @@ describe("API client", () => {
 
     expect(page.session.recording).toBe(true);
     expect(page.events).toEqual([]);
+  });
+
+  test("appends a query string while parsing with the path's contract", async () => {
+    let requested: RequestInfo | URL | undefined;
+    const request = createApiClient(async (input) => {
+      requested = input;
+      return jsonResponse({
+        session: {
+          eventCount: 0,
+          retainedBytes: 0,
+          limits: { maxEvents: 2_000, maxBytes: 1_048_576 },
+          droppedEvents: 0,
+          oldestEventId: null,
+          newestEventId: null,
+          oldestEventAt: null,
+          newestEventAt: null,
+          recording: true,
+          replaying: false,
+          replayStartedAt: null,
+          replayCompletedAt: null,
+          lastError: null,
+        },
+        events: [],
+        nextBefore: null,
+        hasMore: false,
+      });
+    });
+
+    const page = await request("/api/session", {
+      method: "GET",
+      query: { limit: 6, before: undefined },
+    });
+
+    expect(requested).toBe("/api/session?limit=6");
+    expect(page.hasMore).toBe(false);
+  });
+
+  test("turns both error shapes into string messages", async () => {
+    const structured = createApiClient(async () =>
+      jsonResponse(
+        { ok: false, error: { code: "not_found", message: "API route not found" } },
+        { status: 404 },
+      ),
+    );
+    const legacy = createApiClient(async () =>
+      jsonResponse(
+        { ok: false, code: "adb-failed", error: "screencap failed" },
+        { status: 502 },
+      ),
+    );
+
+    const structuredError = await structured("/api/orientation", { method: "GET" }).catch(
+      (error: unknown) => error,
+    );
+    const legacyError = await legacy("/api/orientation", { method: "GET" }).catch(
+      (error: unknown) => error,
+    );
+    expect(apiErrorMessage(structuredError)).toBe("API route not found");
+    expect(apiErrorMessage(legacyError)).toBe("screencap failed");
+    expect(apiErrorMessage("plain")).toBe("plain");
   });
 
   test("passes FormData and AbortSignal through without a multipart content-type override", async () => {
