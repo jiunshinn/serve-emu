@@ -106,7 +106,7 @@ serve-emu --webcam-list
 | --- | --- | --- |
 | `-p, --port` | `3300` | HTTP port for the preview server |
 | `--host` | `127.0.0.1` | Address to bind. Defaults to loopback so the device is not exposed. Set `0.0.0.0` to serve over the LAN — see [Access control](#access-control) |
-| `--token` | none | Shared secret required on every request. Auto-generated for non-loopback binds if omitted |
+| `--token` | none | Shared secret required on every request. Auto-generated for non-loopback binds if omitted. Letters, digits, `.`, `_`, `~`, and `-` only |
 | `--unsafe-no-auth` | false | Allow a non-loopback bind with **no** authentication (dangerous) |
 | `--allowed-host` | none | Without `--token`, also serve requests for this host name (repeatable; no wildcards), e.g. behind a reverse proxy. IP addresses, `localhost`, and `--host` are always served |
 | `-s, --serial` | auto | adb device serial; required when multiple devices are online |
@@ -143,9 +143,11 @@ By default, `serve-emu` attaches to the only online device. If more than one dev
 - Requests whose `Host` is a DNS name are rejected with `403`, so a page that rebinds its own domain to `127.0.0.1` (DNS rebinding) is turned away. IP addresses, `localhost`, `*.localhost`, the `--host` value, and any `--allowed-host` names are served. Behind a reverse proxy that keeps its public host name, either pass `--allowed-host <name>` or use `--token`.
 - Cross-site subresource requests (images, scripts, `fetch` from another site) are rejected using the browser's `Sec-Fetch-Site` header, and so are cross-site navigations or frames that point at `/api`, `/health`, or `/ws`. Opening the UI from a link or in an IDE's embedded browser still works, and clients that send no such header (CLI, agents) are unaffected.
 
+Only `localhost` and literal loopback addresses (`127.0.0.0/8`, `::1`, and IPv4-mapped `::ffff:127.x.x.x`) count as loopback. Any other host name is treated as non-loopback, even one that happens to resolve to `127.x`.
+
 **Exposing over the LAN or a tunnel.** Pass `--host 0.0.0.0` (or a specific interface address). A non-loopback bind **requires authentication**:
 
-- If you pass `--token <secret>`, that secret is required on every request.
+- If you pass `--token <secret>`, that secret is required on every request. It may contain only letters, digits, `.`, `_`, `~`, and `-`, so it passes through the URL, the session cookie, and the `Authorization` header unchanged; serve-emu refuses to start with any other character.
 - If you omit `--token`, a random token is generated and printed once at startup.
 
 The startup line prints a ready-to-use URL with the token, for example:

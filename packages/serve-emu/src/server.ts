@@ -2,6 +2,7 @@ import type { ServerWebSocket } from "bun";
 import { timingSafeEqual } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertValidToken } from "./access-policy.ts";
 import {
   findAccessibilityNode,
   getAccessibilitySnapshot,
@@ -261,6 +262,9 @@ export async function startServer(
   opts: ServerOpts,
   dependencies: ServerDependencies = {},
 ) {
+  // The token is written into the session cookie and compared against query
+  // and header values verbatim, so it must stay within the safe character set.
+  if (opts.token) assertValidToken(opts.token);
   const openScrcpy =
     dependencies.openScrcpy ??
     ((serial: string, signal?: AbortSignal) =>
