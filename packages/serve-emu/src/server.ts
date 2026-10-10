@@ -48,6 +48,9 @@ import {
   startScrcpy,
   type ScrcpySession,
 } from "./scrcpy.ts";
+import { buildHealthSnapshot } from "./server/health.ts";
+import { serveStaticFile } from "./server/static.ts";
+import type { Client, DeviceContext, WsData } from "./server/types.ts";
 import {
   frameDeliveryDecision,
   sendResultDecision,
@@ -68,10 +71,7 @@ import {
   terminalTransitionAllowed,
   type SessionStatus,
 } from "./session-status.ts";
-import type {
-  DeviceSelectionResponse,
-  HealthResponse,
-} from "./shared/api-contracts.ts";
+import type { DeviceSelectionResponse } from "./shared/api-contracts.ts";
 import {
   epochNowMs,
   FRAME_META_HEADER_BYTES,
@@ -152,31 +152,6 @@ function parseCookies(header: string | null): Record<string, string> {
   return out;
 }
 
-export type WsData = {
-  id: number;
-  frameMeta: boolean;
-  context: DeviceContext;
-  handle?: Client;
-};
-
-type Client = {
-  touches: Map<
-    number,
-    { gesture: Extract<Gesture, { type: "touch" }>; record: boolean }
-  >;
-  id: number;
-  ws: ServerWebSocket<WsData>;
-  context: DeviceContext;
-  frameMeta: boolean;
-  sentFrames: number;
-  droppedFrames: number;
-  backpressureEvents: number;
-  awaitingKeyFrame: boolean;
-  awaitingKeyFrameSinceMs: number | null;
-  lastKeyFrameRequestMs: number | null;
-};
-
-export type DeviceContext = ActiveDeviceSession<Client>;
 
 const MAX_WS_MESSAGE_BYTES = 16 * 1024;
 const DROP_FRAME_BUFFERED_BYTES = 512 * 1024;
@@ -473,87 +448,14 @@ export async function startServer(
 
   const health = (context = sessions.current) => {
     const now = recoveryClock.now();
-    const recovery = recoveries.get(context);
-    const recoverySnapshot = recovery?.snapshot(now) ?? {
-      sourceFps: 0,
-      lastFrameMs: null,
-      sourceFrameAgeMs: Math.max(0, now - context.startedMs),
-      awaitingClients: 0,
-      oldestAwaitingAgeMs: null,
-      lastResetAttemptMs: null,
-      pendingResetAgeMs: null,
-      resetBackoffMs: RESET_SETTLE_MS,
-    };
-    const snapshot = {
-      ok: context.status === "streaming",
-      status: context.status,
-      generation: context.generation,
-      serial: context.serial,
-      device: context.scrcpy.meta.deviceName,
-      codec: context.scrcpy.meta.codecId,
-      size: { width: context.screen.width, height: context.screen.height },
-      clients: context.clients.size,
-      frames: context.frameCount,
-      sourceFps: recoverySnapshot.sourceFps,
-      sourceFrameAgeMs: recoverySnapshot.sourceFrameAgeMs,
-      keyFrameRecovery: {
-        awaitingClients: recoverySnapshot.awaitingClients,
-        oldestAwaitingAgeMs: recoverySnapshot.oldestAwaitingAgeMs,
-        lastResetAttemptAt:
-          recoverySnapshot.lastResetAttemptMs === null
-            ? null
-            : new Date(recoverySnapshot.lastResetAttemptMs).toISOString(),
-        pendingResetAgeMs: recoverySnapshot.pendingResetAgeMs,
-        resetBackoffMs: recoverySnapshot.resetBackoffMs,
-      },
-      frameStats: context.frameStats.summary(),
-      configPackets: context.configPacketCount,
-      droppedFrames: context.totalDroppedFrames,
-      backpressureEvents: context.totalBackpressureEvents,
-      videoResetRequests: context.videoResetRequests,
-      lastVideoResetAt: context.lastVideoResetAt,
-      lastVideoResetReason: context.lastVideoResetReason,
-      location: context.lastLocation,
-      route: context.route.snapshot(),
-      session: context.recorder.summary(),
+    return buildHealthSnapshot(context, {
+      nowMs: now,
+      recovery: recoveries.get(context)?.snapshot(now) ?? null,
+      idleResetBackoffMs: RESET_SETTLE_MS,
       responseMetrics: responseMetrics.snapshot(),
-      logcat: context.logcat.snapshot(),
       uploads: uploads.snapshot(),
       executor: getExecSnapshot(),
-      clientsDetail: Array.from(context.clients, (client) => ({
-        id: client.id,
-        frameMeta: client.frameMeta,
-        sentFrames: client.sentFrames,
-        droppedFrames: client.droppedFrames,
-        backpressureEvents: client.backpressureEvents,
-        bufferedBytes: client.ws.getBufferedAmount(),
-        awaitingKeyFrame: client.awaitingKeyFrame,
-        awaitingKeyFrameSinceAt:
-          client.awaitingKeyFrameSinceMs === null
-            ? null
-            : new Date(client.awaitingKeyFrameSinceMs).toISOString(),
-        awaitingKeyFrameAgeMs:
-          client.awaitingKeyFrameSinceMs === null
-            ? null
-            : Math.max(0, now - client.awaitingKeyFrameSinceMs),
-        lastKeyFrameRequestAt:
-          client.lastKeyFrameRequestMs === null
-            ? null
-            : new Date(client.lastKeyFrameRequestMs).toISOString(),
-      })),
-      startedAt: context.startedAt,
-      stoppedAt: context.stoppedAt,
-      lastFrameAt:
-        recoverySnapshot.lastFrameMs === null
-          ? null
-          : new Date(recoverySnapshot.lastFrameMs).toISOString(),
-      lastError: context.lastError,
-      lastErrorCode: context.lastErrorCode,
-      lastErrorMeta: context.lastErrorMeta,
-    };
-    // Extra diagnostics are fine; every field the UI contract parses must be here.
-    snapshot satisfies HealthResponse;
-    return snapshot;
+    });
   };
 
   const deviceGrid = async (
@@ -820,13 +722,6 @@ export async function startServer(
     }
     client.touches.clear();
   };
-
-  const dispatchGesture = (
-    context: DeviceContext,
-    gesture: Gesture,
-    source: string,
-    record = true,
-  ) => enqueueGesture(context, gesture, source, record).completion;
 
   const applyLocation = async (
     context: DeviceContext,
@@ -1113,14 +1008,6 @@ export async function startServer(
     context.lastVideoResetAt = new Date(now).toISOString();
     context.lastVideoResetReason = reason;
     return accepted;
-  };
-
-  const requestVideoReset = (context: DeviceContext, reason: string) => {
-    try {
-      return enqueueVideoReset(context, reason).completion;
-    } catch (err) {
-      return Promise.reject(err);
-    }
   };
 
   const createRecovery = (context: DeviceContext) =>
@@ -1522,12 +1409,7 @@ export async function startServer(
         return new Response("upgrade failed", { status: 400 });
       }
 
-      const reqPath = url.pathname === "/" ? "/index.html" : url.pathname;
-      if (reqPath.includes(".."))
-        return new Response("not found", { status: 404 });
-      const file = Bun.file(join(uiDir, reqPath));
-      if (await file.exists()) return new Response(file);
-      return new Response("not found", { status: 404 });
+      return serveStaticFile(uiDir, url.pathname);
     },
     websocket: {
       maxPayloadLength: MAX_WS_MESSAGE_BYTES,
