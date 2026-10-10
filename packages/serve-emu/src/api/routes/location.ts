@@ -78,11 +78,16 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
         } catch (err) {
           return errorResponse(err, 400);
         }
-        return startRoutePlaybackResponse(requestContext.route, route, {
-          isCurrent: () => sessions.isCurrent(requestContext),
-          track: (start) => requestContext.trackDrain(start),
-          req,
-        });
+        try {
+          return await startRoutePlaybackResponse(requestContext.route, route, {
+            assertCurrent: () => sessions.assertCurrent(requestContext),
+            track: (start) => requestContext.trackDrain(start),
+            req,
+          });
+        } catch (err) {
+          // Only a session change escapes the helper: 409 session_changed.
+          return errorResponse(err);
+        }
       },
     },
     {

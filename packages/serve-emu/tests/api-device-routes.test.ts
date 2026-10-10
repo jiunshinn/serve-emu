@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import type { ApiDependencies } from "../src/api/dependencies.ts";
+import { locationRoutes } from "../src/api/routes/location.ts";
+import { DeviceSessionManager, SessionChangedError } from "../src/device-session-context.ts";
 import type { DeviceService } from "../src/device-service.ts";
 import type { GeoFix } from "../src/location.ts";
+import { RoutePlayback } from "../src/route-playback.ts";
+import type { DeviceContext } from "../src/server/types.ts";
 import { createHarness, fakeScrcpy, response, waitFor } from "./helpers/server-harness.ts";
 
 const ORIGIN = "http://127.0.0.1:33040";
@@ -154,5 +159,47 @@ describe("REST and replay apply a location through one helper", () => {
     expect(after.session.eventCount).toBe(1);
     const location = await (await response(h.request("/api/location"))).json();
     expect(location.location).toMatchObject({ latitude: 35.17, longitude: 129.07 });
+  });
+});
+
+describe("POST /api/route", () => {
+  test("a session change after the start resolves answers through errorResponse", async () => {
+    const session = new AbortController();
+    const playback = new RoutePlayback({ applyLocation: () => {}, onLocation: () => {} });
+    const context = {
+      serial: "emulator-5554",
+      generation: 1,
+      signal: session.signal,
+      dispose: async () => {},
+      route: playback,
+      // The device switches in the gap between the start resolving and the
+      // handler resuming.
+      trackDrain: <T>(start: Promise<T>) =>
+        start.then((route) => {
+          session.abort();
+          return route;
+        }),
+    } as unknown as DeviceContext;
+    const handled: unknown[] = [];
+    const answered = Response.json({ ok: false, code: "session_changed" }, { status: 409 });
+    const deps = {
+      requestContext: context,
+      sessions: new DeviceSessionManager(context),
+      readJsonBody: (req: Request) => req.json(),
+      MAX_ROUTE_BODY_BYTES: 1_024,
+      errorResponse: (err: unknown) => {
+        handled.push(err);
+        return answered;
+      },
+    } as unknown as ApiDependencies;
+    const route = locationRoutes().find((r) => r.method === "POST" && r.path === "/api/route")!;
+    const request = new Request("http://127.0.0.1/api/route", post({ waypoints: [{ latitude: 51.5, longitude: -0.1 }] }));
+
+    const res = await route.handler({ request, url: new URL(request.url), deps });
+    expect(res).toBe(answered);
+    expect(handled).toHaveLength(1);
+    expect(handled[0]).toBeInstanceOf(SessionChangedError);
+    expect(handled[0]).toMatchObject({ code: "session_changed", expectedGeneration: 1 });
+    playback.close();
   });
 });

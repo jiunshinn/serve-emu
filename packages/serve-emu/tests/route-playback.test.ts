@@ -1,5 +1,6 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { CommandFailureError } from "../src/command-failure.ts";
+import { SessionChangedError } from "../src/device-session-context.ts";
 import {
   RoutePlayback,
   RoutePlaybackConflictError,
@@ -301,7 +302,30 @@ describe("RoutePlayback lifecycle", () => {
     });
   });
 
-  test("a stale request generation returns conflict before starting a route", async () => {
+  test("a stale device session is rethrown before starting a route", async () => {
+    let applies = 0;
+    const playback = new RoutePlayback({
+      clock: new ManualClock(),
+      applyLocation: () => {
+        applies++;
+      },
+      onLocation: () => {},
+    });
+    const stale = new SessionChangedError(1, 2);
+
+    await expect(
+      startRoutePlaybackResponse(playback, request, {
+        assertCurrent: () => {
+          throw stale;
+        },
+      }),
+    ).rejects.toBe(stale);
+    expect(applies).toBe(0);
+    expect(playback.snapshot().status).toBe("idle");
+  });
+
+  test("a session change after the start resolves is rethrown, not answered as success", async () => {
+    let current = true;
     let applies = 0;
     const playback = new RoutePlayback({
       clock: new ManualClock(),
@@ -311,18 +335,19 @@ describe("RoutePlayback lifecycle", () => {
       onLocation: () => {},
     });
 
-    const response = await startRoutePlaybackResponse(
-      playback,
-      request,
-      { isCurrent: () => false },
-    );
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({
-      ok: false,
-      error: "device session changed before route playback start",
+    const starting = startRoutePlaybackResponse(playback, request, {
+      assertCurrent: () => {
+        if (!current) throw new SessionChangedError(1, 2);
+      },
+      track: (start) =>
+        start.then((route) => {
+          current = false;
+          return route;
+        }),
     });
-    expect(applies).toBe(0);
-    expect(playback.snapshot().status).toBe("idle");
+    await expect(starting).rejects.toBeInstanceOf(SessionChangedError);
+    expect(applies).toBe(1);
+    playback.close();
   });
 
   test("unexpected start failures map to server errors", async () => {

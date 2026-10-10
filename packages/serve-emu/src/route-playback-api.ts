@@ -1,10 +1,10 @@
+import { SessionChangedError } from "./device-session-context.ts";
 import {
   commandFailureOf,
   logApiFailure,
   publicErrorMessage,
 } from "./command-failure.ts";
 import {
-  RoutePlaybackConflictError,
   routePlaybackErrorStatus,
   type RoutePlayback,
   type RoutePlaybackRequest,
@@ -38,8 +38,11 @@ export function routePlaybackErrorResponse(
 }
 
 export type StartRoutePlaybackOptions = {
-  /** False once the caller's device session is gone. */
-  isCurrent?: () => boolean;
+  /**
+   * Throws a SessionChangedError once the caller's device session is gone.
+   * Checked before the start and again once it resolves.
+   */
+  assertCurrent?: () => void;
   /** Wraps the start so its owner can wait for it (a device session's drain). */
   track?: (
     start: Promise<RoutePlaybackSnapshot>,
@@ -48,34 +51,27 @@ export type StartRoutePlaybackOptions = {
   req?: Pick<Request, "method" | "url">;
 };
 
-/** POST /api/route: start playback and map every failure to a response. */
+/**
+ * POST /api/route: start playback and map its failures to a response. A
+ * SessionChangedError is rethrown instead, so the caller answers it with the
+ * API's `session_changed` error like any other request from an old session.
+ */
 export async function startRoutePlaybackResponse(
   playback: RouteStarter,
   request: RoutePlaybackRequest,
   {
-    isCurrent = () => true,
+    assertCurrent = () => {},
     track = (start) => start,
     req,
   }: StartRoutePlaybackOptions = {},
 ): Promise<Response> {
-  if (!isCurrent()) {
-    return routePlaybackErrorResponse(
-      new RoutePlaybackConflictError(
-        "device session changed before route playback start",
-      ),
-    );
-  }
   try {
+    assertCurrent();
     const route = await track(playback.start(request));
-    if (!isCurrent()) {
-      return routePlaybackErrorResponse(
-        new RoutePlaybackConflictError(
-          "device session changed during route playback start",
-        ),
-      );
-    }
+    assertCurrent();
     return Response.json({ ok: true, route });
   } catch (error) {
+    if (error instanceof SessionChangedError) throw error;
     return routePlaybackErrorResponse(error, undefined, req);
   }
 }
