@@ -51,7 +51,7 @@ async function liveHarness() {
       serial: opts.avd === "Selected_AVD" ? "emulator-5556" : "emulator-5560",
       proc: null,
       ownsProcess: true,
-      stop: () => {},
+      stop: async () => {},
     }),
     stopEmulator: async (serial) => {
       stopped.push(serial);

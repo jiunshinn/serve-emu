@@ -182,7 +182,7 @@ describe("API responses for a failing scrcpy startup", () => {
           serial: "emulator-5556",
           proc: null,
           ownsProcess: true,
-          stop: () => {
+          stop: async () => {
             stops++;
           },
         }),
