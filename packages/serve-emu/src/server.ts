@@ -1122,8 +1122,12 @@ export async function startServer(
     if (blocked) {
       return { completion: Promise.resolve({ status: "coalesced" as const }) };
     }
+    // Priority: a reset must not wait behind a long swipe (the next step
+    // boundary is at most ~20 ms away), and it is excluded from the depth
+    // limit so a full gesture queue cannot block it.
     const accepted = context.inputQueue.enqueuePacket(resetVideoPacket(), {
       coalesceKey: "reset-video",
+      priority: true,
     });
     recovery?.noteResetAdmitted(now);
     context.lastVideoResetMs = now;
@@ -1160,7 +1164,7 @@ export async function startServer(
         try {
           const accepted = context.inputQueue.enqueuePacket(
             resetVideoPacket(),
-            { coalesceKey: "reset-video" },
+            { coalesceKey: "reset-video", priority: true },
           );
           void accepted.completion.catch(() => {});
           context.lastVideoResetMs = now;
