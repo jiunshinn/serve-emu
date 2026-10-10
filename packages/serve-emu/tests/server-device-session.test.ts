@@ -363,7 +363,7 @@ describe("startServer device session lifecycle", () => {
       serial: "C",
       proc: null,
       ownsProcess: true,
-      stop: () => {
+      stop: async () => {
         launchStopCalls += 1;
       },
     });
@@ -469,5 +469,96 @@ describe("startServer device session lifecycle", () => {
       errorLog.mockRestore();
       process.off("unhandledRejection", onUnhandled);
     }
+  });
+
+  test("stops emulators it launched when the server stops, not attached ones", async () => {
+    const a = fakeScrcpy("A");
+    const captured: CapturedServer = { options: null, stopCalls: 0 };
+    const stops: string[] = [];
+    const killed: string[] = [];
+    const started = await startServer(
+      { serial: "A", port: 3300 },
+      {
+        openScrcpy: async () => a.session,
+        listDevices: async () => [{ serial: "A", state: "device" }],
+        startEmulator: async ({ avd }) => ({
+          serial: avd === "Owned" ? "emulator-5556" : "emulator-5558",
+          proc: null,
+          ownsProcess: avd !== "Attached",
+          stop: async () => {
+            stops.push(avd);
+          },
+        }),
+        stopEmulator: async (serial) => {
+          killed.push(serial);
+        },
+        serve: capturingServe(captured),
+      },
+    );
+    for (const avd of ["Owned", "Attached", "Stopped_Via_Api"]) {
+      const response = await invokeFetch(captured, "/api/avds/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avd, select: false }),
+      });
+      expect(response.status).toBe(200);
+    }
+    // /api/avds/stop on a launch this server owns goes through the launch.
+    const stopResponse = await invokeFetch(captured, "/api/avds/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serial: "emulator-5558" }),
+    });
+    expect(stopResponse.status).toBe(200);
+    expect(stops).toEqual(["Stopped_Via_Api"]);
+
+    await started.stop();
+    expect(stops).toEqual(["Stopped_Via_Api", "Owned"]);
+    expect(killed).toEqual([]);
+  });
+
+  test("server stop aborts an emulator that is still booting", async () => {
+    const a = fakeScrcpy("A");
+    const captured: CapturedServer = { options: null, stopCalls: 0 };
+    const booting = deferred<void>();
+    const events: string[] = [];
+    let bootSignal: AbortSignal | undefined;
+    const started = await startServer(
+      { serial: "A", port: 3300 },
+      {
+        openScrcpy: async () => a.session,
+        listDevices: async () => [{ serial: "A", state: "device" }],
+        startEmulator: async ({ signal }) => {
+          bootSignal = signal;
+          booting.resolve();
+          return await new Promise<never>((_, reject) => {
+            signal?.addEventListener(
+              "abort",
+              () => {
+                // Like the real launch: stop the child, then reject.
+                setTimeout(() => {
+                  events.push("boot cleaned up");
+                  reject(signal.reason);
+                }, 10);
+              },
+              { once: true },
+            );
+          });
+        },
+        serve: capturingServe(captured),
+      },
+    );
+    const start = invokeFetch(captured, "/api/avds/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ avd: "Slow_AVD" }),
+    });
+    await booting.promise;
+    expect(bootSignal?.aborted).toBe(false);
+    await started.stop();
+    events.push("server stopped");
+    expect(bootSignal?.aborted).toBe(true);
+    expect(events).toEqual(["boot cleaned up", "server stopped"]);
+    expect((await start).status).toBeGreaterThanOrEqual(400);
   });
 });

@@ -200,18 +200,61 @@ async function main() {
     );
   }
 
+  type ActiveServer = Awaited<ReturnType<typeof startServer>>;
+  // Installed before the emulator boots: a signal during the boot wait must
+  // still stop the emulator this process started.
+  const lifecycleController = new AbortController();
   let emulatorLaunch: Awaited<ReturnType<typeof startEmulator>> | null = null;
-  const serial = values.avd
-    ? (emulatorLaunch = await startEmulator({
-        avd: values.avd,
-        emulatorPath: values.emulator,
-        port: values["emulator-port"] ? Number(values["emulator-port"]) : undefined,
-        restartAvd: values["restart-avd"],
-        gpu: values.gpu,
-        cameraBack: values["camera-back"],
-        cameraFront: values["camera-front"],
-      })).serial
-    : await pickDevice(values.serial);
+  let activeServer: ActiveServer | null = null;
+  let startupTask: Promise<ActiveServer> | null = null;
+  let stopping: Promise<void> | null = null;
+  const stop = (): Promise<void> => {
+    if (stopping) return stopping;
+    lifecycleController.abort(new Error("serve-emu stopping"));
+    stopping = (async () => {
+      try {
+        const started =
+          activeServer ?? (await startupTask?.catch(() => null)) ?? null;
+        await started?.stop();
+      } finally {
+        await emulatorLaunch?.stop();
+      }
+    })();
+    return stopping;
+  };
+  process.once("SIGINT", () => {
+    void stop()
+      .catch((err) => console.error("Shutdown cleanup failed:", err))
+      .finally(() => process.exit(0));
+  });
+  process.once("SIGTERM", () => {
+    void stop()
+      .catch((err) => console.error("Shutdown cleanup failed:", err))
+      .finally(() => process.exit(0));
+  });
+
+  let serial: string;
+  try {
+    serial = values.avd
+      ? (emulatorLaunch = await startEmulator({
+          avd: values.avd,
+          emulatorPath: values.emulator,
+          port: values["emulator-port"] ? Number(values["emulator-port"]) : undefined,
+          restartAvd: values["restart-avd"],
+          gpu: values.gpu,
+          cameraBack: values["camera-back"],
+          cameraFront: values["camera-front"],
+          signal: lifecycleController.signal,
+        })).serial
+      : await pickDevice(values.serial);
+  } catch (err) {
+    // startEmulator already stopped its own child; the signal handler exits.
+    if (lifecycleController.signal.aborted) {
+      await stop();
+      return;
+    }
+    throw err;
+  }
   const port = Number(values.port);
   const maxFps = numberOption("max-fps", SCRCPY_DEFAULTS.maxFps);
   const bitRate = numberOption("bit-rate", SCRCPY_DEFAULTS.bitRate);
@@ -242,36 +285,6 @@ async function main() {
     }
   }
 
-  type ActiveServer = Awaited<ReturnType<typeof startServer>>;
-  const lifecycleController = new AbortController();
-  let activeServer: ActiveServer | null = null;
-  let startupTask: Promise<ActiveServer> | null = null;
-  let stopping: Promise<void> | null = null;
-  const stop = (): Promise<void> => {
-    if (stopping) return stopping;
-    lifecycleController.abort(new Error("serve-emu stopping"));
-    stopping = (async () => {
-      try {
-        const started =
-          activeServer ?? (await startupTask?.catch(() => null)) ?? null;
-        await started?.stop();
-      } finally {
-        emulatorLaunch?.stop();
-      }
-    })();
-    return stopping;
-  };
-  process.once("SIGINT", () => {
-    void stop()
-      .catch((err) => console.error("Shutdown cleanup failed:", err))
-      .finally(() => process.exit(0));
-  });
-  process.once("SIGTERM", () => {
-    void stop()
-      .catch((err) => console.error("Shutdown cleanup failed:", err))
-      .finally(() => process.exit(0));
-  });
-
   startupTask = startServer({
     serial,
     port,
@@ -293,7 +306,7 @@ async function main() {
   try {
     activeServer = await startupTask;
   } catch (err) {
-    emulatorLaunch?.stop();
+    await emulatorLaunch?.stop();
     if (lifecycleController.signal.aborted) {
       await stop();
       return;

@@ -38,14 +38,23 @@ function fakeProcess(options: {
   exitCode?: number | null;
   signalCode?: NodeJS.Signals | null;
   throwOnKill?: boolean;
+  /** Signals the fake exits on; an emulator that ignores SIGTERM uses ["SIGKILL"]. */
+  exitOn?: NodeJS.Signals[];
 } = {}) {
   const killSignals: Array<NodeJS.Signals | number | undefined> = [];
+  const exitOn = options.exitOn ?? ["SIGTERM", "SIGKILL"];
   const proc = Object.assign(new EventEmitter(), {
     exitCode: options.exitCode ?? null,
     signalCode: options.signalCode ?? null,
-    kill(signal?: NodeJS.Signals | number) {
+    kill(this: EventEmitter & { signalCode: NodeJS.Signals | null }, signal?: NodeJS.Signals | number) {
       killSignals.push(signal);
       if (options.throwOnKill) throw new Error("kill failed");
+      if (typeof signal === "string" && exitOn.includes(signal)) {
+        queueMicrotask(() => {
+          this.signalCode = signal;
+          this.emit("exit", null, signal);
+        });
+      }
       return true;
     },
   }) as unknown as ChildProcess;
@@ -221,9 +230,7 @@ describe("emulator lifecycle", () => {
         { stdio: ["ignore", "inherit", "inherit"] },
       ],
     ]);
-    launch.stop();
-    launch.stop();
-    await Promise.resolve();
+    await Promise.all([launch.stop(), launch.stop()]);
     expect(adbCalls.filter((call) => call === "emu kill")).toHaveLength(1);
     expect(killSignals).toEqual(["SIGTERM"]);
   });
@@ -570,6 +577,58 @@ describe("emulator lifecycle", () => {
       "5554",
       "5556",
     ]);
+  });
+
+  test("aborting during boot stops the spawned emulator without emu kill", async () => {
+    const adbCalls: string[] = [];
+    const runExec = (async (command, args) => {
+      if (command === "/sdk/emulator") return result("Pixel_8\n");
+      adbCalls.push(args.slice(2).join(" "));
+      return result("offline\n");
+    }) as typeof execText;
+    const { proc, killSignals } = fakeProcess();
+    const controller = new AbortController();
+    const launching = startEmulator(
+      { avd: "Pixel_8", emulatorPath: "/sdk/emulator", signal: controller.signal },
+      {
+        execText: runExec,
+        listAllDevices: async () => [],
+        spawn: spawnWith(proc),
+        sleep: () => new Promise((resolve) => setTimeout(resolve, 5)),
+      },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort(new Error("serve-emu stopping"));
+    await expect(launching).rejects.toThrow("serve-emu stopping");
+    expect(killSignals).toEqual(["SIGTERM"]);
+    expect(adbCalls).not.toContain("emu kill");
+  });
+
+  test("escalates to SIGKILL when the emulator ignores SIGTERM", async () => {
+    const runExec = (async (command, args) => {
+      if (command === "/sdk/emulator") return result("Pixel_8\n");
+      const adbCommand = args.slice(2).join(" ");
+      if (adbCommand === "get-state") return result("device\n");
+      if (adbCommand === "shell getprop sys.boot_completed") return result("1\n");
+      if (adbCommand === "emu avd name") return result("Pixel_8\nOK\n");
+      return result("");
+    }) as typeof execText;
+    const { proc, killSignals } = fakeProcess({ exitOn: ["SIGKILL"] });
+    const pauses: number[] = [];
+    const launch = await startEmulator(
+      { avd: "Pixel_8", emulatorPath: "/sdk/emulator" },
+      {
+        execText: runExec,
+        listAllDevices: async () => [],
+        spawn: spawnWith(proc),
+        sleep: async (delay) => {
+          pauses.push(delay);
+        },
+      },
+    );
+    await launch.stop();
+    expect(killSignals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(pauses).toContain(10_000);
   });
 
   test("reports stop failures", async () => {
