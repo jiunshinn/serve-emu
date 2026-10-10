@@ -158,8 +158,6 @@ export class SessionRecorder {
   #closed = false;
   #admissionEpoch = 0;
   #clock: SessionReplayClock;
-  #legacySleep: (ms: number) => Promise<void>;
-  #legacyStopReplay = false;
 
   constructor(
     clockOrOptions: SessionReplayClock | SessionRecorderOptions =
@@ -181,9 +179,6 @@ export class SessionRecorder {
             },
           }
         : SYSTEM_REPLAY_CLOCK);
-    this.#legacySleep =
-      options.sleep ??
-      ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.#maxEvents = options.maxEvents ?? DEFAULT_MAX_SESSION_EVENTS;
     this.#maxBytes = options.maxBytes ?? DEFAULT_MAX_SESSION_BYTES;
     if (!Number.isSafeInteger(this.#maxEvents) || this.#maxEvents <= 0) {
@@ -310,59 +305,6 @@ export class SessionRecorder {
 
   export(): SessionExport {
     return { session: this.summary(), events: this.#events.map(cloneEvent) };
-  }
-
-  async replay(
-    handlers: {
-      dispatchGesture: (gesture: Gesture) => Promise<void> | void;
-      setLocation: (fix: GeoFix) => Promise<void> | void;
-    },
-    multiplier = 1,
-  ): Promise<SessionSummary> {
-    if (this.#closed) {
-      throw new SessionReplayConflictError("session recorder is closed");
-    }
-    if (this.#replaying) {
-      throw new SessionReplayConflictError("session replay is already running");
-    }
-    if (this.#events.length === 0) {
-      throw new SessionReplayValidationError("session has no recorded events");
-    }
-    validateMultiplier(multiplier);
-    const events = this.#events.map(cloneEvent);
-    this.#replaying = true;
-    this.#legacyStopReplay = false;
-    this.#replayStartedAt = new Date(this.#clock.now()).toISOString();
-    this.#replayCompletedAt = null;
-    this.#lastError = null;
-    let targetMs = this.#clock.now();
-    try {
-      for (const event of events) {
-        targetMs += event.delayMs / multiplier;
-        await this.#legacySleep(Math.max(0, targetMs - this.#clock.now()));
-        if (this.#legacyStopReplay) break;
-        if (event.kind === "gesture") {
-          await handlers.dispatchGesture(cloneGesture(event.gesture));
-        } else {
-          await handlers.setLocation({ ...event.location });
-        }
-      }
-      this.#replayCompletedAt = new Date(this.#clock.now()).toISOString();
-      this.#replaying = false;
-      return this.summary();
-    } catch (err) {
-      this.#lastError = publicErrorMessage(err);
-      throw err;
-    } finally {
-      this.#replaying = false;
-      this.#legacyStopReplay = false;
-    }
-  }
-
-  stopReplay(): SessionSummary {
-    this.#legacyStopReplay = true;
-    this.#activeReplay?.controller.abort();
-    return this.summary();
   }
 
   startReplay(handlers: ReplayHandlers, multiplier = 1): SessionReplayRun {

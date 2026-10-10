@@ -14,7 +14,7 @@ export type ApiDependencies = {
   ) => Promise<T>;
   listDevices: (
     runExec?: typeof import("../exec.ts").execText,
-  ) => Promise<import("../adb.ts").Device[]>;
+  ) => Promise<import("../shared/api-contracts.ts").Device[]>;
   /** Bound to the request, so failures are logged with its method and path. */
   errorResponse: (err: unknown, fallbackStatus?: number) => Response;
   deviceGrid: (context: DeviceContext) => Promise<DeviceGridResponse>;
@@ -39,7 +39,7 @@ export type ApiDependencies = {
   ) => Promise<import("../emulator.ts").EmulatorLaunch>;
   sessions: DeviceSessionManager<DeviceContext>;
   listActiveAvds: (
-    devices?: readonly import("../adb.ts").Device[],
+    devices?: readonly import("../shared/api-contracts.ts").Device[],
     dependencies?: Pick<
       import("../emulator.ts").EmulatorRuntimeDependencies,
       "execText" | "listAllDevices"

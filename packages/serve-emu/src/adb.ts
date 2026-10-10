@@ -1,38 +1,19 @@
-import { spawn } from "node:child_process";
 import { adbCommandFailure, CommandFailureError } from "./command-failure.ts";
 import { execBuffer, execText, type ExecResult } from "./exec.ts";
+import type {
+  Device,
+  FontScaleStatus,
+  NetworkRadioStatus,
+  NetworkStatus,
+  NightMode,
+  NightModeStatus,
+  OrientationMode,
+  OrientationStatus,
+} from "./shared/api-contracts.ts";
 
 const ADB_QUERY_TIMEOUT_MS = 2_000;
 const ADB_MUTATION_TIMEOUT_MS = 5_000;
 const ADB_SCREENSHOT_TIMEOUT_MS = 8_000;
-
-export type Device = { serial: string; state: string };
-export type OrientationMode = "auto" | "portrait" | "landscape";
-export type NightMode = "auto" | "dark" | "light";
-export type OrientationStatus = {
-  mode: "free" | "lock" | "unknown";
-  rotation: number | null;
-  orientation: OrientationMode | "unknown";
-  raw: string;
-};
-export type FontScaleStatus = {
-  scale: number;
-  raw: string;
-};
-export type NightModeStatus = {
-  mode: NightMode | "unknown";
-  raw: string;
-};
-export type NetworkRadioStatus = "enabled" | "disabled" | "unknown";
-export type NetworkStatus = {
-  enabled: boolean | null;
-  wifi: NetworkRadioStatus;
-  mobileData: NetworkRadioStatus;
-  raw: {
-    wifi: string;
-    mobileData: string;
-  };
-};
 
 function execFailed(result: ExecResult<string | Buffer>): boolean {
   return result.status !== 0 || result.error !== null;
@@ -92,38 +73,6 @@ export async function screencapPng(
   });
   if (execFailed(r)) throw adbCommandFailure("screencap", r);
   return r.stdout;
-}
-
-export async function shell(
-  serial: string,
-  cmd: string[],
-  runExec: typeof execText = execText,
-): Promise<void> {
-  const r = await runExec("adb", ["-s", serial, "shell", ...cmd], {
-    timeout: ADB_MUTATION_TIMEOUT_MS,
-  });
-  if (execFailed(r)) throw adbCommandFailure("adb shell", r);
-}
-
-export function shellSpawn(
-  serial: string,
-  cmd: string[],
-  runSpawn: typeof spawn = spawn,
-) {
-  return runSpawn("adb", ["-s", serial, "shell", ...cmd]);
-}
-
-export async function getDeviceSize(
-  serial: string,
-  runExec: typeof execText = execText,
-): Promise<{ width: number; height: number }> {
-  const r = await runExec("adb", ["-s", serial, "shell", "wm", "size"], {
-    timeout: ADB_QUERY_TIMEOUT_MS,
-  });
-  if (execFailed(r)) throw adbCommandFailure("wm size", r);
-  const m = r.stdout.match(/(\d+)x(\d+)/);
-  if (!m) throw unexpectedOutput("wm size", r.stdout);
-  return { width: Number(m[1]), height: Number(m[2]) };
 }
 
 function orientationFromRotation(mode: "free" | "lock" | "unknown", rotation: number | null): OrientationStatus["orientation"] {

@@ -8,11 +8,11 @@ import type { Readable } from "node:stream";
 // emulator commands go through this bounded executor so request bursts cannot
 // create an unbounded promise queue or subprocess fan-out.
 
-export const DEFAULT_EXEC_MAX_ACTIVE = 4;
-export const DEFAULT_EXEC_MAX_QUEUED = 64;
-export const DEFAULT_EXEC_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
-export const DEFAULT_EXEC_INTERACTIVE_ACTIVE_RESERVE = 1;
-export const DEFAULT_EXEC_INTERACTIVE_QUEUE_RESERVE = 8;
+const DEFAULT_EXEC_MAX_ACTIVE = 4;
+const DEFAULT_EXEC_MAX_QUEUED = 64;
+const DEFAULT_EXEC_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const DEFAULT_EXEC_INTERACTIVE_ACTIVE_RESERVE = 1;
+const DEFAULT_EXEC_INTERACTIVE_QUEUE_RESERVE = 8;
 export const MAX_EXEC_TIMEOUT_MS = 2_147_483_647;
 
 export type ExecLane = "interactive" | "default" | "background";

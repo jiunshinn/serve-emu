@@ -10,8 +10,6 @@ export type Gesture =
   | { type: "recents" }
   | { type: "power" };
 
-export type Screen = { width: number; height: number };
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

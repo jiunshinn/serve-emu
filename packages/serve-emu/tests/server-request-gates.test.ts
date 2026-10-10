@@ -689,7 +689,7 @@ describe("server shutdown and errors", () => {
     expect(harness.server.stopArguments).toEqual([true]);
     expect(harness.session.closeCalls).toBe(1);
     expect(harness.started.session).toBeNull();
-    expect(harness.started.getSession()).toBeNull();
+    expect(harness.started.session).toBeNull();
   });
 
   test("rolls back scrcpy when session construction fails before binding", async () => {

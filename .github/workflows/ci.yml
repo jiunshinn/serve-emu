@@ -37,6 +37,8 @@ jobs:
             command: bun run --filter serve-emu build
           - name: Production-only unused files
             command: bun run --filter serve-emu check:unused:prod
+          - name: Unused exports and dependencies
+            command: bun run --filter serve-emu check:unused
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5

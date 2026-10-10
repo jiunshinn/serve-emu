@@ -154,7 +154,6 @@ export type GeoFix = {
   satellites?: number;
   velocity?: number;
 };
-export type LocationPoint = GeoFix;
 export type AppliedGeoFix = GeoFix & { appliedAt: string };
 export type LocationResponse = {
   serial: string;

@@ -28,7 +28,7 @@ export type UploadManagerClock = {
   clearTimeout(timer: unknown): void;
 };
 
-export const SYSTEM_UPLOAD_MANAGER_CLOCK: UploadManagerClock = {
+const SYSTEM_UPLOAD_MANAGER_CLOCK: UploadManagerClock = {
   now: Date.now,
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimeout: (timer) =>

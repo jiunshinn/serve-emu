@@ -58,8 +58,8 @@ export type RouteProjectionCacheStats = {
 
 export const MAP_TILE_SIZE = 256;
 export const WEB_MERCATOR_MAX_LATITUDE = 85.05112878;
-export const DEFAULT_ROUTE_PIXEL_TOLERANCE = 0.75;
-export const DEFAULT_MAX_DISPLAY_POINTS = 1_024;
+const DEFAULT_ROUTE_PIXEL_TOLERANCE = 0.75;
+const DEFAULT_MAX_DISPLAY_POINTS = 1_024;
 
 const MAX_WEB_MERCATOR_ZOOM = 24;
 

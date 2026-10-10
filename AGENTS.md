@@ -79,7 +79,7 @@ second byte-layout description here that can drift from the tested reference.
 
 - Keep HTTP API inputs bounded. Follow existing `MAX_*_BYTES` limits and explicit payload validation patterns.
 - To add an endpoint, add an `ApiRoute` (path, method, handler) to the matching module under `src/api/routes/`, add its wrong-method case to the HTTP-surface table in `tests/server-request-gates.test.ts`, add a response parser to `src/shared/api-contracts.ts` for the UI client, and exercise it against a real response in `tests/api-contracts-live.test.ts`. Server payload types (session, route, location, logcat events, `/health`) come from `src/shared`, so a shape change must update the contract.
-- Gesture API coordinates are normalized unit values from `0` to `1`; convert to screen pixels only in `dispatch`.
+- Gesture API coordinates are normalized unit values from `0` to `1`; convert to screen pixels only in `compileGesture` (`src/input.ts`), which the control queue calls.
 - Preserve session recording behavior. REST and WebSocket actions should record by default unless payloads explicitly set `record: false`.
 - For slow WebSocket clients, keep the backpressure strategy: drop until the next keyframe, request video reset with cooldown, and close clients with excessive buffered bytes.
 - Maintain `/health` as the best machine-readable snapshot for agents: include status, stream metadata, client metrics, route/session state, and last error details when relevant.
@@ -108,7 +108,9 @@ and `input.ts`; add tests rather than lowering a floor.
 `check` also runs `check:unused:prod` (`knip --production --include files`),
 which fails when a source file is reachable only from tests. Wire a new module
 into the CLI, server, UI, or a worker, or delete it, rather than adding it to
-the `ignore` list in `knip.jsonc`.
+the `ignore` list in `knip.jsonc`. It also runs `check:unused` (`knip`), which
+fails on unused exports: export a value only when another module imports it,
+and do not add production code that only tests call.
 
 For runtime or protocol changes, also test manually with a booted emulator or device:
 

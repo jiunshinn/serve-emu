@@ -6,13 +6,13 @@ import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { packagePids } from "./package-pids.ts";
 
-export const DEFAULT_MAX_LOGCAT_SUBSCRIBERS = 8;
-export const DEFAULT_LOGCAT_BATCH_INTERVAL_MS = 75;
-export const DEFAULT_LOGCAT_QUEUE_LINES = 256;
-export const DEFAULT_LOGCAT_QUEUE_BYTES = 256 * 1024;
-export const DEFAULT_LOGCAT_MAX_LINE_BYTES = 16 * 1024;
-export const DEFAULT_LOGCAT_PID_REFRESH_MS = 5_000;
-export const DEFAULT_LOGCAT_TERMINATION_GRACE_MS = 1_000;
+const DEFAULT_MAX_LOGCAT_SUBSCRIBERS = 8;
+const DEFAULT_LOGCAT_BATCH_INTERVAL_MS = 75;
+const DEFAULT_LOGCAT_QUEUE_LINES = 256;
+const DEFAULT_LOGCAT_QUEUE_BYTES = 256 * 1024;
+const DEFAULT_LOGCAT_MAX_LINE_BYTES = 16 * 1024;
+const DEFAULT_LOGCAT_PID_REFRESH_MS = 5_000;
+const DEFAULT_LOGCAT_TERMINATION_GRACE_MS = 1_000;
 
 export type { LogcatLine } from "./shared/api-contracts.ts";
 import type { LogcatEventMap, LogcatLine } from "./shared/api-contracts.ts";

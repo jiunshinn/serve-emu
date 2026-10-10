@@ -61,7 +61,7 @@ export class ApiError extends Error {
   }
 }
 
-export function apiErrorBody(error: ApiError): ApiErrorBody {
+function apiErrorBody(error: ApiError): ApiErrorBody {
   return {
     ok: false,
     error: {

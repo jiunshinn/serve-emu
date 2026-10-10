@@ -7,9 +7,8 @@ import {
   setNetworkEnabled,
   setNightMode,
   setUserRotation,
-  type NightMode,
-  type OrientationMode,
 } from "../../adb.ts";
+import type { NightMode, OrientationMode } from "../../shared/api-contracts.ts";
 import type { ApiDependencies } from "../dependencies.ts";
 import type { ApiRoute } from "../router.ts";
 

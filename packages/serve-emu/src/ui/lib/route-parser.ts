@@ -12,7 +12,7 @@ export type RouteParseLimits = {
   maxDepth: number;
 };
 
-export const DEFAULT_ROUTE_PARSE_LIMITS: Readonly<RouteParseLimits> = Object.freeze({
+const DEFAULT_ROUTE_PARSE_LIMITS: Readonly<RouteParseLimits> = Object.freeze({
   maxWaypoints: 10_000,
   maxComplexity: 100_000,
   maxDepth: 128,

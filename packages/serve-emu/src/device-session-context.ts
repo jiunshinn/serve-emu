@@ -7,7 +7,6 @@ import { LogcatHub } from "./logcat.ts";
 import { RoutePlayback } from "./route-playback.ts";
 import { closeScrcpySession, type ScrcpySession } from "./scrcpy.ts";
 import { SessionRecorder } from "./session-recorder.ts";
-import { disposeReplayBefore } from "./session-replay-lifecycle.ts";
 import type { SessionStatus } from "./session-status.ts";
 
 const FRAME_STAT_WINDOW = 240;
@@ -81,18 +80,14 @@ export class ActiveDeviceSession<
   lastErrorMeta: Record<string, string | number> | null = null;
   frameCount = 0;
   configPacketCount = 0;
-  lastFrameMs = 0;
   totalDroppedFrames = 0;
   totalBackpressureEvents = 0;
-  sourceFps = 0;
-  lastFpsFrameCount = 0;
   videoResetRequests = 0;
   lastVideoResetAt: string | null = null;
   lastVideoResetReason: string | null = null;
   lastVideoResetMs = 0;
   lastLocation: (GeoFix & { appliedAt: string }) | null = null;
   cachedConfig: Buffer | null = null;
-  watchdog: ReturnType<typeof setInterval> | null = null;
 
   #accessibilitySnapshotCache: {
     snapshot: AccessibilitySnapshot;
@@ -214,24 +209,6 @@ export class ActiveDeviceSession<
     return task;
   }
 
-  /**
-   * Tracks capability-bearing background work only until this generation is
-   * revoked. The underlying legacy task may finish later, but every handler is
-   * generation-guarded and disposal is never held by an uninterruptible wait.
-   */
-  trackUntilAbort(task: Promise<unknown>): Promise<void> {
-    this.assertUsable();
-    let onAbort!: () => void;
-    const aborted = new Promise<void>((resolve) => {
-      onAbort = resolve;
-      this.signal.addEventListener("abort", onAbort, { once: true });
-    });
-    const guarded = Promise.race([task.then(() => {}), aborted]).finally(() => {
-      this.signal.removeEventListener("abort", onAbort);
-    });
-    return this.trackDrain(guarded);
-  }
-
   closeClients(code: number, reason: string): void {
     for (const client of this.clients) {
       try {
@@ -239,15 +216,6 @@ export class ActiveDeviceSession<
       } catch {}
     }
     this.clients.clear();
-  }
-
-  setWatchdog(timer: ReturnType<typeof setInterval>): void {
-    if (this.signal.aborted) {
-      clearInterval(timer);
-      return;
-    }
-    if (this.watchdog) clearInterval(this.watchdog);
-    this.watchdog = timer;
   }
 
   /** Idempotent; every owner receives the exact same cleanup promise. */
@@ -268,16 +236,10 @@ export class ActiveDeviceSession<
     this.abortController.abort(new SessionChangedError(this.generation, null));
     this.inputQueue.close(new Error(reason));
     this.logcat.close(reason);
-    const replayDisposed = disposeReplayBefore({
-      recorder: this.recorder,
-      stopRoute: () => {
-        this.route.stop();
-        this.route.close();
-      },
-      afterReplayStopped: () => {},
-    });
-    if (this.watchdog) clearInterval(this.watchdog);
-    this.watchdog = null;
+    // Stop route playback before cancelling replay, which awaits its task.
+    this.route.stop();
+    this.route.close();
+    const replayDisposed = this.recorder.dispose();
     this.closeClients(opts.clientCode ?? (nextStatus === "error" ? 1011 : 1000), reason);
 
     const cleanups = Array.from(this.#cleanup);

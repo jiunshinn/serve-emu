@@ -45,7 +45,6 @@ import {
   ScrcpyStreamError,
   startScrcpy,
   type ScrcpySession,
-  type StartOpts as ScrcpyStartOpts,
 } from "./scrcpy.ts";
 import {
   frameDeliveryDecision,
@@ -213,12 +212,8 @@ const MAX_LOGCAT_QUERY_BYTES = 200;
 
 export type ServerDependencies = {
   openScrcpy?: (serial: string, signal?: AbortSignal) => Promise<ScrcpySession>;
-  /** @deprecated Prefer openScrcpy. Kept for lifecycle-test compatibility. */
-  startScrcpy?: (opts: ScrcpyStartOpts) => Promise<ScrcpySession>;
   serve?: typeof Bun.serve;
   listDevices?: typeof listAllDevices;
-  /** @deprecated Prefer listDevices. */
-  listAllDevices?: typeof listAllDevices;
   startEmulator?: typeof startEmulator;
   stopEmulator?: typeof stopEmulator;
   listRunningAvds?: typeof listRunningAvds;
@@ -264,7 +259,7 @@ export async function startServer(
   const openScrcpy =
     dependencies.openScrcpy ??
     ((serial: string, signal?: AbortSignal) =>
-      (dependencies.startScrcpy ?? startScrcpy)({
+      startScrcpy({
         serial,
         signal,
         maxFps: opts.maxFps,
@@ -275,7 +270,7 @@ export async function startServer(
       }));
   const serve = dependencies.serve ?? Bun.serve;
   const listDevices =
-    dependencies.listDevices ?? dependencies.listAllDevices ?? listAllDevices;
+    dependencies.listDevices ?? listAllDevices;
   const startEmulatorProcess = dependencies.startEmulator ?? startEmulator;
   const stopEmulatorBySerial = dependencies.stopEmulator ?? stopEmulator;
   // Emulators started through /api/avds/start belong to this server, like the
@@ -1752,10 +1747,6 @@ export async function startServer(
   return {
     server,
     get session(): ScrcpySession | null {
-      const context = sessions.current;
-      return context.signal.aborted ? null : context.scrcpy;
-    },
-    getSession(): ScrcpySession | null {
       const context = sessions.current;
       return context.signal.aborted ? null : context.scrcpy;
     },

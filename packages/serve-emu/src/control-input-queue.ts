@@ -7,8 +7,8 @@ import {
   type Screen,
 } from "./input.ts";
 
-export const DEFAULT_CONTROL_QUEUE_MAX_DEPTH = 128;
-export const DEFAULT_CONTROL_QUEUE_MAX_BYTES = 1024 * 1024;
+const DEFAULT_CONTROL_QUEUE_MAX_DEPTH = 128;
+const DEFAULT_CONTROL_QUEUE_MAX_BYTES = 1024 * 1024;
 // Priority packets coalesce by key, so this only bounds distinct keys.
 const MAX_PRIORITY_ENTRIES = 8;
 
