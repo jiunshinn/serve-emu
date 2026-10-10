@@ -200,7 +200,9 @@ describe("live device switching", () => {
             port: occupied.port!,
           },
           {
-        log: () => {}, openScrcpy: async () => initial },
+            log: () => {},
+            openScrcpy: async () => initial,
+          },
         ),
       ).rejects.toMatchObject({ code: "EADDRINUSE" });
       expect(closeCount).toBe(1);
