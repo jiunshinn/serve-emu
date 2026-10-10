@@ -51,13 +51,15 @@
     "typecheck": "tsc --noEmit",
     "typecheck:ui": "tsc -p src/ui --noEmit",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
+    "prepack": "bun run scripts/fetch-scrcpy.ts",
     "prepublishOnly": "bun run check",
     "test:browser": "playwright test"
   },
   "files": [
     "src",
-    "scripts",
-    "vendor",
+    "!src/ui",
+    "scripts/fetch-scrcpy.ts",
+    "vendor/scrcpy-server-v4.0",
     "dist/ui",
     "docs",
     "CHANGELOG.md",
@@ -65,9 +67,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@fastify/busboy": "^3.2.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "@fastify/busboy": "^3.2.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
@@ -75,6 +75,8 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "knip": "6.26.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "vite": "^5.4.11"
   }
 }

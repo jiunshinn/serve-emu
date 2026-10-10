@@ -90,7 +90,7 @@ bun run packages/serve-emu/src/cli.ts
 # -> http://localhost:3300
 ```
 
-`setup` downloads the pinned `scrcpy-server-v4.0` into `vendor/` and builds the browser UI. The CLI also runs the scrcpy setup lazily on first start, so you can skip the setup step for a quick local run.
+`setup` downloads the pinned `scrcpy-server-v4.0` into `vendor/`, checks it against the SHA-256 from upstream's `SHA256SUMS.txt`, and builds the browser UI. The CLI also runs the scrcpy setup lazily on first start, so you can skip the setup step for a quick local run. A server file whose SHA-256 does not match is downloaded again and is never pushed to a device. The npm package ships the verified server.
 
 ## CLI
 
@@ -510,7 +510,7 @@ See the [protocol reference](docs/protocol.md) for the complete scrcpy v3/v4 fra
 +------------------+              +-------------+               +---------+
 ```
 
-1. The CLI pushes `scrcpy-server-v4.0` to `/data/local/tmp/scrcpy-server.jar`.
+1. The CLI pushes the verified `scrcpy-server-v4.0` once to a content-addressed cache, `/data/local/tmp/serve-emu-scrcpy-server-v4.0.jar-<SHA-256 prefix>`, and copies it to a per-session working path.
 2. It opens `adb forward tcp:<localPort> localabstract:scrcpy_<scid>`.
 3. It spawns `app_process` with the scrcpy server class on the device, then connects video and control sockets through the tunnel.
 4. The Bun server reads scrcpy's framed H.264 stream and forwards each access unit as a binary WebSocket message. Raw `/ws` clients receive Annex-B payloads unchanged; the built-in browser UI opts into the 24-byte frame metadata header.

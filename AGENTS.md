@@ -19,7 +19,7 @@
 - Location and route playback: `packages/serve-emu/src/location.ts` and `packages/serve-emu/src/route-playback.ts`.
 - Session recording/replay: `packages/serve-emu/src/session-recorder.ts`.
 - React UI: `packages/serve-emu/src/ui`.
-- Vendored scrcpy downloader and pinned version: `packages/serve-emu/scripts/fetch-scrcpy.ts`.
+- Vendored scrcpy downloader, pinned version, and pinned SHA-256: `packages/serve-emu/scripts/fetch-scrcpy.ts`.
 
 Prefer kebab-case for TypeScript and JavaScript filenames.
 
@@ -70,9 +70,10 @@ file and run `docs:sync`.
 
 The canonical [protocol reference](packages/serve-emu/docs/protocol.md) is the
 source of truth for scrcpy v3/v4 framing, control packets, `SEMU` metadata,
-golden bytes, and the scrcpy upgrade checklist. The server version remains
-pinned in `packages/serve-emu/scripts/fetch-scrcpy.ts`; update that marker, the
-reference, and parser fixtures together whenever it changes.
+golden bytes, and the scrcpy upgrade checklist. The server version and its
+SHA-256 remain pinned in `packages/serve-emu/scripts/fetch-scrcpy.ts`; update
+them, the marker, the reference, the package `files` entry, and parser fixtures
+together whenever the version changes.
 
 Keep protocol-sensitive behavior low-latency and join-safe: detect the video
 preamble alignment, bound packet and reader sizes, cache SPS/PPS configuration
