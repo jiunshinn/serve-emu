@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import {
   mkdtemp,
   mkdir,
@@ -11,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SCRCPY_SERVER_SHA256, SCRCPY_VERSION } from "./fetch-scrcpy.ts";
 
 interface CommandResult {
   exitCode: number;
@@ -31,6 +34,10 @@ const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const npmExecutable = process.platform === "win32" ? "npm.cmd" : "npm";
 const bunExecutable = process.execPath;
 
+// The scrcpy server ships in the tarball: `prepack` fetches it and checks its
+// SHA-256, so every pack (CI's included) contains the same verified file.
+const VENDORED_SCRCPY_SERVER = `vendor/scrcpy-server-v${SCRCPY_VERSION}`;
+
 const REQUIRED_PACKAGE_FILES = [
   "CHANGELOG.md",
   "LICENSE",
@@ -39,7 +46,20 @@ const REQUIRED_PACKAGE_FILES = [
   "package.json",
   "scripts/fetch-scrcpy.ts",
   "src/cli.ts",
+  VENDORED_SCRCPY_SERVER,
 ] as const;
+
+const UI_SOURCE_PREFIX = "src/ui/";
+
+/**
+ * Runtime files only: the UI ships as its build in dist/ui, and the only
+ * script the CLI imports is fetch-scrcpy.ts. Anything else is a leak.
+ */
+function isAllowedPackageFile(path: string): boolean {
+  if ((REQUIRED_PACKAGE_FILES as readonly string[]).includes(path)) return true;
+  if (path.startsWith("src/")) return !path.startsWith(UI_SOURCE_PREFIX);
+  return path.startsWith("dist/ui/") || path.startsWith("docs/");
+}
 
 function invariant(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -126,7 +146,9 @@ async function listFiles(directory: string): Promise<string[]> {
 }
 
 async function requiredPackageFiles(): Promise<string[]> {
-  const sourceFiles = await listFiles(join(packageRoot, "src"));
+  const sourceFiles = (await listFiles(join(packageRoot, "src"))).filter(
+    (file) => !file.startsWith(UI_SOURCE_PREFIX),
+  );
   const builtUiFiles = await listFiles(join(packageRoot, "dist", "ui"));
   return [...new Set([...REQUIRED_PACKAGE_FILES, ...sourceFiles, ...builtUiFiles])].sort();
 }
@@ -135,6 +157,11 @@ function validateManifest(report: PackReport, requiredFiles: readonly string[], 
   const manifest = new Set(report.files.map((file) => file.path));
   const missing = requiredFiles.filter((file) => !manifest.has(file));
   invariant(missing.length === 0, `${label} is missing required files:\n${missing.join("\n")}`);
+  const unexpected = [...manifest].filter((file) => !isAllowedPackageFile(file)).sort();
+  invariant(
+    unexpected.length === 0,
+    `${label} contains files that are not part of the runtime package:\n${unexpected.join("\n")}`,
+  );
 }
 
 function validateMatchingManifests(dryRun: PackReport, packed: PackReport): void {
@@ -167,7 +194,16 @@ async function main(): Promise<void> {
       mkdir(consumerDirectory, { recursive: true }),
     ]);
 
+    // The real pack runs `prepack` like `npm publish` does, so it also proves
+    // that the scrcpy server is fetched and verified before packing.
+    const packResult = await runSuccessfully(
+      [npmExecutable, "pack", "--json", "--pack-destination", packDirectory],
+      packageRoot,
+    );
     const requiredFiles = await requiredPackageFiles();
+    const packReport = parsePackReport(packResult.stdout, "npm pack");
+    validateManifest(packReport, requiredFiles, "packed tarball manifest");
+
     const dryRunResult = await runSuccessfully(
       [
         npmExecutable,
@@ -182,13 +218,6 @@ async function main(): Promise<void> {
     );
     const dryRunReport = parsePackReport(dryRunResult.stdout, "npm pack --dry-run");
     validateManifest(dryRunReport, requiredFiles, "npm pack --dry-run manifest");
-
-    const packResult = await runSuccessfully(
-      [npmExecutable, "pack", "--ignore-scripts", "--json", "--pack-destination", packDirectory],
-      packageRoot,
-    );
-    const packReport = parsePackReport(packResult.stdout, "npm pack");
-    validateManifest(packReport, requiredFiles, "packed tarball manifest");
     validateMatchingManifests(dryRunReport, packReport);
 
     invariant(
@@ -217,11 +246,22 @@ async function main(): Promise<void> {
       consumerDirectory,
     );
 
+    const installedRoot = join(consumerDirectory, "node_modules", "serve-emu");
+    const installedServerDigest = createHash("sha256")
+      .update(await readFile(join(installedRoot, VENDORED_SCRCPY_SERVER)))
+      .digest("hex");
+    invariant(
+      installedServerDigest === SCRCPY_SERVER_SHA256,
+      `Installed ${VENDORED_SCRCPY_SERVER} has SHA-256 ${installedServerDigest}, expected ${SCRCPY_SERVER_SHA256}`,
+    );
+    // React is bundled into dist/ui; the CLI must not need it installed.
+    invariant(
+      !existsSync(join(consumerDirectory, "node_modules", "react")),
+      "Installing serve-emu pulled in react, which only the UI build needs",
+    );
+
     const installedManifest = JSON.parse(
-      await readFile(
-        join(consumerDirectory, "node_modules", "serve-emu", "package.json"),
-        "utf8",
-      ),
+      await readFile(join(installedRoot, "package.json"), "utf8"),
     ) as { exports?: unknown };
     invariant(
       typeof installedManifest.exports === "object" &&

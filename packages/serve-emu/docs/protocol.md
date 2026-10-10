@@ -4,7 +4,13 @@
 
 This document is the source of truth for the binary protocols implemented by
 `serve-emu`. The vendored device server is scrcpy **4.0**, pinned by
-`scripts/fetch-scrcpy.ts`. The host parser remains compatible with the scrcpy v3
+`scripts/fetch-scrcpy.ts` together with its upstream SHA-256:
+
+```text
+scrcpy-server-v4.0  84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a
+```
+
+A server file with any other digest is never pushed to a device. The host parser remains compatible with the scrcpy v3
 and v4 stream layouts so that protocol changes fail explicitly instead of being
 mistaken for video data.
 
@@ -223,7 +229,11 @@ each `SEMU` header in an actual WebSocket message.
 Treat a scrcpy server bump as a protocol change, even when upstream release
 notes do not call one out.
 
-1. Change `SCRCPY_VERSION` in `scripts/fetch-scrcpy.ts` and fetch the new server.
+1. Change `SCRCPY_VERSION` in `scripts/fetch-scrcpy.ts`, set
+   `SCRCPY_SERVER_SHA256` to the `scrcpy-server-v<version>` line of the
+   release's upstream `SHA256SUMS.txt` (and compare it with the release asset's
+   digest), update the digest line above and the `vendor/scrcpy-server-v<version>`
+   entry in `package.json` `files`, then fetch the new server.
 2. Compare upstream `DesktopConnection`, `Streamer`, `ControlMessage`,
    `ControlMessageReader`, and server-option parsing with the pinned version.
 3. Revalidate socket order and dummy-byte behavior; the device-name and stream
