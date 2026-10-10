@@ -1,11 +1,16 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createConnection, type Socket } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { SCRCPY_VERSION, ensureScrcpyServer } from "../scripts/fetch-scrcpy.ts";
+import {
+  isDeviceUnavailable,
+  runAdb,
+  spawnAdb,
+  terminateChild,
+} from "./adb-command.ts";
 import { adbOperation, CommandFailureError } from "./command-failure.ts";
-import { execText } from "./exec.ts";
 
 // Canonical scrcpy wire layouts and upgrade checklist: ../docs/protocol.md
 const DEVICE_JAR_CACHE_PATH =
@@ -126,9 +131,10 @@ const DEFAULT_TIMEOUTS: ScrcpyTimeouts = {
   cleanupMs: 3_000,
 };
 
-// exec.ts holds its concurrency slot for up to one second while reaping a
-// process killed by AbortSignal. Wait slightly longer before starting cleanup
-// so an outcome-ambiguous ADB mutation cannot complete after rollback.
+// On abort, exec.ts SIGKILLs the adb process but settles the call only once
+// that process has closed, with no time bound. Wait up to this long for it
+// before starting cleanup, so an outcome-ambiguous ADB mutation normally ends
+// before rollback; one that takes longer is left to finish on its own.
 const ADB_CANCELLATION_SETTLE_MS = 1_100;
 
 // Single source of truth for encoder defaults; the CLI reads these for its
@@ -192,17 +198,9 @@ function runtimeFor(deps: ScrcpyDependencies): ScrcpyRuntime {
         createHash("sha256").update(await readFile(path)).digest("hex")),
     runAdb:
       deps.runAdb ??
-      (async (serial, args, opts) =>
-        execText("adb", ["-s", serial, ...args], {
-          timeout: opts.timeoutMs,
-          signal: opts.signal,
-        })),
-    spawnAdb:
-      deps.spawnAdb ??
-      ((serial, args) =>
-        spawn("adb", ["-s", serial, ...args], {
-          stdio: ["ignore", "pipe", "pipe"],
-        })),
+      ((serial, args, opts) =>
+        runAdb(serial, args, { timeout: opts.timeoutMs, signal: opts.signal })),
+    spawnAdb: deps.spawnAdb ?? ((serial, args) => spawnAdb(serial, args)),
     connect: deps.connect ?? connectOnce,
     sleep:
       deps.sleep ??
@@ -296,13 +294,6 @@ function commandFailure(
     `${adbOperation(args)} ${timedOut ? "timed out" : "failed"}`,
     `adb -s ${serial} ${args.join(" ")}: ${detail}`,
     { cause: result.error ?? undefined },
-  );
-}
-
-function deviceUnavailable(result: AdbCommandResult): boolean {
-  const detail = `${result.stderr ?? ""} ${result.stdout ?? ""}`;
-  return /\b(?:device offline|device .* not found|no devices?|unauthorized|closed)\b/i.test(
-    detail,
   );
 }
 
@@ -440,7 +431,7 @@ async function removeForwards(
       for (const port of forwardedPorts(listed.stdout, serial, target)) {
         ports.add(port);
       }
-    } else if (!deviceUnavailable(listed)) {
+    } else if (!isDeviceUnavailable(listed)) {
       errors.push(
         commandFailure(serial, ["forward", "--list"], listed),
       );
@@ -461,7 +452,7 @@ async function removeForwards(
       );
       if (
         result.status !== 0 &&
-        !deviceUnavailable(result) &&
+        !isDeviceUnavailable(result) &&
         !/(?:cannot remove listener|listener .* not found)/i.test(
           result.stderr ?? "",
         )
@@ -551,7 +542,7 @@ async function removeWorkingJars(
       await runtime.sleep(100, cleanupController.signal);
       continue;
     }
-    if (deviceUnavailable(result)) return;
+    if (isDeviceUnavailable(result)) return;
     throw commandFailure(serial, args, result);
   }
 }
@@ -573,8 +564,7 @@ async function waitForAbstractSocketAsync(
       signal,
     );
     if (result.status === 0 && result.stdout.includes(`@${name}`)) return;
-    const detail = `${result.stderr ?? ""} ${result.stdout ?? ""}`;
-    if (/\b(offline|unauthorized|not found|no devices?)\b/i.test(detail)) {
+    if (isDeviceUnavailable(result)) {
       throw commandFailure(
         serial,
         ["shell", "cat", "/proc/net/unix"],
@@ -978,46 +968,26 @@ export async function startScrcpy(
     try {
       controlSock?.destroy();
     } catch {}
-    try {
-      proc?.kill("SIGTERM");
-    } catch {}
-
-    const child = proc;
+    // SIGTERM goes out now; the cleanup below waits for the exit (escalating
+    // to SIGKILL) before removing forwards and jars.
+    const stopping =
+      proc && !childSettled
+        ? terminateChild(proc, {
+            exited: childDone,
+            graceMs: timeouts.processExitMs,
+            label: "scrcpy process",
+            setTimer: runtime.setTimer,
+            clearTimer: runtime.clearTimer,
+          })
+        : null;
     const paths = jarPaths;
     closeTask = (async () => {
       const cleanupErrors: unknown[] = [];
-      if (child && !childSettled) {
+      if (stopping) {
         try {
-          await withDeadline(
-            runtime,
-            undefined,
-            timeouts.processExitMs,
-            "scrcpy process exit",
-            () => childDone,
-          );
-        } catch (termWaitError) {
-          let killError: unknown = null;
-          try {
-            child.kill("SIGKILL");
-          } catch (err) {
-            killError = err;
-          }
-          try {
-            await withDeadline(
-              runtime,
-              undefined,
-              timeouts.processExitMs,
-              "scrcpy process reap",
-              () => childDone,
-            );
-          } catch (reapError) {
-            cleanupErrors.push(
-              new AggregateError(
-                [termWaitError, ...(killError ? [killError] : []), reapError],
-                "scrcpy process did not exit during cleanup",
-              ),
-            );
-          }
+          await stopping;
+        } catch (error) {
+          cleanupErrors.push(error);
         }
       }
       const cleanupResults = await Promise.allSettled([

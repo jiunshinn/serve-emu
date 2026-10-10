@@ -695,6 +695,16 @@ describe("scrcpy async lifecycle", () => {
     expect(harness.state.rmAttempt).toBe(2);
   });
 
+  test("close is best-effort when the device becomes unauthorized during teardown", async () => {
+    const harness = createHarness({
+      rmResults: [failed("error: closed"), failed("adb: device unauthorized.")],
+    });
+    const session = await startWith(harness);
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(harness.state.rmAttempt).toBe(2);
+  });
+
   test("close reports a child that cannot be reaped after SIGKILL", async () => {
     const harness = createHarness({ childIgnoresKill: true });
     harness.deps.timeouts!.processExitMs = 5;
