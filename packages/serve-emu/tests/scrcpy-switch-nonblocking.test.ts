@@ -15,6 +15,8 @@ const selectDevice = (serial: string): RequestInit => ({
 });
 
 describe("live device switching", () => {
+  // Requests go to the server's fetch handler, not a socket: this catches a
+  // switch that blocks the event loop or the handler, not the HTTP transport.
   test("keeps timers and HTTP responsive while the next scrcpy session waits", async () => {
     const initial = fakeScrcpy("device-1");
     const next = fakeScrcpy("device-2");

@@ -385,6 +385,7 @@ describe("server request and upload limits", () => {
     // upload: a switch that fails here must leave it untouched.
     await flushUntil(() => events.includes("next-prepare"));
     expect(events).toEqual(["next-prepare"]);
+    expect(old.closeCalls).toBe(0);
 
     nextReady.resolve();
     await flushUntil(() => events.includes("cleanup-start"));

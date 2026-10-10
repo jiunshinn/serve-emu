@@ -1,4 +1,3 @@
-import { afterEach } from "bun:test";
 import { EventEmitter } from "node:events";
 import { type ScrcpySession, type VideoPacket } from "../../src/scrcpy.ts";
 import {
@@ -235,10 +234,15 @@ type HarnessOptions = Partial<ServerOpts> & {
 
 const activeServers: Array<Awaited<ReturnType<typeof startServer>>> = [];
 
-afterEach(async () => {
+/**
+ * Stops every server the harness started. `tests/helpers/preload.ts` runs it
+ * after each test: Bun attaches an `afterEach` registered in a shared module
+ * only to the first test file that imports it.
+ */
+async function stopHarnesses(): Promise<void> {
   const servers = activeServers.splice(0);
   await Promise.allSettled(servers.map((server) => server.stop()));
-});
+}
 
 async function createHarness(
   options: HarnessOptions = {},
@@ -368,12 +372,11 @@ async function waitFor(
 
 export {
   createHarness,
-  FakeControlSocket,
   fakeScrcpy,
-  FrameFeed,
   fakeWebSocket,
   INERT_RECOVERY_CLOCK,
   response,
+  stopHarnesses,
   waitFor,
 };
-export type { CapturedServer, FakeScrcpy, FakeWebSocket, Harness, HarnessOptions };
+export type { FakeScrcpy, FakeWebSocket, Harness, HarnessOptions };
