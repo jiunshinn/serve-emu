@@ -20,8 +20,9 @@ import {
 } from "../lib/route-map";
 import type { RoutePlaybackSnapshot } from "../../shared/api-contracts";
 import { apiErrorMessage, apiRequest } from "../lib/api-client";
-import { useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { DEFAULT_MAX_ROUTE_FILE_BYTES } from "../lib/route-parser";
+import { deviceSessionStore, useDeviceSessionSnapshot } from "../lib/device-session-store";
+import { usePoll } from "../lib/use-poll";
 import type {
   RouteParserWorkerCommand,
   RouteParserWorkerResponse,
@@ -86,8 +87,6 @@ export function LocationPanel() {
   const dragFrameRef = useRef(0);
   const routeWorkerRef = useRef<Worker | null>(null);
   const routeRequestRef = useRef(0);
-  const routePollGenerationRef = useRef(0);
-  const routePollAbortRef = useRef<AbortController | null>(null);
   const routeMutationCountRef = useRef(0);
   const routeProjectionCache = useMemo(() => new RouteProjectionCache(), []);
   const [size, setSize] = useState(DEFAULT_SIZE);
@@ -116,23 +115,75 @@ export function LocationPanel() {
     if (recenter) setCenter(normalized);
   }, []);
 
-  const invalidateRoutePoll = useCallback(() => {
-    routePollGenerationRef.current += 1;
-    routePollAbortRef.current?.abort();
-  }, []);
+  // Read by the route poll; toggling Follow must not restart polling.
+  const followRouteRef = useRef(followRoute);
+  followRouteRef.current = followRoute;
+  const deviceSession = useDeviceSessionSnapshot();
+  const { refresh: refreshRoute } = usePoll({
+    pollKey: deviceSession.revision,
+    enabled: !deviceSession.transitioning,
+    intervalMs: 1_000,
+    // The typed client rejects failures and malformed snapshots.
+    poll: ({ signal }) => apiRequest("/api/route", { method: "GET", signal }),
+    onResult: (route) => {
+      // A start/stop in flight owns the route state until it settles.
+      if (routeMutationCountRef.current > 0) return;
+      setRouteStatus(route);
+      if (route.currentLocation) {
+        syncDraft(
+          route.currentLocation,
+          followRouteRef.current &&
+            route.status === "running" &&
+            dragRef.current === null,
+        );
+      }
+    },
+    // Route state is auxiliary to video and input, so a failed poll keeps the
+    // last good snapshot and the next tick retries.
+  });
 
+  // Route playback belongs to one device session, so its last snapshot (and
+  // error line) must not outlive it. Clear it as soon as a switch starts, and
+  // when /health settles on a different session without one (a switch made
+  // by another tab or the REST API), rather than showing the old device's
+  // route until the new session's first poll returns, or for good if that
+  // poll fails.
+  const settledSessionKey =
+    !deviceSession.transitioning && deviceSession.sessionGeneration !== null
+      ? `${deviceSession.serial}#${deviceSession.sessionGeneration}`
+      : null;
+  const routeSessionKeyRef = useRef(settledSessionKey);
+  useEffect(() => {
+    if (deviceSession.transitioning) {
+      routeSessionKeyRef.current = null;
+      setRouteStatus(null);
+      return;
+    }
+    if (settledSessionKey === null) return;
+    const previous = routeSessionKeyRef.current;
+    routeSessionKeyRef.current = settledSessionKey;
+    if (previous !== null && previous !== settledSessionKey) {
+      setRouteStatus(null);
+    }
+  }, [deviceSession.transitioning, settledSessionKey]);
+
+  // Returns whether the device session is still the one the mutation began
+  // in. A route start or stop that settles after a switch is the old
+  // session's route; the refresh in endRouteMutation fetches the new one.
   const beginRouteMutation = useCallback(() => {
     routeMutationCountRef.current += 1;
-    invalidateRoutePoll();
-  }, [invalidateRoutePoll]);
+    const revision = deviceSessionStore.getSnapshot().revision;
+    return () => deviceSessionStore.getSnapshot().revision === revision;
+  }, []);
 
   const endRouteMutation = useCallback(() => {
     routeMutationCountRef.current = Math.max(
       0,
       routeMutationCountRef.current - 1,
     );
-    invalidateRoutePoll();
-  }, [invalidateRoutePoll]);
+    // Drops any poll that started before the mutation settled.
+    refreshRoute();
+  }, [refreshRoute]);
 
   useEffect(() => {
     const node = mapRef.current;
@@ -153,24 +204,19 @@ export function LocationPanel() {
   // The panel stays mounted across device switches. Load the location on
   // mount, and once a different session has settled, drop the previous
   // device's fix and status before loading the new device's location.
-  const deviceSession = useDeviceSessionSnapshot();
-  const settledSession =
-    !deviceSession.transitioning && deviceSession.sessionGeneration !== null
-      ? `${deviceSession.serial}#${deviceSession.sessionGeneration}`
-      : null;
   const locationSessionRef = useRef<string | null | undefined>(undefined);
   const locationRequestRef = useRef(0);
   useEffect(() => {
     const previous = locationSessionRef.current;
     if (previous !== undefined) {
-      if (settledSession === null || settledSession === previous) return;
-      locationSessionRef.current = settledSession;
+      if (settledSessionKey === null || settledSessionKey === previous) return;
+      locationSessionRef.current = settledSessionKey;
       // The mount fetch already covered the first settled session.
       if (previous === null) return;
       setStatus("Ready");
       syncDraft(DEFAULT_LOCATION, true);
     } else {
-      locationSessionRef.current = settledSession;
+      locationSessionRef.current = settledSessionKey;
     }
     const request = ++locationRequestRef.current;
     apiRequest("/api/location", { method: "GET" })
@@ -179,65 +225,7 @@ export function LocationPanel() {
         if (data.location) syncDraft(data.location, true);
       })
       .catch(() => {});
-  }, [settledSession, syncDraft]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let controller: AbortController | null = null;
-    const syncRoute = async () => {
-      if (routeMutationCountRef.current > 0) {
-        if (!cancelled) timer = setTimeout(syncRoute, 1_000);
-        return;
-      }
-      controller = new AbortController();
-      routePollAbortRef.current = controller;
-      const generation = routePollGenerationRef.current;
-      try {
-        const route = await apiRequest("/api/route", {
-          method: "GET",
-          signal: controller.signal,
-        });
-        if (
-          cancelled ||
-          generation !== routePollGenerationRef.current ||
-          routeMutationCountRef.current > 0
-        ) {
-          return;
-        }
-        setRouteStatus(route);
-        if (route.currentLocation) {
-          syncDraft(
-            route.currentLocation,
-            followRoute &&
-              route.status === "running" &&
-              dragRef.current === null,
-          );
-        }
-        if (route.lastError) setStatus(route.lastError);
-      } catch (error) {
-        if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
-          // Route state is auxiliary to video/input controls, so keep the last
-          // good snapshot and retry rather than surfacing transient poll noise.
-        }
-      } finally {
-        if (routePollAbortRef.current === controller) {
-          routePollAbortRef.current = null;
-        }
-        controller = null;
-        if (!cancelled) timer = setTimeout(syncRoute, 1_000);
-      }
-    };
-    void syncRoute();
-    return () => {
-      cancelled = true;
-      controller?.abort();
-      if (routePollAbortRef.current === controller) {
-        routePollAbortRef.current = null;
-      }
-      if (timer) clearTimeout(timer);
-    };
-  }, [followRoute, syncDraft]);
+  }, [settledSessionKey, syncDraft]);
 
   const centerPixel = useMemo(
     () => projectLocation(center, zoom),
@@ -509,7 +497,7 @@ export function LocationPanel() {
       setStatus("Rate must be positive");
       return;
     }
-    beginRouteMutation();
+    const sameSession = beginRouteMutation();
     setStatus("Starting route...");
     try {
       const data = await apiRequest("/api/route", {
@@ -522,7 +510,7 @@ export function LocationPanel() {
           loop,
         },
       });
-      setRouteStatus(data.route);
+      if (sameSession()) setRouteStatus(data.route);
       setStatus("Route running");
     } catch (err) {
       setStatus(apiErrorMessage(err));
@@ -532,13 +520,13 @@ export function LocationPanel() {
   };
 
   const controlRoute = async (action: "pause" | "resume" | "stop") => {
-    beginRouteMutation();
+    const sameSession = beginRouteMutation();
     try {
       const data = await apiRequest("/api/route/control", {
         method: "POST",
         body: { action },
       });
-      setRouteStatus(data.route);
+      if (sameSession()) setRouteStatus(data.route);
       setStatus(action === "stop" ? "Route stopped" : `Route ${data.route.status}`);
     } catch (err) {
       setStatus(apiErrorMessage(err));
@@ -743,6 +731,13 @@ export function LocationPanel() {
             : ""}
           {routeStatus ? ` • ${formatDistance(routeStatus.progressMeters)} / ${formatDistance(routeStatus.totalMeters)}` : ""}
         </div>
+        {routeStatus?.lastError ? (
+          // Its own line, so the panel status (e.g. "Applied …") is not
+          // overwritten on every poll while a route error persists.
+          <div className="route-error" role="status">
+            {routeStatus.lastError}
+          </div>
+        ) : null}
         <div className="coordinate-grid">
           <label>
             km/h

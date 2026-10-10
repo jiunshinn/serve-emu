@@ -437,6 +437,11 @@ input[type="checkbox"] {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+.route-error {
+  color: #ff4d5e;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
 .toggle-row {
   display: flex;
   align-items: center;
