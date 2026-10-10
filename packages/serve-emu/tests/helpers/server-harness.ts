@@ -254,6 +254,7 @@ async function createHarness(
       port: options.port ?? server.port,
       host: options.host,
       token: options.token,
+      allowedHosts: options.allowedHosts,
     },
     {
       openScrcpy: async () => session,

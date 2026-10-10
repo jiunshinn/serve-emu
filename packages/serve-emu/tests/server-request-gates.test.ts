@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ScrcpyStreamError } from "../src/scrcpy.ts";
@@ -140,6 +140,137 @@ describe("server request gates", () => {
     );
     expect(crossOriginUpgrade.status).toBe(403);
     expect(harness.server.upgrades).toHaveLength(0);
+  });
+
+  test("rejects DNS-rebound host names before routing when auth is off", async () => {
+    const harness = await createHarness();
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // A rebound page is same-origin with itself, so Origin matches Host.
+      const rebound = {
+        host: "evil.example:33040",
+        origin: "http://evil.example:33040",
+      };
+      const mutation = await response(
+        harness.request("/api/tap", {
+          method: "POST",
+          headers: rebound,
+          body: "{",
+        }),
+      );
+      expect(mutation.status).toBe(403);
+      expect(await mutation.json()).toEqual({
+        ok: false,
+        error: "forbidden host",
+      });
+      for (const path of ["/api", "/health", "/", "/ws"]) {
+        const read = await response(
+          harness.request(path, { headers: rebound }),
+        );
+        expect(read.status).toBe(403);
+      }
+      expect(harness.server.upgrades).toHaveLength(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("evil.example:33040");
+    } finally {
+      warn.mockRestore();
+    }
+
+    // The Vite dev proxy keeps its own Host and Origin (changeOrigin: false).
+    const viteProxy = await response(
+      harness.request("/api/tap", {
+        method: "POST",
+        headers: { host: "localhost:5173", origin: "http://localhost:5173" },
+        body: "{",
+      }),
+    );
+    expect(viteProxy.status).toBe(400);
+    expect(await viteProxy.json()).toMatchObject({ code: "invalid-json" });
+
+    for (const host of ["localhost:33040", "[::1]:33040", "192.168.1.20:33040"]) {
+      const read = await response(harness.request("/api", { headers: { host } }));
+      expect(read.status).toBe(200);
+    }
+  });
+
+  test("serves configured host names and leaves rebinding to the token when set", async () => {
+    const configured = await createHarness({
+      host: "0.0.0.0",
+      allowedHosts: ["DevBox.lan"],
+    });
+    const named = await response(
+      configured.request("/api", { headers: { host: "devbox.lan:33040" } }),
+    );
+    expect(named.status).toBe(200);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const other = await response(
+        configured.request("/api", { headers: { host: "other.lan:33040" } }),
+      );
+      expect(other.status).toBe(403);
+    } finally {
+      warn.mockRestore();
+    }
+
+    const authenticated = await createHarness({ token: "test-secret" });
+    const withToken = await response(
+      authenticated.request("/api", {
+        headers: {
+          host: "serve-emu.example:443",
+          authorization: "Bearer test-secret",
+        },
+      }),
+    );
+    expect(withToken.status).toBe(200);
+    const withoutToken = await response(
+      authenticated.request("/api", {
+        headers: { host: "serve-emu.example:443" },
+      }),
+    );
+    expect(withoutToken.status).toBe(401);
+  });
+
+  test("rejects malformed allowed host names at startup", async () => {
+    await expect(
+      createHarness({ allowedHosts: ["devbox.lan/admin"] }),
+    ).rejects.toThrow('invalid allowed host "devbox.lan/admin"');
+  });
+
+  test("rejects cross-site subresource requests and API navigations, but not UI navigations", async () => {
+    const harness = await createHarness();
+    const image = await response(
+      harness.request("/api", {
+        headers: {
+          "sec-fetch-site": "cross-site",
+          "sec-fetch-mode": "no-cors",
+          "sec-fetch-dest": "image",
+        },
+      }),
+    );
+    expect(image.status).toBe(403);
+    expect(await image.json()).toEqual({
+      ok: false,
+      error: "forbidden cross-site request",
+    });
+
+    const navigationHeaders = {
+      "sec-fetch-site": "cross-site",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-dest": "iframe",
+    };
+    const apiNavigation = await response(
+      harness.request("/api", { headers: navigationHeaders }),
+    );
+    expect(apiNavigation.status).toBe(403);
+    expect(await apiNavigation.json()).toEqual({
+      ok: false,
+      error: "forbidden cross-site request",
+    });
+
+    const uiNavigation = await response(
+      harness.request("/", { headers: navigationHeaders }),
+    );
+    expect(uiNavigation.status).not.toBe(403);
   });
 });
 

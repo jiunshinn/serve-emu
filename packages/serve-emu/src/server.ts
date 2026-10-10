@@ -48,6 +48,11 @@ import {
   sendResultDecision,
 } from "./server/backpressure.ts";
 import {
+  createHostAllowlist,
+  fetchMetadataAllowed,
+  normalizeHostname,
+} from "./server/request-policy.ts";
+import {
   SessionRecoveryWatchdog,
   SYSTEM_RECOVERY_WATCHDOG_CLOCK,
   type RecoveryWatchdogClock,
@@ -90,6 +95,11 @@ export type ServerOpts = {
    * the `semu_session` cookie, or a `token` query param.
    */
   token?: string;
+  /**
+   * Extra Host names accepted while auth is disabled, for reverse proxies or
+   * LAN host names. IP literals, `localhost`, and `host` are always accepted.
+   */
+  allowedHosts?: readonly string[];
   maxFps?: number;
   bitRate?: number;
   maxSize?: number;
@@ -331,6 +341,13 @@ export async function startServer(
 
   const host = opts.host ?? DEFAULT_HOST;
   const authToken = opts.token && opts.token.length > 0 ? opts.token : null;
+  for (const name of opts.allowedHosts ?? []) {
+    if (!normalizeHostname(name)) {
+      throw new Error(`invalid allowed host ${JSON.stringify(name)}`);
+    }
+  }
+  const hostAllowed = createHostAllowlist([host, ...(opts.allowedHosts ?? [])]);
+  let warnedForbiddenHost = false;
 
   /** Token presented by the request, from bearer header, cookie, or query. */
   const presentedToken = (req: Request, url: URL): string | null => {
@@ -365,6 +382,12 @@ export async function startServer(
     }
     return originHost === req.headers.get("host");
   };
+
+  const forbiddenResponse = (error: string): Response =>
+    new Response(JSON.stringify({ ok: false, error }), {
+      status: 403,
+      headers: { "Content-Type": "application/json; charset=utf-8" },
+    });
 
   const createContext = (
     serial: string,
@@ -1400,6 +1423,27 @@ export async function startServer(
       const requestContext = sessions.current;
       const url = new URL(req.url);
 
+      // DNS-rebinding guard: without a token, a page whose own host name was
+      // rebound to this address would pass the same-origin check below, so
+      // only host names that cannot be rebound are served. With a token, the
+      // secret and the host-scoped cookie already keep such pages out.
+      if (!authToken) {
+        const hostHeader = req.headers.get("host");
+        if (!hostAllowed(hostHeader)) {
+          if (!warnedForbiddenHost) {
+            warnedForbiddenHost = true;
+            console.warn(
+              `Rejected a request for host ${JSON.stringify(hostHeader?.slice(0, 100))}. ` +
+                "Without --token only IP addresses, localhost, and --allowed-host names are served.",
+            );
+          }
+          return forbiddenResponse("forbidden host");
+        }
+      }
+      if (!fetchMetadataAllowed(req)) {
+        return forbiddenResponse("forbidden cross-site request");
+      }
+
       // Bootstrap: exchange a valid one-time URL token for an HttpOnly cookie,
       // then redirect to a clean URL so the secret never lingers in the address
       // bar, browser history, or referer logs. Same-origin fetch/EventSource/WS
@@ -1445,15 +1489,7 @@ export async function startServer(
         url.pathname === "/ws" ||
         (req.method !== "GET" && req.method !== "HEAD")
       ) {
-        if (!originAllowed(req)) {
-          return new Response(
-            JSON.stringify({ ok: false, error: "forbidden origin" }),
-            {
-              status: 403,
-              headers: { "Content-Type": "application/json; charset=utf-8" },
-            },
-          );
-        }
+        if (!originAllowed(req)) return forbiddenResponse("forbidden origin");
       }
 
       if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
