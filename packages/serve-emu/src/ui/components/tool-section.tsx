@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { ErrorBoundary } from "./error-boundary";
 
 type Props = {
   id: string;
@@ -53,7 +54,7 @@ export function ToolSection({
         className="tool-section-body"
         hidden={!expanded}
       >
-        {expanded ? children : null}
+        {expanded ? <ErrorBoundary label={title}>{children}</ErrorBoundary> : null}
       </div>
     </div>
   );

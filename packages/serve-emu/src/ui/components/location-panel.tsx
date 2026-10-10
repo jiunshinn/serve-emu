@@ -18,6 +18,8 @@ import {
   wrapLongitude,
   type LocationPoint,
 } from "../lib/route-map";
+import type { RoutePlaybackSnapshot } from "../../shared/api-contracts";
+import { apiErrorMessage, apiRequest } from "../lib/api-client";
 import { DEFAULT_MAX_ROUTE_FILE_BYTES } from "../lib/route-parser";
 import type {
   RouteParserWorkerCommand,
@@ -35,17 +37,7 @@ type MapDrag = {
   dy: number;
   moved: boolean;
 };
-type RouteSnapshot = {
-  status: "idle" | "running" | "paused" | "completed" | "error" | "closed";
-  waypointCount: number;
-  totalMeters: number;
-  progressMeters: number;
-  speedKph: number;
-  multiplier: number;
-  loop: boolean;
-  lastError: string | null;
-  currentLocation: (LocationPoint & { appliedAt: string }) | null;
-};
+type RouteSnapshot = RoutePlaybackSnapshot;
 
 const TILE_SIZE = MAP_TILE_SIZE;
 const TILE_OVERSCAN = 1;
@@ -158,9 +150,8 @@ export function LocationPanel() {
   }, []);
 
   useEffect(() => {
-    fetch("/api/location")
-      .then((r) => r.json())
-      .then((data: { location?: LocationPoint | null }) => {
+    apiRequest("/api/location", { method: "GET" })
+      .then((data) => {
         if (data.location) syncDraft(data.location, true);
       })
       .catch(() => {});
@@ -179,10 +170,10 @@ export function LocationPanel() {
       routePollAbortRef.current = controller;
       const generation = routePollGenerationRef.current;
       try {
-        const response = await fetch("/api/route", {
+        const route = await apiRequest("/api/route", {
+          method: "GET",
           signal: controller.signal,
         });
-        const route = await response.json() as RouteSnapshot;
         if (
           cancelled ||
           generation !== routePollGenerationRef.current ||
@@ -323,19 +314,16 @@ export function LocationPanel() {
   const applyLocation = async (location = draft) => {
     setStatus("Setting...");
     try {
-      const res = await fetch("/api/location", {
+      await apiRequest("/api/location", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: {
           latitude: location.latitude,
           longitude: location.longitude,
-        }),
+        },
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string };
-      if (!res.ok || !data.ok) throw new Error(data.error || "location update failed");
       setStatus(`Applied ${formatCoord(location.latitude)}, ${formatCoord(location.longitude)}`);
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
+      setStatus(apiErrorMessage(err));
     }
   };
 
@@ -500,23 +488,20 @@ export function LocationPanel() {
     beginRouteMutation();
     setStatus("Starting route...");
     try {
-      const res = await fetch("/api/route", {
+      const data = await apiRequest("/api/route", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: {
           waypoints: routePoints,
           speedKph: speed,
           multiplier: rate,
           intervalMs: 1000,
           loop,
-        }),
+        },
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string; route?: RouteSnapshot };
-      if (!res.ok || !data.ok || !data.route) throw new Error(data.error || "route start failed");
       setRouteStatus(data.route);
       setStatus("Route running");
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
+      setStatus(apiErrorMessage(err));
     } finally {
       endRouteMutation();
     }
@@ -525,17 +510,14 @@ export function LocationPanel() {
   const controlRoute = async (action: "pause" | "resume" | "stop") => {
     beginRouteMutation();
     try {
-      const res = await fetch("/api/route/control", {
+      const data = await apiRequest("/api/route/control", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
+        body: { action },
       });
-      const data = (await res.json()) as { ok?: boolean; error?: string; route?: RouteSnapshot };
-      if (!res.ok || !data.ok || !data.route) throw new Error(data.error || "route control failed");
       setRouteStatus(data.route);
       setStatus(action === "stop" ? "Route stopped" : `Route ${data.route.status}`);
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
+      setStatus(apiErrorMessage(err));
     } finally {
       endRouteMutation();
     }

@@ -21,8 +21,25 @@ export type ApiRequestOptions<
   P extends ApiClientPath,
   M extends ApiMethod<P>,
 > = Omit<RequestInit, "body" | "method"> &
-  { method: M } &
+  {
+    method: M;
+    /** Appended as a query string; the path still selects the parser. */
+    query?: Record<string, string | number | undefined>;
+  } &
   RequestBodyOption<ApiRequest<P, M>>;
+
+function withQuery(
+  path: string,
+  query: Record<string, string | number | undefined> | undefined,
+): string {
+  if (!query) return path;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) params.set(key, String(value));
+  }
+  const search = params.toString();
+  return search ? `${path}?${search}` : path;
+}
 
 export type FetchLike = (
   input: RequestInfo | URL,
@@ -87,11 +104,11 @@ export function createApiClient(fetcher: FetchLike = globalThis.fetch) {
     path: P,
     options: ApiRequestOptions<P, M>,
   ): Promise<ApiSuccessResponse<P, M>> {
-    const { body, method, ...requestOptions } = options;
+    const { body, method, query, ...requestOptions } = options;
     const headers = new Headers(requestOptions.headers);
     let response: Response;
     try {
-      response = await fetcher(path, {
+      response = await fetcher(withQuery(path, query), {
         ...requestOptions,
         method,
         headers,
@@ -181,3 +198,8 @@ export function createApiClient(fetcher: FetchLike = globalThis.fetch) {
 }
 
 export const apiRequest = createApiClient();
+
+/** A display string for any failure: client errors already carry one. */
+export function apiErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

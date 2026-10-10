@@ -13,6 +13,7 @@ import {
 import { StatusBar } from "./components/status-bar";
 import type { AccessibilityNode } from "./components/accessibility-panel";
 import { DevicePanel } from "./components/device-panel";
+import { ErrorBoundary } from "./components/error-boundary";
 import { DeviceStream } from "./components/device-stream";
 import { ControlBar, type HardwareKey } from "./components/control-bar";
 import { SideTools } from "./components/side-tools";
@@ -209,7 +210,11 @@ const AppShell = memo(function AppShell() {
             </button>
             {devicesOpen ? <span>Devices</span> : null}
           </div>
-          {devicesOpen ? <StableDevicePanel /> : null}
+          {devicesOpen ? (
+            <ErrorBoundary label="Devices">
+              <StableDevicePanel />
+            </ErrorBoundary>
+          ) : null}
         </aside>
         <div className="device">
           <DeviceStream
