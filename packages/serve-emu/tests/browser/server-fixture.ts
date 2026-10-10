@@ -50,14 +50,21 @@ const openScrcpy = async (serial: string): Promise<ScrcpySession> => {
   } as unknown as ScrcpySession;
 };
 
+// Never outputs, so the decode queue only grows. Each key chunk it is asked
+// to decode is reported to /__test/decoded, so a test can tell whether the
+// key frame that ends a recovery was decoded or dropped.
 const slowDecoder = `
 globalThis.VideoDecoder = class {
   state = "unconfigured"; decodeQueueSize = 0;
   configure() { this.state = "configured"; }
-  decode() { this.decodeQueueSize++; }
+  decode(chunk) {
+    this.decodeQueueSize++;
+    if (chunk && chunk.type === "key") fetch("/__test/decoded", { method: "POST" }).catch(() => {});
+  }
   close() { this.state = "closed"; this.decodeQueueSize = 0; }
 };
 `;
+let decodedKeyframes = 0;
 const serve: ServerDependencies["serve"] = ((options: any) => {
   const productionFetch = options.fetch;
   return Bun.serve({
@@ -73,11 +80,16 @@ const serve: ServerDependencies["serve"] = ((options: any) => {
         rejectInput = body.reject === true;
         if (body.clear) {
           packets.length = 0;
+          decodedKeyframes = 0;
           encoderOptions = { ...DEFAULT_ENCODER_OPTIONS };
         }
         if (body.encoder) encoderOptions = { ...encoderOptions, ...body.encoder };
         for (const encoder of encoders.values()) encoder.options = { ...encoderOptions };
         return Response.json({ ok: true });
+      }
+      if (url.pathname === "/__test/decoded") {
+        if (req.method === "POST") decodedKeyframes++;
+        return Response.json({ keyframes: decodedKeyframes });
       }
       if (url.pathname === "/__test/encoder")
         return Response.json(

@@ -57,6 +57,44 @@ async function centerColor(page: Page): Promise<number[]> {
 const isRed = ([r, g, b]: number[]) => r! > 200 && g! < 60 && b! < 60;
 const isGreen = ([r, g, b]: number[]) => g! > 200 && r! < 60 && b! < 60;
 
+/** Loads the stream worker with the fixture's never-outputting VideoDecoder. */
+async function useSlowDecoder(page: Page) {
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    window.Worker = class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        const next = new URL(url, location.href);
+        if (options?.name === "stream-worker") next.searchParams.set("slow", "1");
+        super(next, options);
+      }
+    };
+  });
+}
+
+/**
+ * Polls the stats title every 25 ms until it matches, and returns that title.
+ * A recovery shows in it only until the next video session zeroes the count,
+ * a window a 1 s stats tick can land in for only a few hundred milliseconds,
+ * so the default expect backoff (1 s) can miss it.
+ */
+async function metaTitleMatching(page: Page, pattern: RegExp): Promise<string> {
+  let title = "";
+  await expect
+    .poll(
+      async () => {
+        title = (await page.locator("header .meta").getAttribute("title")) ?? "";
+        return pattern.test(title);
+      },
+      { intervals: [25], timeout: 15_000 },
+    )
+    .toBe(true);
+  return title;
+}
+
+async function decodedKeyframes(request: import("@playwright/test").APIRequestContext) {
+  return ((await (await request.get("/__test/decoded")).json()) as { keyframes: number }).keyframes;
+}
+
 async function encoderStats(request: import("@playwright/test").APIRequestContext) {
   const health = await (await request.get("/health")).json();
   const all = await (await request.get("/__test/encoder")).json();
@@ -197,24 +235,13 @@ test("a slow decoder recovers by elapsed time with a shallow queue", async ({
   await request.post("/__test/control", {
     data: { encoder: { keyframeIntervalFrames: 0 } },
   });
-  await page.addInitScript(() => {
-    const NativeWorker = window.Worker;
-    window.Worker = class extends NativeWorker {
-      constructor(url: string | URL, options?: WorkerOptions) {
-        const next = new URL(url, location.href);
-        if (options?.name === "stream-worker") next.searchParams.set("slow", "1");
-        super(next, options);
-      }
-    };
-  });
+  test.setTimeout(40_000);
+  await useSlowDecoder(page);
   await page.goto("/");
-  await expect(page.locator("header .meta")).toHaveAttribute(
-    "title",
-    /recoveries [1-9]/,
-  );
-  const detail = await page.locator("header .meta").getAttribute("title");
-  expect(Number(detail!.match(/decode queue (\d+)/)?.[1])).toBeLessThan(12);
-  expect(Number(detail!.match(/pending (\d+)ms/)?.[1])).toBeGreaterThan(250);
+  // The title from the same stats tick that reported the recovery.
+  const detail = await metaTitleMatching(page, /recoveries [1-9]/);
+  expect(Number(detail.match(/decode queue (\d+)/)?.[1])).toBeLessThan(12);
+  expect(Number(detail.match(/pending (\d+)ms/)?.[1])).toBeGreaterThan(250);
 
   // Every recovery has to end on the key frame its reset produces. If a
   // coalesced request were never retried (#153), pending would keep growing.
@@ -230,6 +257,36 @@ test("a slow decoder recovers by elapsed time with a shallow queue", async ({
   expect(stats.keyframes - stats.resetKeyframes).toBe(1);
   const health = await (await request.get("/health")).json();
   expect(health.videoResetRequests).toBeGreaterThan(1);
+});
+
+test("a soft recovery ends on a periodic key frame, decoded even while backlogged (#88)", async ({
+  page,
+  request,
+}) => {
+  // Resets are ignored, so no new video session rebuilds the decoder: each
+  // recovery can only end on a periodic IDR (every 20 frames, about 2 s)
+  // that arrives while the worker drops frames behind a backlogged decoder.
+  await request.post("/__test/control", {
+    data: { encoder: { answerResets: false, keyframeIntervalFrames: 20 } },
+  });
+  test.setTimeout(40_000);
+  await useSlowDecoder(page);
+  await page.goto("/");
+  const meta = page.locator("header .meta");
+  await metaTitleMatching(page, /recoveries [1-9]/);
+  const recoveries = async () =>
+    Number((await meta.getAttribute("title"))?.match(/recoveries (\d+)/)?.[1] ?? 0);
+  const before = { decoded: await decodedKeyframes(request), recoveries: await recoveries() };
+
+  await page.waitForTimeout(7_000);
+
+  // The key frame that ends each drop must be decoded, not discarded because
+  // the decoder is still backlogged; then the backlog starts another recovery.
+  expect((await decodedKeyframes(request)) - before.decoded).toBeGreaterThanOrEqual(2);
+  expect((await recoveries()) - before.recoveries).toBeGreaterThanOrEqual(2);
+  const stats = await encoderStats(request);
+  expect(stats.resetKeyframes).toBe(0);
+  expect(stats.sessions).toBe(1);
 });
 
 test("structured API errors render as text and keep the stream mounted", async ({
