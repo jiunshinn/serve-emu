@@ -78,7 +78,7 @@ second byte-layout description here that can drift from the tested reference.
 ## Server and API Guidance
 
 - Keep HTTP API inputs bounded. Follow existing `MAX_*_BYTES` limits and explicit payload validation patterns.
-- To add an endpoint, add the handler under `src/api/routes/`, register its path and methods in `API_ROUTE_METHODS` (`src/server/api-boundary.ts`), update the route counts asserted in `tests/server-boundaries.test.ts`, and add a response parser to `src/shared/api-contracts.ts` for the UI client.
+- To add an endpoint, add the handler under `src/api/routes/`, register its path and methods in `API_ROUTE_METHODS` (`src/server/api-boundary.ts`), update the route counts asserted in `tests/server-boundaries.test.ts`, add a response parser to `src/shared/api-contracts.ts` for the UI client, and exercise it against a real response in `tests/api-contracts-live.test.ts`. Server payload types (session, route, location, logcat events, `/health`) come from `src/shared`, so a shape change must update the contract.
 - Gesture API coordinates are normalized unit values from `0` to `1`; convert to screen pixels only in `dispatch`.
 - Preserve session recording behavior. REST and WebSocket actions should record by default unless payloads explicitly set `record: false`.
 - For slow WebSocket clients, keep the backpressure strategy: drop until the next keyframe, request video reset with cooldown, and close clients with excessive buffered bytes.

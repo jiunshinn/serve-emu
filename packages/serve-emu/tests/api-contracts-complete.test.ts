@@ -25,10 +25,15 @@ import {
   parseRouteMutationResponse,
   parseRoutePlaybackSnapshot,
   parseScreenshotBase64Response,
+  parseSessionClearResponse,
+  parseSessionExport,
   parseSessionMutationResponse,
+  parseSessionPage,
   parseSessionSnapshot,
+  parseSessionSummary,
   type RoutePlaybackSnapshot,
   type SessionSnapshot,
+  type SessionSummary,
 } from "../src/shared/api-contracts.ts";
 
 const timestamp = "2026-07-12T10:00:00.000Z";
@@ -98,6 +103,24 @@ const sessionSnapshot: SessionSnapshot = {
   ],
   recording: true,
   replaying: false,
+  replayStatus: "completed",
+  replayStartedAt: timestamp,
+  replayCompletedAt: null,
+  replayCancelledAt: null,
+  lastError: null,
+};
+
+const sessionSummary: SessionSummary = {
+  eventCount: 2,
+  retainedBytes: 512,
+  limits: { maxEvents: 2_000, maxBytes: 1_048_576 },
+  droppedEvents: 0,
+  oldestEventId: 1,
+  newestEventId: 2,
+  oldestEventAt: timestamp,
+  newestEventAt: timestamp,
+  recording: true,
+  replaying: false,
   replayStartedAt: timestamp,
   replayCompletedAt: null,
   lastError: null,
@@ -136,9 +159,15 @@ describe("complete API success contracts", () => {
       parseDeviceSelectionResponse({
         ok: true,
         serial: "emulator-5554",
+        generation: 2,
         device: "Pixel 8",
       }),
-    ).toEqual({ ok: true, serial: "emulator-5554", device: "Pixel 8" });
+    ).toEqual({
+      ok: true,
+      serial: "emulator-5554",
+      generation: 2,
+      device: "Pixel 8",
+    });
     expect(
       parseAvdStartResponse({
         ok: true,
@@ -291,6 +320,20 @@ describe("complete API success contracts", () => {
     expect(
       parseSessionMutationResponse({ ok: true, session: sessionSnapshot }).session,
     ).toEqual(parsed);
+    expect(parseSessionSummary(sessionSummary)).toEqual(sessionSummary);
+    expect(
+      parseSessionClearResponse({ ok: true, session: sessionSummary }).session,
+    ).toEqual(sessionSummary);
+    const page = {
+      session: sessionSummary,
+      events: sessionSnapshot.events,
+      nextBefore: 1,
+      hasMore: true,
+    };
+    expect(parseSessionPage(page)).toEqual(page);
+    expect(
+      parseSessionExport({ session: sessionSummary, events: sessionSnapshot.events }).events,
+    ).toHaveLength(2);
   });
 
   test("parses simple action, import, screenshot, and logcat payloads", () => {
@@ -315,13 +358,24 @@ describe("complete API success contracts", () => {
       parseLogcatEvent("ready", {
         serial: "emulator-5554",
         package: null,
-        pids: ["10", "11"],
         search: null,
+        batchIntervalMs: 100,
       }),
-    ).toMatchObject({ serial: "emulator-5554", pids: ["10", "11"] });
-    expect(parseLogcatEvent("error", { line: "denied", at: timestamp })).toEqual({
-      line: "denied",
+    ).toMatchObject({ serial: "emulator-5554", batchIntervalMs: 100 });
+    expect(
+      parseLogcatEvent("logs", {
+        lines: [{ line: "I/Test: hello", at: timestamp }],
+        dropped: 0,
+        totalDropped: 3,
+        sourceDropped: 1,
+      }),
+    ).toMatchObject({ lines: [{ line: "I/Test: hello" }], totalDropped: 3 });
+    expect(parseLogcatEvent("error", { error: "denied", at: timestamp })).toEqual({
+      error: "denied",
       at: timestamp,
+    });
+    expect(parseLogcatEvent("close", { reason: "device session ended" })).toEqual({
+      reason: "device session ended",
     });
     expect(parseLogcatEvent("close", { code: null, signal: "SIGTERM" })).toEqual({
       code: null,
@@ -331,7 +385,7 @@ describe("complete API success contracts", () => {
       code: 0,
       signal: null,
     });
-    expect(() => parseLogcatEventJson("log", "not-json")).toThrow("valid JSON");
+    expect(() => parseLogcatEventJson("logs", "not-json")).toThrow("valid JSON");
   });
 });
 
@@ -379,7 +433,7 @@ describe("generic and detailed API contracts", () => {
       lastVideoResetReason: "backpressure",
       location: appliedLocation,
       route: routeSnapshot,
-      session: sessionSnapshot,
+      session: sessionSummary,
       clientsDetail: [
         {
           id: 7,
@@ -397,14 +451,14 @@ describe("generic and detailed API contracts", () => {
       lastError: "temporary",
       lastErrorCode: "socket",
       lastErrorMeta: { attempt: 2, phase: "connect" },
-      sessionGeneration: 3,
+      generation: 3,
     });
 
     expect(health.frameStats?.intervalMs?.p95).toBe(20.1);
     expect(health.frameStats?.avgKeyFrameBytes).toBe(50_000);
     expect(health.clientsDetail[0]).toMatchObject({ id: 7, frameMeta: true });
     expect(health.lastErrorMeta).toEqual({ attempt: 2, phase: "connect" });
-    expect(health.sessionGeneration).toBe(3);
+    expect(health.generation).toBe(3);
   });
 
   test("supports binary screenshots and rejects streaming JSON through the registry", () => {

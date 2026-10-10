@@ -1,57 +1,21 @@
 import { normalizeTextForControl, type Gesture } from "./input.ts";
 import type { GeoFix } from "./location.ts";
 
-export type RecordedEvent =
-  | {
-      id: number;
-      at: string;
-      delayMs: number;
-      source: string;
-      kind: "gesture";
-      gesture: Gesture;
-    }
-  | {
-      id: number;
-      at: string;
-      delayMs: number;
-      source: string;
-      kind: "location";
-      location: GeoFix;
-    };
-
-export type SessionSnapshot = {
-  events: RecordedEvent[];
-  recording: boolean;
-  replaying: boolean;
-  replayStatus: "idle" | "running" | "completed" | "cancelled" | "error";
-  replayStartedAt: string | null;
-  replayCompletedAt: string | null;
-  replayCancelledAt: string | null;
-  lastError: string | null;
-};
-
-export type SessionSummary = {
-  eventCount: number;
-  retainedBytes: number;
-  limits: { maxEvents: number; maxBytes: number };
-  droppedEvents: number;
-  oldestEventId: number | null;
-  newestEventId: number | null;
-  oldestEventAt: string | null;
-  newestEventAt: string | null;
-  recording: boolean;
-  replaying: boolean;
-  replayStartedAt: string | null;
-  replayCompletedAt: string | null;
-  lastError: string | null;
-};
-
-export type SessionPage = {
-  session: SessionSummary;
-  events: RecordedEvent[];
-  nextBefore: number | null;
-  hasMore: boolean;
-};
+// Wire shapes live in the shared contract so the UI parser and the server
+// cannot drift apart.
+export type {
+  SessionEvent as RecordedEvent,
+  SessionPage,
+  SessionSnapshot,
+  SessionSummary,
+} from "./shared/api-contracts.ts";
+import type {
+  SessionEvent as RecordedEvent,
+  SessionExport,
+  SessionPage,
+  SessionSnapshot,
+  SessionSummary,
+} from "./shared/api-contracts.ts";
 
 export type SessionRecorderOptions = {
   maxEvents?: number;
@@ -343,7 +307,7 @@ export class SessionRecorder {
     };
   }
 
-  export(): { session: SessionSummary; events: RecordedEvent[] } {
+  export(): SessionExport {
     return { session: this.summary(), events: this.#events.map(cloneEvent) };
   }
 
