@@ -2,35 +2,13 @@ export const DEFAULT_STREAM_WAITING_MS = 5_000;
 export const DEFAULT_STREAM_STALL_MS = 5_000;
 export const DEFAULT_PACKET_FRESH_MS = 2_000;
 
-export type StreamPhase =
-  | "connecting"
-  | "awaiting-keyframe"
-  | "decoding"
-  | "rendered"
-  | "recovering"
-  | "disconnected"
-  | "stopped";
+import type {
+  StreamGenerationReason,
+  StreamLifecycleState,
+  StreamPhase,
+} from "../../shared/worker-contracts";
 
-export type StreamGenerationReason =
-  | "initial"
-  | "connect"
-  | "reconnect"
-  | "video-session"
-  | "decoder-recovery"
-  | "disconnect"
-  | "stop";
-
-export type StreamLifecycleState = {
-  generation: number;
-  phase: StreamPhase;
-  reason: StreamGenerationReason;
-  generationStartedAt: number;
-  socketOpenedAt: number | null;
-  lastPacketAt: number | null;
-  lastRenderedAt: number | null;
-  rendered: boolean;
-  codec: string | null;
-};
+export type { StreamGenerationReason, StreamLifecycleState, StreamPhase };
 
 export type StreamLifecycleTransition =
   | { type: "socket-open"; generation: number; at: number }

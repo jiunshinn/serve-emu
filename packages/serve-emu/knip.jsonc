@@ -18,7 +18,6 @@
   // it in or delete it. Remove the line when that lands.
   "ignore": [
     "src/device-grid.ts", // #108
-    "src/shared/worker-contracts.ts", // #105
     "src/ui/lib/poller.ts" // #107
   ],
   "includeEntryExports": true,
