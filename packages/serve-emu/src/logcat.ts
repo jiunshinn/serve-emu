@@ -4,6 +4,7 @@ import {
 } from "node:child_process";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
+import { shellQuote } from "./shell-quote.ts";
 
 export const DEFAULT_MAX_LOGCAT_SUBSCRIBERS = 8;
 export const DEFAULT_LOGCAT_BATCH_INTERVAL_MS = 75;
@@ -155,7 +156,7 @@ async function resolvePackagePids(
     try {
       child = spawn(
         "adb",
-        ["-s", serial, "shell", "pidof", packageName],
+        ["-s", serial, "shell", "pidof", shellQuote(packageName)],
         { stdio: ["ignore", "pipe", "pipe"] },
       );
     } catch {
