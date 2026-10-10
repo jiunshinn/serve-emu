@@ -138,11 +138,14 @@ export function deviceRoutes(): ApiRoute<ApiDependencies>[] {
           const avd = (payload as Record<string, unknown>).avd;
           if (typeof avd !== "string" || !avd.trim())
             throw new Error("avd is required");
+          // A client that gives up during a long cold boot does not cancel it:
+          // agents often time out first and pick the emulator up later. The
+          // server owns the launch and stops it when it stops.
           const launch = await launchEmulator({ avd: avd.trim() });
           try {
             sessions.assertPublished(requestContext);
           } catch (err) {
-            launch.stop();
+            await launch.stop();
             throw err;
           }
           const select = (payload as Record<string, unknown>).select !== false;
@@ -151,7 +154,7 @@ export function deviceRoutes(): ApiRoute<ApiDependencies>[] {
               const switched = await switchSession(launch.serial);
               return Response.json({ ...switched, avd: avd.trim() });
             } catch (err) {
-              launch.stop();
+              await launch.stop();
               throw err;
             }
           }

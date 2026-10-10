@@ -10,8 +10,16 @@ export type EmulatorLaunch = {
   serial: string;
   proc: ChildProcess | null;
   ownsProcess: boolean;
-  stop: () => void;
+  /**
+   * Stops an emulator this launch started (`emu kill`, then SIGTERM, then
+   * SIGKILL after a grace period) and resolves once the process has exited.
+   * A launch that only attached to a running emulator resolves at once.
+   */
+  stop: () => Promise<void>;
 };
+
+const STOP_GRACE_MS = 10_000;
+const KILL_REAP_MS = 2_000;
 
 export type RunningAvd = {
   serial: string;
@@ -42,6 +50,8 @@ export type StartEmulatorOpts = {
   cameraBack?: string;
   /** Emulator `-camera-front` mode; same values as `cameraBack` except `virtualscene`. */
   cameraFront?: string;
+  /** Aborting ends the boot wait and stops the emulator this launch spawned. */
+  signal?: AbortSignal;
 };
 
 type CameraDirection = "back" | "front";
@@ -64,7 +74,12 @@ export type EmulatorResolverDependencies = {
 export type EmulatorRuntimeDependencies = EmulatorResolverDependencies & {
   listAllDevices?: typeof listAllDevices;
   spawn?: typeof spawn;
-  sleep?: (delayMs: number) => Promise<unknown>;
+  /** Like `setTimeout` from `node:timers/promises`; `signal` cancels the wait. */
+  sleep?: (
+    delayMs: number,
+    value?: undefined,
+    options?: { signal?: AbortSignal },
+  ) => Promise<unknown>;
   now?: () => number;
 };
 
@@ -435,16 +450,26 @@ async function waitForEmulatorExit(
   serial: string,
   timeoutMs = 30_000,
   dependencies: Pick<EmulatorRuntimeDependencies, "listAllDevices" | "sleep" | "now"> = {},
+  signal?: AbortSignal,
 ): Promise<void> {
   const now = dependencies.now ?? Date.now;
   const pause = dependencies.sleep ?? sleep;
   const readDevices = dependencies.listAllDevices ?? listAllDevices;
   const startedAt = now();
   while (now() - startedAt < timeoutMs) {
+    // Shutdown waits for a launch to settle, so do not sit out the timeout.
+    throwIfAborted(signal);
     if (!(await readDevices()).some((device) => device.serial === serial)) return;
     await pause(500);
   }
   throw new Error(`Timed out waiting for ${serial} to stop.`);
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new Error("emulator launch aborted");
 }
 
 async function waitForBoot(
@@ -453,6 +478,7 @@ async function waitForBoot(
   proc: ChildProcess,
   timeoutMs: number,
   dependencies: Pick<EmulatorRuntimeDependencies, "execText" | "sleep" | "now"> = {},
+  signal?: AbortSignal,
 ): Promise<void> {
   const now = dependencies.now ?? Date.now;
   const pause = dependencies.sleep ?? sleep;
@@ -460,7 +486,8 @@ async function waitForBoot(
   const startedAt = now();
   let nameUnreadable = false;
   while (now() - startedAt < timeoutMs) {
-    if (proc.exitCode !== null || proc.signalCode !== null) {
+    throwIfAborted(signal);
+    if (hasExited(proc)) {
       throw new Error(`emulator exited before boot completed (code ${proc.exitCode ?? "null"})`);
     }
 
@@ -527,10 +554,15 @@ export async function startEmulator(
           `AVD "${name}" is already running as ${running.serial}, and the emulator picks cameras at boot. Add --restart-avd to relaunch it with the requested camera.`,
         );
       }
-      return { serial: running.serial, proc: null, ownsProcess: false, stop: () => {} };
+      return {
+        serial: running.serial,
+        proc: null,
+        ownsProcess: false,
+        stop: async () => {},
+      };
     }
     await stopEmulator(running.serial, runExec);
-    await waitForEmulatorExit(running.serial, 30_000, dependencies);
+    await waitForEmulatorExit(running.serial, 30_000, dependencies, opts.signal);
   }
 
   if (opts.port !== undefined) {
@@ -559,6 +591,7 @@ async function launchOnPort(
   if (opts.gpu) args.push("-gpu", opts.gpu);
   args.push(...camera);
 
+  throwIfAborted(opts.signal);
   const proc = (dependencies.spawn ?? spawn)(emulator, args, {
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -566,19 +599,37 @@ async function launchOnPort(
     proc.once("error", reject);
   });
   const serial = `emulator-${port}`;
-  let stopped = false;
+  let stopTask: Promise<void> | null = null;
   // Until the AVD on this port is confirmed to be ours, `emu kill` could reach
   // someone else's emulator; signalling our own child is always safe.
   let confirmed = false;
 
-  const stop = () => {
-    if (stopped) return;
-    stopped = true;
-    if (confirmed) adb(serial, ["emu", "kill"], runExec).catch(() => {});
-    try {
-      proc.kill("SIGTERM");
-    } catch {}
+  const stop = (): Promise<void> => {
+    stopTask ??= (async () => {
+      // An emulator that already exited freed its port, maybe to another AVD
+      // that `emu kill` would reach; there is nothing left to stop.
+      if (hasExited(proc)) return;
+      if (confirmed) await adb(serial, ["emu", "kill"], runExec).catch(() => {});
+      signalChild(proc, "SIGTERM");
+      if (await exited(proc, STOP_GRACE_MS, dependencies)) return;
+      signalChild(proc, "SIGKILL");
+      await exited(proc, KILL_REAP_MS, dependencies);
+    })();
+    return stopTask;
   };
+
+  const aborted = new Promise<never>((_, reject) => {
+    if (!opts.signal) return;
+    const onAbort = () =>
+      reject(
+        opts.signal!.reason instanceof Error
+          ? opts.signal!.reason
+          : new Error("emulator launch aborted"),
+      );
+    if (opts.signal.aborted) onAbort();
+    else opts.signal.addEventListener("abort", onAbort, { once: true });
+  });
+  void aborted.catch(() => {});
 
   try {
     await Promise.race([
@@ -588,13 +639,55 @@ async function launchOnPort(
         proc,
         opts.bootTimeoutMs ?? 120_000,
         dependencies,
+        opts.signal,
       ),
       spawnError,
+      aborted,
     ]);
     confirmed = true;
     return { serial, proc, ownsProcess: true, stop };
   } catch (err) {
-    stop();
+    await stop();
     throw err;
+  }
+}
+
+function signalChild(proc: ChildProcess, signal: NodeJS.Signals): void {
+  try {
+    proc.kill(signal);
+  } catch {}
+}
+
+function hasExited(proc: ChildProcess): boolean {
+  return proc.exitCode !== null || proc.signalCode !== null;
+}
+
+/** Resolves true once `proc` has exited, or false after `timeoutMs`. */
+async function exited(
+  proc: ChildProcess,
+  timeoutMs: number,
+  dependencies: Pick<EmulatorRuntimeDependencies, "sleep">,
+): Promise<boolean> {
+  if (hasExited(proc)) return true;
+  let onExit!: () => void;
+  const exit = new Promise<true>((resolve) => {
+    onExit = () => resolve(true);
+    proc.once("exit", onExit);
+  });
+  // Cancelled once the process exits, so a caller that stopped the emulator
+  // is not kept alive for the rest of the grace period.
+  const timer = new AbortController();
+  const pause = dependencies.sleep ?? sleep;
+  const timedOut = Promise.resolve(
+    pause(timeoutMs, undefined, { signal: timer.signal }),
+  ).then(
+    () => false as const,
+    () => false as const,
+  );
+  try {
+    return await Promise.race([exit, timedOut]);
+  } finally {
+    proc.off("exit", onExit);
+    timer.abort();
   }
 }

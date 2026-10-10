@@ -280,6 +280,15 @@ curl -X POST "$BASE/api/avds/stop" \
   -d '{"serial":"emulator-5554"}'
 ```
 
+An emulator that `/api/avds/start` launched belongs to the server, like a
+`--avd` emulator belongs to the CLI: it stops when the server stops, including
+while it is still booting. A client that gives up on a slow cold boot does not
+cancel it; the emulator keeps booting and can be selected later. An AVD that
+was already running is only attached to and is left alone. Stopping an emulator
+sends `emu kill` and SIGTERM, then SIGKILL after 10 seconds. An emulator that
+exits on its own is forgotten, so another AVD that later takes its port is not
+stopped with the server.
+
 ### Input
 
 Coordinates are normalized from `0` to `1` and converted to screen pixels by the server.

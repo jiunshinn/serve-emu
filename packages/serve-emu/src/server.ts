@@ -28,6 +28,7 @@ import {
   listRunningAvds,
   startEmulator,
   stopEmulator,
+  type EmulatorLaunch,
 } from "./emulator.ts";
 import { getExecSnapshot } from "./exec.ts";
 import { parseGesture, resetVideoPacket, type Gesture } from "./input.ts";
@@ -275,8 +276,52 @@ export async function startServer(
   const serve = dependencies.serve ?? Bun.serve;
   const listDevices =
     dependencies.listDevices ?? dependencies.listAllDevices ?? listAllDevices;
-  const launchEmulator = dependencies.startEmulator ?? startEmulator;
-  const killEmulator = dependencies.stopEmulator ?? stopEmulator;
+  const startEmulatorProcess = dependencies.startEmulator ?? startEmulator;
+  const stopEmulatorBySerial = dependencies.stopEmulator ?? stopEmulator;
+  // Emulators started through /api/avds/start belong to this server, like the
+  // CLI's --avd launch belongs to the CLI: they stop when it stops.
+  const launchedEmulators = new Map<string, EmulatorLaunch>();
+  // Launches still booting; on stop they abort and stop their own child, and
+  // stop() waits for that so the process cannot exit first.
+  const bootingEmulators = new Set<Promise<unknown>>();
+  const emulatorShutdown = new AbortController();
+  const launchEmulator: typeof startEmulator = async (opts, runtime) => {
+    const signal = opts.signal
+      ? AbortSignal.any([opts.signal, emulatorShutdown.signal])
+      : emulatorShutdown.signal;
+    const booting = startEmulatorProcess({ ...opts, signal }, runtime);
+    bootingEmulators.add(booting);
+    let launch: EmulatorLaunch;
+    try {
+      launch = await booting;
+    } finally {
+      bootingEmulators.delete(booting);
+    }
+    if (!launch.ownsProcess) return launch;
+    const owned: EmulatorLaunch = {
+      ...launch,
+      stop: async () => {
+        if (launchedEmulators.get(launch.serial) === owned) {
+          launchedEmulators.delete(launch.serial);
+        }
+        await launch.stop();
+      },
+    };
+    launchedEmulators.set(launch.serial, owned);
+    // Once it exits on its own, its port may go to another AVD, which
+    // /api/avds/stop and stop() must not treat as this launch.
+    launch.proc?.once("exit", () => {
+      if (launchedEmulators.get(launch.serial) === owned) {
+        launchedEmulators.delete(launch.serial);
+      }
+    });
+    return owned;
+  };
+  const killEmulator: typeof stopEmulator = async (serial, runExec) => {
+    const owned = launchedEmulators.get(serial);
+    if (owned) return owned.stop();
+    return stopEmulatorBySerial(serial, runExec);
+  };
   const listActiveAvds = dependencies.listRunningAvds ?? listRunningAvds;
   const availableAvds = dependencies.listAvds ?? listAvds;
   const loadAccessibility =
@@ -1683,9 +1728,23 @@ export async function startServer(
       serial: context.serial,
       generation: context.generation,
     });
+    emulatorShutdown.abort(new Error("server is stopping"));
+    const owned = Array.from(launchedEmulators.values());
+    launchedEmulators.clear();
+    const booting = Array.from(bootingEmulators, (launch) =>
+      launch.catch(() => {}),
+    );
     stopTask = Promise.all([
+      ...booting,
       sessions.close("server stopping"),
       uploads.close(error),
+      ...owned.map((launch) =>
+        Promise.resolve()
+          .then(() => launch.stop())
+          .catch((err) => {
+            console.error(`[emulator] could not stop ${launch.serial}:`, err);
+          }),
+      ),
     ]).then(() => {});
     return stopTask;
   };
