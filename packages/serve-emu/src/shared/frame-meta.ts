@@ -1,4 +1,4 @@
-// SEMU frame-meta wire format, shared by the server writer (server.ts) and
+// SEMU frame-meta wire format, shared by the server writer (server/video.ts) and
 // the browser worker reader (ui/lib/stream-worker.ts) so the header layout
 // can never drift between the two. This module must stay runtime-neutral:
 // no Bun/Node APIs (the UI tsconfig compiles it with DOM lib only).
