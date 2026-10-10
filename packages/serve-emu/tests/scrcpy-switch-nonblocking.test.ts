@@ -70,6 +70,7 @@ describe("live device switching", () => {
     const started = await startServer(
       { serial: "device-1", host: "127.0.0.1", port: 0 },
       {
+        log: () => {},
         listDevices: async () => [
           { serial: "device-1", state: "device" },
           { serial: "device-2", state: "device" },
@@ -138,6 +139,7 @@ describe("live device switching", () => {
     const started = await startServer(
       { serial: "device-1", host: "127.0.0.1", port: 0 },
       {
+        log: () => {},
         listDevices: async () => [
           { serial: "device-1", state: "device" },
           { serial: "device-2", state: "device" },
@@ -150,27 +152,34 @@ describe("live device switching", () => {
       },
     );
 
-    const baseUrl = `http://127.0.0.1:${started.server.port}`;
-    const switching = fetch(`${baseUrl}/api/devices/select`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ serial: "device-2" }),
-    }).catch((error) => error);
-    const switchSignal = await candidateRequested.promise;
+    let stopping: Promise<void> | null = null;
+    try {
+      const baseUrl = `http://127.0.0.1:${started.server.port}`;
+      const switching = fetch(`${baseUrl}/api/devices/select`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ serial: "device-2" }),
+      }).catch((error) => error);
+      const switchSignal = await candidateRequested.promise;
 
-    let stopSettled = false;
-    const stopping = started.stop().then(() => {
-      stopSettled = true;
-    });
-    expect(switchSignal.aborted).toBe(true);
-    await Bun.sleep(10);
-    expect(stopSettled).toBe(false);
+      let stopSettled = false;
+      stopping = started.stop().then(() => {
+        stopSettled = true;
+      });
+      expect(switchSignal.aborted).toBe(true);
+      await Bun.sleep(10);
+      expect(stopSettled).toBe(false);
 
-    candidateStart.resolve(candidate);
-    await stopping;
-    await switching;
-    expect(initialCloseCount).toBe(1);
-    expect(candidateCloseCount).toBe(1);
+      candidateStart.resolve(candidate);
+      await stopping;
+      await switching;
+      expect(initialCloseCount).toBe(1);
+      expect(candidateCloseCount).toBe(1);
+    } finally {
+      // A failed expectation must not leave the real server listening.
+      candidateStart.resolve(candidate);
+      await (stopping ?? started.stop());
+    }
   });
 
   test("closes the initial session when the HTTP port cannot bind", async () => {
@@ -190,9 +199,12 @@ describe("live device switching", () => {
             host: "127.0.0.1",
             port: occupied.port!,
           },
-          { openScrcpy: async () => initial },
+          {
+            log: () => {},
+            openScrcpy: async () => initial,
+          },
         ),
-      ).rejects.toThrow();
+      ).rejects.toMatchObject({ code: "EADDRINUSE" });
       expect(closeCount).toBe(1);
     } finally {
       occupied.stop(true);

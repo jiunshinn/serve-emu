@@ -265,6 +265,7 @@ async function createHarness(options: {
   const clock = new ManualClock();
   const captured = captureServe();
   const dependencies: ServerDependencies = {
+    log: () => {},
     openScrcpy: async (serial) => {
       startCalls.push(serial);
       const gate = startGates.get(serial);

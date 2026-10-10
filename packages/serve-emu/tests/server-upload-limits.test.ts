@@ -116,6 +116,7 @@ async function createHarness(
       ...opts,
     },
     {
+      log: () => {},
       openScrcpy: async () => initial.session,
       listDevices: async () => [
         { serial: "device-old", state: "device" },
@@ -304,7 +305,7 @@ describe("server request and upload limits", () => {
       },
     ]);
     for (const path of stagedPaths) {
-      await expect(access(path)).rejects.toBeDefined();
+      await expect(access(path)).rejects.toMatchObject({ code: "ENOENT" });
     }
   });
 

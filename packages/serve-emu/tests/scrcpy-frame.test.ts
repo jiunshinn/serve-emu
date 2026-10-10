@@ -10,7 +10,6 @@ import {
 } from "../src/scrcpy.ts";
 import { SCRCPY_VERSION } from "../scripts/fetch-scrcpy.ts";
 import {
-  PROTOCOL_GOLDEN_HEX,
   goldenBytes,
 } from "./fixtures/protocol-golden.ts";
 
@@ -110,9 +109,13 @@ describe("scrcpy protocol goldens", () => {
       width: 1080,
       height: 1920,
     });
-    expect(PROTOCOL_GOLDEN_HEX["v4-resize"]).toBe(
-      "800000010000043800000780",
-    );
+    // Built from the documented layout (bit 31 session, bit 0 client
+    // resized, then width and height) rather than a copy of the constant.
+    const documented = Buffer.alloc(12);
+    documented.writeUInt32BE(0x8000_0000 + 0x1, 0);
+    documented.writeUInt32BE(1080, 4);
+    documented.writeUInt32BE(1920, 8);
+    expect(Buffer.from(goldenBytes("v4-resize"))).toEqual(documented);
   });
 
   test.each([

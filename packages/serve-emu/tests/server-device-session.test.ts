@@ -100,6 +100,7 @@ describe("startServer device session lifecycle", () => {
       startServer(
         { serial: "A", port: 3300 },
         {
+          log: () => {},
           openScrcpy: async () => initial.session,
           serve: (() => {
             throw new Error("EADDRINUSE");
@@ -124,6 +125,7 @@ describe("startServer device session lifecycle", () => {
     const started = await startServer(
       { serial: "A", port: 3300 },
       {
+        log: () => {},
         openScrcpy: async (serial) => sessions.get(serial)!.session,
         listDevices: async () => [
           { serial: "A", state: "device" },
@@ -211,6 +213,7 @@ describe("startServer device session lifecycle", () => {
     const started = await startServer(
       { serial: "A", port: 3300 },
       {
+        log: () => {},
         openScrcpy: async (serial) => (serial === "A" ? a : b).session,
         listDevices: async () => [
           { serial: "A", state: "device" },
@@ -270,6 +273,7 @@ describe("startServer device session lifecycle", () => {
     const started = await startServer(
       { serial: "A", port: 3300 },
       {
+        log: () => {},
         openScrcpy: async (serial) => (serial === "A" ? a : b).session,
         listDevices: async () => [
           { serial: "A", state: "device" },
@@ -329,6 +333,7 @@ describe("startServer device session lifecycle", () => {
     const started = await startServer(
       { serial: "A", port: 3300 },
       {
+        log: () => {},
         openScrcpy: async (serial) => {
           openCalls.push(serial);
           if (serial === "A") return a.session;
@@ -387,6 +392,7 @@ describe("startServer device session lifecycle", () => {
     const started = await startServer(
       { serial: "A", port: 3300 },
       {
+        log: () => {},
         openScrcpy: async (serial) => (serial === "A" ? a : b).session,
         listDevices: async () => [
           { serial: "A", state: "device" },
@@ -439,6 +445,7 @@ describe("startServer device session lifecycle", () => {
       const started = await startServer(
         { serial: "A", port: 3300 },
         {
+          log: () => {},
           openScrcpy: async (serial) => (serial === "A" ? a : b).session,
           listDevices: async () => [
             { serial: "A", state: "device" },
@@ -480,6 +487,7 @@ describe("startServer device session lifecycle", () => {
     const started = await startServer(
       { serial: "A", port: 3300 },
       {
+        log: () => {},
         openScrcpy: async () => a.session,
         listDevices: async () => [{ serial: "A", state: "device" }],
         startEmulator: async ({ avd }) => ({
@@ -527,6 +535,7 @@ describe("startServer device session lifecycle", () => {
     const started = await startServer(
       { serial: "A", port: 3300 },
       {
+        log: () => {},
         openScrcpy: async () => a.session,
         listDevices: async () => [{ serial: "A", state: "device" }],
         startEmulator: async ({ avd }) => {
@@ -583,6 +592,7 @@ describe("startServer device session lifecycle", () => {
     const started = await startServer(
       { serial: "A", port: 3300 },
       {
+        log: () => {},
         openScrcpy: async () => a.session,
         listDevices: async () => [{ serial: "A", state: "device" }],
         startEmulator: async ({ signal }) => {
@@ -630,6 +640,7 @@ describe("startServer device session lifecycle", () => {
     const started = await startServer(
       { serial: "emulator-5554", port: 3300 },
       {
+        log: () => {},
         openScrcpy: async (serial) => fakeScrcpy(serial).session,
         listDevices: async () => {
           listings++;

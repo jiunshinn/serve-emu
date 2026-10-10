@@ -257,6 +257,7 @@ async function createHarness(
       allowedHosts: options.allowedHosts,
     },
     {
+      log: () => {},
       openScrcpy: async () => session,
       recoveryClock: INERT_RECOVERY_CLOCK,
       serve,

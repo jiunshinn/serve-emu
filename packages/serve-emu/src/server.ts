@@ -178,6 +178,8 @@ export type ServerDependencies = {
   listAvds?: typeof listAvds;
   /** Device commands used by the API routes (screenshot, settings, apps). */
   deviceService?: DeviceService;
+  /** Startup and session lines ("scrcpy ready: …"); console.log by default. */
+  log?: (line: string) => void;
   loadAccessibility?: (
     serial: string,
     signal: AbortSignal,
@@ -232,6 +234,7 @@ export async function startServer(
         repeatFrameMs: opts.repeatFrameMs,
       }));
   const serve = dependencies.serve ?? Bun.serve;
+  const log = dependencies.log ?? ((line: string) => console.log(line));
   const listDevices =
     dependencies.listDevices ?? listAllDevices;
   const startEmulatorProcess = dependencies.startEmulator ?? startEmulator;
@@ -447,7 +450,7 @@ export async function startServer(
     "sessionExport",
   ] as const);
   let stopRequested = false;
-  console.log(
+  log(
     `scrcpy ready: ${initialScrcpy.meta.deviceName} • ${initialScrcpy.meta.codecId} • ${initialScrcpy.meta.width}×${initialScrcpy.meta.height}`,
   );
 
@@ -1276,7 +1279,7 @@ export async function startServer(
       },
       activateContext,
     );
-    console.log(
+    log(
       `scrcpy ready: ${context.scrcpy.meta.deviceName} • ${context.scrcpy.meta.codecId} • ${context.scrcpy.meta.width}×${context.scrcpy.meta.height}`,
     );
     return {
