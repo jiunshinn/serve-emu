@@ -111,7 +111,10 @@ describe("device routes use the injected device service", () => {
     expect(device.calls[0]!.signal.aborted).toBe(true);
     const stale = await screenshot;
     expect(stale.status).toBe(409);
-    expect(await stale.json()).toMatchObject({ ok: false, code: "session_changed" });
+    expect(await stale.json()).toMatchObject({
+      ok: false,
+      error: { code: "conflict", reason: "session_changed" },
+    });
   });
 
   test("a client that goes away aborts its command", async () => {
@@ -132,7 +135,10 @@ describe("device routes use the injected device service", () => {
     const h = await createHarness({}, { deviceService: device.service });
     const failed = await response(h.request("/api/orientation"));
     expect(failed.status).toBe(400);
-    expect(await failed.json()).toMatchObject({ ok: false, error: "wm failed" });
+    expect(await failed.json()).toEqual({
+      ok: false,
+      error: { code: "invalid_request", message: "wm failed" },
+    });
   });
 });
 
@@ -181,7 +187,10 @@ describe("POST /api/route", () => {
         }),
     } as unknown as DeviceContext;
     const handled: unknown[] = [];
-    const answered = Response.json({ ok: false, code: "session_changed" }, { status: 409 });
+    const answered = Response.json(
+      { ok: false, error: { code: "conflict", message: "stale", reason: "session_changed" } },
+      { status: 409 },
+    );
     const deps = {
       requestContext: context,
       sessions: new DeviceSessionManager(context),

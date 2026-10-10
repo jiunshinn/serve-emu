@@ -56,7 +56,6 @@ type ApiClientErrorOptions = {
 export type ApiClientErrorCode =
   | ApiErrorCode
   | "invalid_response"
-  | "legacy_error"
   | "http_error"
   | "network_error";
 
@@ -80,11 +79,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isAbortError(value: unknown): boolean {
   return isRecord(value) && value.name === "AbortError";
-}
-
-function legacyFailureMessage(value: unknown): string | null {
-  if (!isRecord(value) || value.ok !== false || typeof value.error !== "string") return null;
-  return value.error;
 }
 
 function requestBody(body: unknown, headers: Headers): BodyInit | undefined {
@@ -148,17 +142,6 @@ export function createApiClient(fetcher: FetchLike = globalThis.fetch) {
         status: response.status,
         code: "invalid_response",
         cause,
-      });
-    }
-
-    // Keep the client usable during rolling upgrades from the original
-    // `{ ok: false, error: string }` response shape.
-    const legacyMessage = legacyFailureMessage(payload);
-    if (legacyMessage !== null) {
-      throw new ApiClientError(legacyMessage, {
-        status: response.status,
-        code: "legacy_error",
-        payload,
       });
     }
 

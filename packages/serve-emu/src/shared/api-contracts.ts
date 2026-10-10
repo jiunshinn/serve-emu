@@ -21,6 +21,8 @@ export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
 export type ApiErrorDetail = {
   code: ApiErrorCode;
   message: string;
+  /** Finer-grained, stable reason within `code`, such as `upload-queue-full`. */
+  reason?: string;
 };
 
 export type ApiFailure = {
@@ -535,7 +537,8 @@ export function parseApiFailure(value: unknown): ApiFailure {
     const code = oneOf(error.code, API_ERROR_CODES, "API failure code");
     const message = string(error.message, "API failure message");
     if (!message) fail("API failure message must not be empty");
-    return { ok: false, error: { code, message } };
+    const reason = error.reason === undefined ? undefined : string(error.reason, "API failure reason");
+    return { ok: false, error: { code, message, ...(reason ? { reason } : {}) } };
   } catch {
     throw new TypeError("invalid API failure");
   }

@@ -245,12 +245,21 @@ All examples assume the default port:
 BASE=http://localhost:3300
 ```
 
-Failed requests return JSON with `ok: false` and an `error` message. Invalid
-input gets `400`. When an adb or emulator command fails, the response is `502`
-with `code: "adb-failed"` (or `"emulator-failed"`), or `504` with
-`code: "adb-timeout"` when the command timed out. Its `error` names only the
-operation, such as `screencap failed`; the command's output goes to the server
-log with the request's method and path.
+Every failed `/api` request returns one JSON shape, with an HTTP status that
+matches its `code`:
+
+```json
+{ "ok": false, "error": { "code": "rate_limited", "message": "upload queue is full", "reason": "upload-queue-full" } }
+```
+
+`code` is one of `invalid_request`, `invalid_json`, `unauthorized`,
+`forbidden`, `not_found`, `method_not_allowed`, `conflict` (for example a
+device switch during the request), `payload_too_large`, `rate_limited`,
+`downstream_failure` (adb or the emulator failed), `service_unavailable`, or
+`internal_error`. The optional `reason` names a finer-grained cause within the
+code, such as `adb-timeout` or `control-queue-overloaded`. Messages for
+`downstream_failure` and `internal_error` are fixed and never include command
+output.
 
 ### Health And Discovery
 

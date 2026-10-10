@@ -636,7 +636,7 @@ describe("server recovery watchdog", () => {
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({
       ok: false,
-      error: "device session manager is closed",
+      error: { code: "invalid_request", message: "device session manager is closed" },
     });
     expect(harness.sessions.get("B")!.closeCount).toBe(1);
     expect(harness.clock.activeTimers).toBe(0);

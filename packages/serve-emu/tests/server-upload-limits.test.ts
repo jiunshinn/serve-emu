@@ -220,7 +220,7 @@ describe("server request and upload limits", () => {
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({
       ok: false,
-      code: "payload-too-large",
+      error: { code: "payload_too_large" },
     });
   });
 
@@ -353,7 +353,7 @@ describe("server request and upload limits", () => {
       expect(response.status).toBe(413);
       expect(await response.json()).toMatchObject({
         ok: false,
-        code: "payload-too-large",
+        error: { code: "payload_too_large" },
       });
     }
     expect(actionCalls).toBe(0);
@@ -388,7 +388,7 @@ describe("server request and upload limits", () => {
     expect(overflow.status).toBe(429);
     expect(await overflow.json()).toMatchObject({
       ok: false,
-      code: "upload-queue-full",
+      error: { code: "rate_limited", reason: "upload-queue-full" },
     });
     expect(stageCalls).toBe(1);
 
@@ -440,7 +440,7 @@ describe("server request and upload limits", () => {
 
     expect(uploadResponse.status).toBe(409);
     expect(await uploadResponse.json()).toMatchObject({
-      code: "device-session-changed",
+      error: { code: "conflict", reason: "device-session-changed" },
     });
     expect(switchResponse.status).toBe(200);
     expect(actionCalled).toBe(false);
@@ -564,10 +564,10 @@ describe("server request and upload limits", () => {
     controller.abort(new Error("client disconnected"));
     const response = await upload;
 
-    expect(response.status).toBe(499);
+    expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({
       ok: false,
-      code: "upload-cancelled",
+      error: { code: "invalid_request", reason: "upload-cancelled" },
     });
     expect(cleanupCalls).toBe(1);
   });
@@ -600,7 +600,7 @@ describe("server request and upload limits", () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toMatchObject({
       ok: false,
-      code: "upload-cleanup-failed",
+      error: { code: "internal_error", reason: "upload-cleanup-failed" },
     });
   });
 
@@ -635,7 +635,7 @@ describe("server request and upload limits", () => {
     expect(response.status).toBe(502);
     expect(await response.json()).toMatchObject({
       ok: false,
-      code: "adb-cleanup-failed",
+      error: { code: "downstream_failure", reason: "adb-cleanup-failed" },
     });
   });
 
@@ -671,15 +671,22 @@ describe("server request and upload limits", () => {
       const failedBody = await failed.text();
       expect(JSON.parse(failedBody)).toEqual({
         ok: false,
-        code: "adb-failed",
-        error: "adb install failed",
+        error: {
+          code: "downstream_failure",
+          message: "adb install failed",
+          reason: "adb-failed",
+        },
       });
       expect(failedBody).not.toContain("serve-emu-upload");
-      expect(timedOut.status).toBe(504);
+      // downstream_failure is always 502; the reason marks the timeout.
+      expect(timedOut.status).toBe(502);
       expect(await timedOut.json()).toEqual({
         ok: false,
-        code: "adb-timeout",
-        error: "adb install timed out",
+        error: {
+          code: "downstream_failure",
+          message: "adb install timed out",
+          reason: "adb-timeout",
+        },
       });
       expect(cleanupCalls).toBe(2);
       // The detail is kept for the server log.
@@ -688,7 +695,7 @@ describe("server request and upload limits", () => {
         "[api] POST /api/apps/install -> 502 adb install failed:",
       );
       expect(String(errorLog.mock.calls[1]?.[0])).toBe(
-        "[api] POST /api/apps/install -> 504 adb install timed out:",
+        "[api] POST /api/apps/install -> 502 adb install timed out:",
       );
       expect((errorLog.mock.calls[0]?.[1] as Error).message).toBe(adbOutput);
     } finally {
@@ -733,7 +740,7 @@ describe("server request and upload limits", () => {
     const response = await upload;
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
-      code: "device-session-changed",
+      error: { code: "conflict", reason: "device-session-changed" },
     });
   });
 

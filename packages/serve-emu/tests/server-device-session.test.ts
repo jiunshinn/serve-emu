@@ -167,7 +167,7 @@ describe("startServer device session lifecycle", () => {
     expect(staleResponse.status).toBe(409);
     expect(await staleResponse.json()).toMatchObject({
       ok: false,
-      code: "session_changed",
+      error: { code: "conflict", reason: "session_changed" },
     });
     expect(locationCalls).toEqual([
       {
@@ -317,7 +317,9 @@ describe("startServer device session lifecycle", () => {
 
     const response = await slowRequest;
     expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({ code: "session_changed" });
+    expect(await response.json()).toMatchObject({
+      error: { code: "conflict", reason: "session_changed" },
+    });
     expect(locationCalls).toEqual([]);
     await started.stop();
   });
@@ -377,7 +379,7 @@ describe("startServer device session lifecycle", () => {
     const staleResponse = await staleStart;
     expect(staleResponse.status).toBe(409);
     expect(await staleResponse.json()).toMatchObject({
-      code: "session_changed",
+      error: { code: "conflict", reason: "session_changed" },
     });
     expect(launchStopCalls).toBe(1);
     expect(openCalls).toEqual(["A", "B"]);

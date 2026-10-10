@@ -196,8 +196,11 @@ describe("production API routing", () => {
       expect(location.status).toBe(502);
       expect(await location.json()).toEqual({
         ok: false,
-        code: "adb-failed",
-        error: "adb emu geo fix failed",
+        error: {
+          code: "downstream_failure",
+          message: "adb emu geo fix failed",
+          reason: "adb-failed",
+        },
       });
       expect(errorLog).toHaveBeenCalledWith(
         "[api] POST /api/location -> 502 adb emu geo fix failed:",
@@ -223,8 +226,11 @@ describe("production API routing", () => {
       const routeBody = await route.text();
       expect(JSON.parse(routeBody)).toEqual({
         ok: false,
-        code: "adb-failed",
-        error: "adb emu geo fix failed",
+        error: {
+          code: "downstream_failure",
+          message: "adb emu geo fix failed",
+          reason: "adb-failed",
+        },
       });
       expect(routeBody).not.toContain("emulator_console_auth_token");
       // Logged once, by the response, with the geo fix output as the cause.
@@ -277,7 +283,10 @@ describe("production API routing", () => {
 
     const remove = await response(h.request("/api/route", { method: "DELETE" }));
     expect(remove.status).toBe(409);
-    expect(await remove.json()).toMatchObject({ ok: false, code: "session_changed" });
+    expect(await remove.json()).toMatchObject({
+      ok: false,
+      error: { code: "conflict", reason: "session_changed" },
+    });
 
     const control = await response(
       h.request("/api/route/control", {

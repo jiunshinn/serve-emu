@@ -14,13 +14,11 @@ import { loadDeviceGrid } from "./device-grid.ts";
 import { createApiRouter } from "./api/router.ts";
 import type { ApplyLocationOptions } from "./api/dependencies.ts";
 import { createDeviceService, type DeviceService } from "./device-service.ts";
+import { ApiError, apiErrorResponse, type ApiErrorCode } from "./api/api-error.ts";
+import { toApiError } from "./api/error-mapping.ts";
 import { createApiRoutes } from "./api/routes/index.ts";
 import { importMediaFile, installApk } from "./app-management.ts";
-import {
-  CommandFailureError,
-  commandFailureStatus,
-  logApiFailure,
-} from "./command-failure.ts";
+import { logApiFailure } from "./command-failure.ts";
 import { ControlInputError, ControlInputQueue } from "./control-input-queue.ts";
 import {
   ActiveDeviceSession,
@@ -400,11 +398,8 @@ export async function startServer(
     return originHost === req.headers.get("host");
   };
 
-  const forbiddenResponse = (error: string): Response =>
-    new Response(JSON.stringify({ ok: false, error }), {
-      status: 403,
-      headers: { "Content-Type": "application/json; charset=utf-8" },
-    });
+  const forbiddenResponse = (message: string): Response =>
+    apiErrorResponse(new ApiError(403, "forbidden", message));
 
   const createContext = (
     serial: string,
@@ -552,80 +547,30 @@ export async function startServer(
     return value;
   };
 
+  /**
+   * Every handled /api failure, in the documented shape via toApiError.
+   * Server-side failures are logged with the request's method and path and
+   * the original error; the response carries only the public message.
+   */
   const errorResponse = (
     err: unknown,
     req: Request,
-    fallbackStatus = 400,
+    fallback: ApiErrorCode = "invalid_request",
   ) => {
-    const error = err instanceof Error ? err.message : String(err);
-    if (err instanceof SessionChangedError) {
-      return Response.json(
-        { ok: false, code: err.code, error },
-        { status: 409 },
-      );
+    const error = toApiError(err, fallback);
+    if (error.status >= 500) {
+      logApiFailure(req, error.status, error.message, err);
     }
-    let status = fallbackStatus;
-    let code: string | undefined;
-    if (err instanceof HttpBodyError) {
-      status = err.status;
-      code = err.code;
-    } else if (err instanceof MultipartUploadError) {
-      status = err.status;
-      code = err.code;
-    } else if (err instanceof UploadManagerError) {
-      const mapped = {
-        "queue-full": { status: 429, code: "upload-queue-full" },
-        "queue-timeout": { status: 503, code: "upload-queue-timeout" },
-        "upload-cancelled": { status: 499, code: "upload-cancelled" },
-        "device-session-changed": {
-          status: 409,
-          code: "device-session-changed",
-        },
-        closed: { status: 503, code: "upload-service-closed" },
-      } as const;
-      status = mapped[err.code].status;
-      code = mapped[err.code].code;
-    } else if (err instanceof CommandFailureError) {
-      // Command output can carry device paths, argument lists, and stack
-      // traces: log it here and send only the operation name.
-      const commandStatus = commandFailureStatus(err);
-      logApiFailure(req, commandStatus, err.publicMessage, err);
-      return Response.json(
-        { ok: false, code: err.code, error: err.publicMessage },
-        { status: commandStatus },
-      );
-    }
-    return Response.json(
-      { ok: false, ...(code ? { code } : {}), error },
-      { status },
-    );
+    return apiErrorResponse(error);
   };
 
+  // WebSocket replies keep their own contract (see websocket-contracts.ts).
   const inputErrorPayload = (err: unknown, status: "rejected" | "failed") => ({
     ok: false as const,
     status,
     ...(err instanceof ControlInputError ? { code: err.code } : {}),
     error: err instanceof Error ? err.message : String(err),
   });
-
-  const inputErrorResponse = (
-    err: unknown,
-    status: "rejected" | "failed",
-    req: Request,
-  ) => {
-    if (err instanceof HttpBodyError || err instanceof CommandFailureError) {
-      return errorResponse(err, req);
-    }
-    return Response.json(inputErrorPayload(err, status), {
-      status:
-        err instanceof ControlInputError &&
-        err.code === "control-queue-overloaded"
-          ? 429
-          : err instanceof ControlInputError
-            ? 503
-            : 400,
-    });
-  };
 
   /**
    * Runs device work for one session. The operation gets a signal that aborts
@@ -798,10 +743,10 @@ export async function startServer(
         const result = await accepted.completion;
         return Response.json({ ok: true, status: result.status });
       } catch (err) {
-        return inputErrorResponse(err, "failed", req);
+        return errorResponse(err, req);
       }
     } catch (err) {
-      return inputErrorResponse(err, "rejected", req);
+      return errorResponse(err, req);
     }
   };
 
@@ -830,10 +775,10 @@ export async function startServer(
         const result = await accepted.completion;
         return Response.json({ ok: true, status: result.status });
       } catch (err) {
-        return inputErrorResponse(err, "failed", req);
+        return errorResponse(err, req);
       }
     } catch (err) {
-      return inputErrorResponse(err, "rejected", req);
+      return errorResponse(err, req);
     }
   };
 
@@ -897,10 +842,10 @@ export async function startServer(
           capturedAt: snapshot.capturedAt,
         });
       } catch (err) {
-        return inputErrorResponse(err, "failed", req);
+        return errorResponse(err, req);
       }
     } catch (err) {
-      return inputErrorResponse(err, "rejected", req);
+      return errorResponse(err, req);
     }
   };
 
@@ -1386,15 +1331,10 @@ export async function startServer(
       }
 
       if (!tokenValid(req, url)) {
-        return new Response(
-          JSON.stringify({ ok: false, error: "unauthorized" }),
-          {
-            status: 401,
-            headers: {
-              "Content-Type": "application/json; charset=utf-8",
-              "WWW-Authenticate": "Bearer",
-            },
-          },
+        return apiErrorResponse(
+          new ApiError(401, "unauthorized", "unauthorized", {
+            headers: { "WWW-Authenticate": "Bearer" },
+          }),
         );
       }
 
@@ -1413,8 +1353,8 @@ export async function startServer(
           ...apiServices,
           requestContext,
           srv,
-          errorResponse: (err: unknown, fallbackStatus?: number) =>
-            errorResponse(err, req, fallbackStatus),
+          errorResponse: (err: unknown, fallback?: ApiErrorCode) =>
+            errorResponse(err, req, fallback),
         });
         if (apiResponse) return apiResponse;
       }

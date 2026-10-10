@@ -76,11 +76,6 @@ export function commandFailureOf(err: unknown): CommandFailureError | null {
   return null;
 }
 
-/** HTTP status for a command failure: a timeout is 504, anything else 502. */
-export function commandFailureStatus(err: CommandFailureError): 502 | 504 {
-  return err.code === "adb-timeout" ? 504 : 502;
-}
-
 /**
  * Logs a failed API request with its method, path, and the original error,
  * whose message and `cause` keep the detail the response leaves out. Only the

@@ -63,12 +63,6 @@ export class SessionReplayConflictError extends Error {
   }
 }
 
-export function sessionReplayErrorStatus(error: unknown): number {
-  if (error instanceof SessionReplayValidationError) return 400;
-  if (error instanceof SessionReplayConflictError) return 409;
-  return 500;
-}
-
 export function parseSessionReplayMultiplier(value: unknown): number {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new SessionReplayValidationError(

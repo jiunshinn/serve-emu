@@ -127,9 +127,13 @@ describe("LogcatHub", () => {
 
     const rejected = hub.subscribe({});
     expect(rejected.status).toBe(429);
-    expect(await rejected.json()).toMatchObject({
+    expect(await rejected.json()).toEqual({
       ok: false,
-      code: "logcat-subscriber-limit",
+      error: {
+        code: "rate_limited",
+        message: "logcat subscriber limit is 2",
+        reason: "logcat-subscriber-limit",
+      },
     });
     expect(children).toHaveLength(1);
 

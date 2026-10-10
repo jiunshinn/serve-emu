@@ -1,7 +1,7 @@
-import { publicErrorMessage } from "./command-failure.ts";
+import { apiErrorResponse } from "./api/api-error.ts";
+import { toApiError } from "./api/error-mapping.ts";
 import {
   SessionReplayConflictError,
-  sessionReplayErrorStatus,
   type ReplayHandlers,
   type SessionRecorder,
 } from "./session-recorder.ts";
@@ -11,17 +11,14 @@ type ReplayController = Pick<
   "startReplay" | "cancelAndWait" | "clear"
 >;
 
+/** Replay failures: validation 400, conflicts 409, anything else 500. */
 export function sessionReplayErrorResponse(
   error: unknown,
-  status = sessionReplayErrorStatus(error),
+  fallback: "invalid_request" | "internal_error" = "internal_error",
 ): Response {
-  return Response.json(
-    {
-      ok: false,
-      error: publicErrorMessage(error),
-    },
-    { status },
-  );
+  const apiError = toApiError(error, fallback);
+  if (apiError.status >= 500) console.error(`[api] ${apiError.message}:`, error);
+  return apiErrorResponse(apiError);
 }
 
 export function startSessionReplayResponse(
