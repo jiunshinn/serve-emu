@@ -49,7 +49,7 @@ bun run --filter serve-emu start
 ## Project Layout
 
 - `packages/serve-emu/src/cli.ts` - CLI entry point
-- `packages/serve-emu/src/server.ts` - HTTP, WebSocket, and API server
+- `packages/serve-emu/src/server.ts` - HTTP server entry point that wires the modules in `src/server/` (request gate, WebSocket endpoint, video pipeline, uploads, emulators)
 - `packages/serve-emu/src/scrcpy.ts` - scrcpy server lifecycle and video stream handling
 - `packages/serve-emu/src/input.ts` - scrcpy control socket message encoding
 - `packages/serve-emu/src/emulator.ts` - Android Emulator discovery and launch helpers
