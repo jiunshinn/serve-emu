@@ -517,6 +517,62 @@ describe("startServer device session lifecycle", () => {
     expect(killed).toEqual([]);
   });
 
+  test("forgets launched emulators that exit on their own", async () => {
+    const a = fakeScrcpy("A");
+    const captured: CapturedServer = { options: null, stopCalls: 0 };
+    const processes = new Map<string, EventEmitter>();
+    const launchStops: string[] = [];
+    const killed: string[] = [];
+    const started = await startServer(
+      { serial: "A", port: 3300 },
+      {
+        openScrcpy: async () => a.session,
+        listDevices: async () => [{ serial: "A", state: "device" }],
+        startEmulator: async ({ avd }) => {
+          const proc = new EventEmitter();
+          processes.set(avd, proc);
+          return {
+            serial: avd === "First" ? "emulator-5556" : "emulator-5558",
+            proc: proc as unknown as EmulatorLaunch["proc"],
+            ownsProcess: true,
+            stop: async () => {
+              launchStops.push(avd);
+            },
+          };
+        },
+        stopEmulator: async (serial) => {
+          killed.push(serial);
+        },
+        serve: capturingServe(captured),
+      },
+    );
+    for (const avd of ["First", "Second"]) {
+      const response = await invokeFetch(captured, "/api/avds/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avd, select: false }),
+      });
+      expect(response.status).toBe(200);
+    }
+
+    // The user closes both; another AVD may take either port next.
+    processes.get("First")?.emit("exit", 0, null);
+    processes.get("Second")?.emit("exit", 0, null);
+
+    // An explicit stop by serial reaches whatever runs there now, not the
+    // launch that already exited.
+    const stopResponse = await invokeFetch(captured, "/api/avds/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ serial: "emulator-5556" }),
+    });
+    expect(stopResponse.status).toBe(200);
+    expect(killed).toEqual(["emulator-5556"]);
+
+    await started.stop();
+    expect(launchStops).toEqual([]);
+  });
+
   test("server stop aborts an emulator that is still booting", async () => {
     const a = fakeScrcpy("A");
     const captured: CapturedServer = { options: null, stopCalls: 0 };

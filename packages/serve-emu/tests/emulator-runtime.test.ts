@@ -58,7 +58,24 @@ function fakeProcess(options: {
       return true;
     },
   }) as unknown as ChildProcess;
-  return { proc, killSignals };
+  /** The emulator exiting on its own, as when the user closes its window. */
+  const exit = (code = 0) => {
+    Object.assign(proc, { exitCode: code });
+    proc.emit("exit", code, null);
+  };
+  return { proc, killSignals, exit };
+}
+
+function bootedExec(adbCalls: string[] = []) {
+  return (async (command, args) => {
+    if (command === "/sdk/emulator") return result("Pixel_8\n");
+    const adbCommand = args.slice(2).join(" ");
+    adbCalls.push(adbCommand);
+    if (adbCommand === "get-state") return result("device\n");
+    if (adbCommand === "shell getprop sys.boot_completed") return result("1\n");
+    if (adbCommand === "emu avd name") return result("Pixel_8\nOK\n");
+    return result("");
+  }) as typeof execText;
 }
 
 function spawnWith(proc: ChildProcess, calls: unknown[][] = []) {
@@ -629,6 +646,83 @@ describe("emulator lifecycle", () => {
     await launch.stop();
     expect(killSignals).toEqual(["SIGTERM", "SIGKILL"]);
     expect(pauses).toContain(10_000);
+  });
+
+  test("does not emu kill a launched emulator that already exited", async () => {
+    const adbCalls: string[] = [];
+    const { proc, killSignals, exit } = fakeProcess();
+    const launch = await startEmulator(
+      { avd: "Pixel_8", emulatorPath: "/sdk/emulator", port: 5556 },
+      {
+        execText: bootedExec(adbCalls),
+        listAllDevices: async () => [],
+        spawn: spawnWith(proc),
+      },
+    );
+    // The user closed it; another AVD may own emulator-5556 by now.
+    exit(0);
+    await launch.stop();
+    expect(adbCalls).not.toContain("emu kill");
+    expect(killSignals).toEqual([]);
+  });
+
+  test("cancels the grace-period timer once the emulator exits", async () => {
+    const { proc, killSignals } = fakeProcess();
+    const waits: Array<{ delay: number; signal?: AbortSignal }> = [];
+    const launch = await startEmulator(
+      { avd: "Pixel_8", emulatorPath: "/sdk/emulator" },
+      {
+        execText: bootedExec(),
+        listAllDevices: async () => [],
+        spawn: spawnWith(proc),
+        // Like a real timer, it settles only when the delay ends or is aborted.
+        sleep: (delay, _value, options) => {
+          waits.push({ delay, signal: options?.signal });
+          return new Promise(() => {});
+        },
+      },
+    );
+    await launch.stop();
+    expect(killSignals).toEqual(["SIGTERM"]);
+    const grace = waits.find((wait) => wait.delay === 10_000);
+    expect(grace?.signal?.aborted).toBe(true);
+  });
+
+  test("aborting while the old emulator shuts down stops waiting, without spawning", async () => {
+    const runExec = (async (command, args) => {
+      if (command === "/sdk/emulator") return result("Pixel_8\n");
+      if (args.includes("name")) return result("Pixel_8\nOK\n");
+      return result("");
+    }) as typeof execText;
+    const controller = new AbortController();
+    let now = 0;
+    let spawns = 0;
+    await expect(
+      startEmulator(
+        {
+          avd: "Pixel_8",
+          emulatorPath: "/sdk/emulator",
+          restartAvd: true,
+          signal: controller.signal,
+        },
+        {
+          execText: runExec,
+          // The old emulator never leaves adb's list.
+          listAllDevices: async () => [{ serial: "emulator-5554", state: "device" }],
+          now: () => now,
+          sleep: async (delay) => {
+            now += delay;
+            controller.abort(new Error("serve-emu stopping"));
+          },
+          spawn: (() => {
+            spawns++;
+            throw new Error("should not spawn");
+          }) as unknown as typeof spawn,
+        },
+      ),
+    ).rejects.toThrow("serve-emu stopping");
+    expect(now).toBe(500);
+    expect(spawns).toBe(0);
   });
 
   test("reports stop failures", async () => {

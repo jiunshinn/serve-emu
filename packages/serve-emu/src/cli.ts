@@ -2,6 +2,7 @@
 import { parseArgs } from "node:util";
 import { randomBytes } from "node:crypto";
 import { pickDevice } from "./adb.ts";
+import { CliLifecycle } from "./cli-lifecycle.ts";
 import { listAvds, listRunningAvds, listWebcams, startEmulator } from "./emulator.ts";
 import { SCRCPY_DEFAULTS } from "./scrcpy.ts";
 import {
@@ -202,26 +203,10 @@ async function main() {
 
   type ActiveServer = Awaited<ReturnType<typeof startServer>>;
   // Installed before the emulator boots: a signal during the boot wait must
-  // still stop the emulator this process started.
-  const lifecycleController = new AbortController();
+  // still stop the emulator this process started, and wait until it exits.
+  const lifecycle = new CliLifecycle<ActiveServer>();
   let emulatorLaunch: Awaited<ReturnType<typeof startEmulator>> | null = null;
-  let activeServer: ActiveServer | null = null;
-  let startupTask: Promise<ActiveServer> | null = null;
-  let stopping: Promise<void> | null = null;
-  const stop = (): Promise<void> => {
-    if (stopping) return stopping;
-    lifecycleController.abort(new Error("serve-emu stopping"));
-    stopping = (async () => {
-      try {
-        const started =
-          activeServer ?? (await startupTask?.catch(() => null)) ?? null;
-        await started?.stop();
-      } finally {
-        await emulatorLaunch?.stop();
-      }
-    })();
-    return stopping;
-  };
+  const stop = () => lifecycle.stop();
   process.once("SIGINT", () => {
     void stop()
       .catch((err) => console.error("Shutdown cleanup failed:", err))
@@ -236,20 +221,22 @@ async function main() {
   let serial: string;
   try {
     serial = values.avd
-      ? (emulatorLaunch = await startEmulator({
-          avd: values.avd,
-          emulatorPath: values.emulator,
-          port: values["emulator-port"] ? Number(values["emulator-port"]) : undefined,
-          restartAvd: values["restart-avd"],
-          gpu: values.gpu,
-          cameraBack: values["camera-back"],
-          cameraFront: values["camera-front"],
-          signal: lifecycleController.signal,
-        })).serial
+      ? (emulatorLaunch = await lifecycle.trackEmulator(
+          startEmulator({
+            avd: values.avd,
+            emulatorPath: values.emulator,
+            port: values["emulator-port"] ? Number(values["emulator-port"]) : undefined,
+            restartAvd: values["restart-avd"],
+            gpu: values.gpu,
+            cameraBack: values["camera-back"],
+            cameraFront: values["camera-front"],
+            signal: lifecycle.signal,
+          }),
+        )).serial
       : await pickDevice(values.serial);
   } catch (err) {
     // startEmulator already stopped its own child; the signal handler exits.
-    if (lifecycleController.signal.aborted) {
+    if (lifecycle.signal.aborted) {
       await stop();
       return;
     }
@@ -285,13 +272,13 @@ async function main() {
     }
   }
 
-  startupTask = startServer({
+  const startupTask = lifecycle.trackServer(startServer({
     serial,
     port,
     host,
     token,
     allowedHosts: values["allowed-host"],
-    signal: lifecycleController.signal,
+    signal: lifecycle.signal,
     maxFps,
     bitRate,
     maxSize,
@@ -302,18 +289,19 @@ async function main() {
     maxActiveUploads,
     maxQueuedUploads,
     uploadQueueTimeoutMs,
-  });
+  }));
+  let activeServer: ActiveServer;
   try {
     activeServer = await startupTask;
   } catch (err) {
     await emulatorLaunch?.stop();
-    if (lifecycleController.signal.aborted) {
+    if (lifecycle.signal.aborted) {
       await stop();
       return;
     }
     throw err;
   }
-  if (lifecycleController.signal.aborted) {
+  if (lifecycle.signal.aborted) {
     await stop();
     return;
   }
@@ -339,7 +327,7 @@ async function main() {
 
   // In the background, after the startup URL: a slow or unreachable registry
   // never delays the server, and a notice prints to stderr when it settles.
-  void checkForUpdate(lifecycleController.signal).catch(() => {});
+  void checkForUpdate(lifecycle.signal).catch(() => {});
 }
 
 await main().catch((err) => {

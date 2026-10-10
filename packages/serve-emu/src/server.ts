@@ -308,6 +308,13 @@ export async function startServer(
       },
     };
     launchedEmulators.set(launch.serial, owned);
+    // Once it exits on its own, its port may go to another AVD, which
+    // /api/avds/stop and stop() must not treat as this launch.
+    launch.proc?.once("exit", () => {
+      if (launchedEmulators.get(launch.serial) === owned) {
+        launchedEmulators.delete(launch.serial);
+      }
+    });
     return owned;
   };
   const killEmulator: typeof stopEmulator = async (serial, runExec) => {
