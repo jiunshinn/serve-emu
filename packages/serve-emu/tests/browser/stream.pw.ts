@@ -31,13 +31,10 @@ test.beforeEach(async ({ request }) => {
   ).toBe(true);
 });
 
-test("built worker decodes H.264 and presents pixels after refresh", async ({
-  page,
-}) => {
-  await page.goto("/");
-  await streaming(page);
+/** The canvas's center pixel as [r, g, b, a]. */
+async function centerColor(page: Page): Promise<number[]> {
   const screenshot = await page.locator("canvas").first().screenshot();
-  const rgb = await page.evaluate(
+  return page.evaluate(
     async (bytes) => {
       const bitmap = await createImageBitmap(
         new Blob([new Uint8Array(bytes)], { type: "image/png" }),
@@ -55,11 +52,56 @@ test("built worker decodes H.264 and presents pixels after refresh", async ({
     },
     [...screenshot],
   );
-  expect(rgb[0]).toBeGreaterThan(240);
-  expect(rgb[1]).toBeLessThan(40);
-  expect(rgb[2]).toBeLessThan(40);
+}
+
+const isRed = ([r, g, b]: number[]) => r! > 200 && g! < 60 && b! < 60;
+const isGreen = ([r, g, b]: number[]) => g! > 200 && r! < 60 && b! < 60;
+
+async function encoderStats(request: import("@playwright/test").APIRequestContext) {
+  const health = await (await request.get("/health")).json();
+  const all = await (await request.get("/__test/encoder")).json();
+  return all[health.serial] as {
+    sessions: number;
+    configs: number;
+    keyframes: number;
+    resetKeyframes: number;
+    deltas: number;
+  };
+}
+
+test("built worker decodes delta frames and presents pixels after refresh", async ({
+  page,
+}) => {
+  // The GOP's IDR is red and the color only turns green in later P frames,
+  // so seeing green proves delta frames decode, not just key frames.
+  await page.goto("/");
+  await streaming(page);
+  await expect.poll(async () => isGreen(await centerColor(page)), { timeout: 10_000 }).toBe(true);
+  await expect.poll(async () => isRed(await centerColor(page)), { timeout: 10_000 }).toBe(true);
   await page.reload();
   await streaming(page);
+  await expect.poll(async () => isGreen(await centerColor(page)), { timeout: 10_000 }).toBe(true);
+});
+
+test("a late-joining tab renders from the server's cached SPS/PPS", async ({
+  page,
+  context,
+  request,
+}) => {
+  // Resets are ignored, so the encoder never resends its config: the only
+  // way a second tab can decode is the cached config the server prepends to
+  // the next periodic IDR.
+  await request.post("/__test/control", {
+    data: { encoder: { answerResets: false, keyframeIntervalFrames: 20 } },
+  });
+  await page.goto("/");
+  await streaming(page);
+  const configsBefore = (await encoderStats(request)).configs;
+  const late = await context.newPage();
+  await late.goto("/");
+  await streaming(late);
+  await expect.poll(async () => isRed(await centerColor(late)) || isGreen(await centerColor(late))).toBe(true);
+  expect((await encoderStats(request)).configs).toBe(configsBefore);
 });
 
 test("another tab's device switch refreshes both device lists", async ({
@@ -150,13 +192,17 @@ test("a slow decoder recovers by elapsed time with a shallow queue", async ({
   page,
   request,
 }) => {
+  // No periodic IDRs: every key frame after the first answers a reset, so a
+  // recovery that ends can only have ended on a reset's key frame.
+  await request.post("/__test/control", {
+    data: { encoder: { keyframeIntervalFrames: 0 } },
+  });
   await page.addInitScript(() => {
     const NativeWorker = window.Worker;
     window.Worker = class extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
         const next = new URL(url, location.href);
-        if (next.pathname.includes("stream-worker-"))
-          next.searchParams.set("slow", "1");
+        if (options?.name === "stream-worker") next.searchParams.set("slow", "1");
         super(next, options);
       }
     };
@@ -166,11 +212,24 @@ test("a slow decoder recovers by elapsed time with a shallow queue", async ({
     "title",
     /recoveries [1-9]/,
   );
-  const health = await (await request.get("/health")).json();
-  expect(health.videoResetRequests).toBeGreaterThan(1);
   const detail = await page.locator("header .meta").getAttribute("title");
   expect(Number(detail!.match(/decode queue (\d+)/)?.[1])).toBeLessThan(12);
   expect(Number(detail!.match(/pending (\d+)ms/)?.[1])).toBeGreaterThan(250);
+
+  // Every recovery has to end on the key frame its reset produces. If a
+  // coalesced request were never retried (#153), pending would keep growing.
+  const pending: number[] = [];
+  for (let second = 0; second < 6; second++) {
+    await page.waitForTimeout(1_000);
+    const title = await page.locator("header .meta").getAttribute("title");
+    pending.push(Number(title?.match(/pending (\d+)ms/)?.[1] ?? 0));
+  }
+  expect(Math.max(...pending)).toBeLessThan(3_000);
+  const stats = await encoderStats(request);
+  expect(stats.resetKeyframes).toBeGreaterThanOrEqual(2);
+  expect(stats.keyframes - stats.resetKeyframes).toBe(1);
+  const health = await (await request.get("/health")).json();
+  expect(health.videoResetRequests).toBeGreaterThan(1);
 });
 
 test("structured API errors render as text and keep the stream mounted", async ({

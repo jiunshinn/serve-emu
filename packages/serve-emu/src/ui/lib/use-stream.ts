@@ -111,7 +111,12 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     let worker = workerByCanvas.get(canvas);
     const isNewWorker = !worker;
     if (!worker) {
-      worker = new Worker(new URL("./stream-worker.ts", import.meta.url), { type: "module" });
+      worker = new Worker(new URL("./stream-worker.ts", import.meta.url), {
+        type: "module",
+        // A stable identity for DevTools and the browser tests, whatever
+        // the bundler names the chunk.
+        name: "stream-worker",
+      });
       workerByCanvas.set(canvas, worker);
     }
     currentGeneration = workerGenerationByCanvas.get(canvas) ?? 0;
