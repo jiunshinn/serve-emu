@@ -22,7 +22,7 @@ import type { RoutePlaybackSnapshot } from "../../shared/api-contracts";
 import { apiErrorMessage, apiRequest } from "../lib/api-client";
 import { useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { DEFAULT_MAX_ROUTE_FILE_BYTES } from "../lib/route-parser";
-import { useDeviceSessionSnapshot } from "../lib/device-session-store";
+import { deviceSessionStore, useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { usePoll } from "../lib/use-poll";
 import type {
   RouteParserWorkerCommand,
@@ -143,8 +143,38 @@ export function LocationPanel() {
     // last good snapshot and the next tick retries.
   });
 
+  // Route playback belongs to one device session, so its last snapshot (and
+  // error line) must not outlive it. Clear it as soon as a switch starts, and
+  // when /health settles on a different session without one (a switch made
+  // by another tab or the REST API), rather than showing the old device's
+  // route until the new session's first poll returns, or for good if that
+  // poll fails.
+  const settledSessionKey =
+    !deviceSession.transitioning && deviceSession.sessionGeneration !== null
+      ? `${deviceSession.serial}#${deviceSession.sessionGeneration}`
+      : null;
+  const routeSessionKeyRef = useRef(settledSessionKey);
+  useEffect(() => {
+    if (deviceSession.transitioning) {
+      routeSessionKeyRef.current = null;
+      setRouteStatus(null);
+      return;
+    }
+    if (settledSessionKey === null) return;
+    const previous = routeSessionKeyRef.current;
+    routeSessionKeyRef.current = settledSessionKey;
+    if (previous !== null && previous !== settledSessionKey) {
+      setRouteStatus(null);
+    }
+  }, [deviceSession.transitioning, settledSessionKey]);
+
+  // Returns whether the device session is still the one the mutation began
+  // in. A route start or stop that settles after a switch is the old
+  // session's route; the refresh in endRouteMutation fetches the new one.
   const beginRouteMutation = useCallback(() => {
     routeMutationCountRef.current += 1;
+    const revision = deviceSessionStore.getSnapshot().revision;
+    return () => deviceSessionStore.getSnapshot().revision === revision;
   }, []);
 
   const endRouteMutation = useCallback(() => {
@@ -473,7 +503,7 @@ export function LocationPanel() {
       setStatus("Rate must be positive");
       return;
     }
-    beginRouteMutation();
+    const sameSession = beginRouteMutation();
     setStatus("Starting route...");
     try {
       const data = await apiRequest("/api/route", {
@@ -486,7 +516,7 @@ export function LocationPanel() {
           loop,
         },
       });
-      setRouteStatus(data.route);
+      if (sameSession()) setRouteStatus(data.route);
       setStatus("Route running");
     } catch (err) {
       setStatus(apiErrorMessage(err));
@@ -496,13 +526,13 @@ export function LocationPanel() {
   };
 
   const controlRoute = async (action: "pause" | "resume" | "stop") => {
-    beginRouteMutation();
+    const sameSession = beginRouteMutation();
     try {
       const data = await apiRequest("/api/route/control", {
         method: "POST",
         body: { action },
       });
-      setRouteStatus(data.route);
+      if (sameSession()) setRouteStatus(data.route);
       setStatus(action === "stop" ? "Route stopped" : `Route ${data.route.status}`);
     } catch (err) {
       setStatus(apiErrorMessage(err));
