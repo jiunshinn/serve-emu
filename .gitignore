@@ -10,3 +10,8 @@ package-lock.json
 
 playwright-report/
 test-results/
+
+# README and PR media are GitHub attachments, not repository files (#119).
+# Use `git add -f` for a deliberate small fixture.
+*.mov
+*.mp4

@@ -129,6 +129,8 @@ Please keep pull requests small and focused. A good PR includes:
 
 - a short description of the user-visible behavior change
 - screenshots, recordings, or API examples when UI or runtime behavior changes
+  (attach them to the PR or issue; to show media in the README, upload it as a
+  GitHub attachment and link that URL instead of committing the file)
 - the commands you ran for validation
 - any device/emulator model and Android version used for manual testing
 - notes about protocol, latency, or compatibility risks
