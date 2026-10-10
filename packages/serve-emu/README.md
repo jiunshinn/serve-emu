@@ -252,14 +252,20 @@ matches its `code`:
 { "ok": false, "error": { "code": "rate_limited", "message": "upload queue is full", "reason": "upload-queue-full" } }
 ```
 
-`code` is one of `invalid_request`, `invalid_json`, `unauthorized`,
-`forbidden`, `not_found`, `method_not_allowed`, `conflict` (for example a
-device switch during the request), `payload_too_large`, `rate_limited`,
-`downstream_failure` (adb or the emulator failed), `service_unavailable`, or
-`internal_error`. The optional `reason` names a finer-grained cause within the
-code, such as `adb-timeout` or `control-queue-overloaded`. Messages for
-`downstream_failure` and `internal_error` are fixed and never include command
-output.
+`code` is one of `invalid_request` (`400`), `invalid_json` (`400`),
+`unauthorized` (`401`), `forbidden` (`403`), `not_found` (`404`),
+`method_not_allowed` (`405`), `conflict` (`409`, for example a device switch
+during the request), `payload_too_large` (`413`), `rate_limited` (`429`),
+`internal_error` (`500`), `downstream_failure` (`502`: an adb or emulator
+command failed or timed out), or `service_unavailable` (`503`). The optional
+`reason` names a finer-grained cause within the code, such as
+`control-queue-overloaded`.
+
+A `downstream_failure` names only the failed operation, such as
+`screencap failed` or `adb install timed out`. For a failed command, `reason`
+is `adb-failed`, `adb-timeout`, `adb-cleanup-failed`, or `emulator-failed`, and
+the command's output goes to the server log with the request's method and path.
+An `internal_error` has a fixed message, such as `Internal server error`.
 
 ### Health And Discovery
 

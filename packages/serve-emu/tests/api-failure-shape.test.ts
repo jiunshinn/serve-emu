@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { AppManagementError } from "../src/app-management.ts";
+import { CommandFailureError } from "../src/command-failure.ts";
 import { parseApiFailure, type ApiErrorCode } from "../src/shared/api-contracts.ts";
 import { createHarness, response } from "./helpers/server-harness.ts";
 
@@ -88,6 +89,22 @@ describe("every /api failure uses the documented ApiFailure shape", () => {
         const form = new FormData();
         form.set("file", new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "x.png", { type: "image/png" }));
         return response(h.request("/api/files/import", { method: "POST", body: form, headers: { origin: ORIGIN } }));
+      },
+    },
+    {
+      name: "emulator boot failure",
+      status: 502,
+      code: "downstream_failure",
+      run: async () => {
+        const h = await createHarness({}, {
+          startEmulator: async () => {
+            throw new CommandFailureError(
+              "emulator-failed",
+              "Timed out waiting for emulator-5556 to boot.",
+            );
+          },
+        });
+        return response(h.request("/api/avds/start", json({ avd: "Pixel_8" })));
       },
     },
   ];

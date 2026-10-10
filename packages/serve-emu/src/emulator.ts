@@ -463,7 +463,10 @@ async function waitForEmulatorExit(
     if (!(await readDevices()).some((device) => device.serial === serial)) return;
     await pause(500);
   }
-  throw new Error(`Timed out waiting for ${serial} to stop.`);
+  throw new CommandFailureError(
+    "emulator-failed",
+    `Timed out waiting for ${serial} to stop.`,
+  );
 }
 
 function throwIfAborted(signal: AbortSignal | undefined): void {
@@ -489,7 +492,10 @@ async function waitForBoot(
   while (now() - startedAt < timeoutMs) {
     throwIfAborted(signal);
     if (hasExited(proc)) {
-      throw new Error(`emulator exited before boot completed (code ${proc.exitCode ?? "null"})`);
+      throw new CommandFailureError(
+        "emulator-failed",
+        `emulator exited before boot completed (code ${proc.exitCode ?? "null"})`,
+      );
     }
 
     const state = await adb(serial, ["get-state"], runExec);
@@ -514,7 +520,8 @@ async function waitForBoot(
     await pause(1_000);
   }
 
-  throw new Error(
+  throw new CommandFailureError(
+    "emulator-failed",
     nameUnreadable
       ? `Timed out waiting for ${serial} to report AVD "${avd}": it booted, but its AVD name could not be read.`
       : `Timed out waiting for ${serial} to boot.`,
@@ -596,8 +603,18 @@ async function launchOnPort(
   const proc = (dependencies.spawn ?? spawn)(emulator, args, {
     stdio: ["ignore", "inherit", "inherit"],
   });
+  // The spawn error names the host path; it stays in the cause.
   const spawnError = new Promise<never>((_, reject) => {
-    proc.once("error", reject);
+    proc.once("error", (error) =>
+      reject(
+        new CommandFailureError(
+          "emulator-failed",
+          "emulator could not start",
+          error.message,
+          { cause: error },
+        ),
+      ),
+    );
   });
   const serial = `emulator-${port}`;
   let stopTask: Promise<void> | null = null;
