@@ -1,3 +1,4 @@
+import { setTimeout as sleepFor } from "node:timers/promises";
 import { adbCommandFailure, CommandFailureError } from "./command-failure.ts";
 import { execText } from "./exec.ts";
 import type {
@@ -168,7 +169,24 @@ function boolAttr(value: string | undefined): boolean {
   return value === "true";
 }
 
-async function dumpXml(serial: string, signal?: AbortSignal): Promise<string> {
+export type AccessibilityDependencies = {
+  execText?: typeof execText;
+  /** Rejects with the signal's reason when it aborts. */
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
+};
+
+const CLEANUP_TIMEOUT_MS = 2_000;
+
+const abortableSleep = (ms: number, signal?: AbortSignal) =>
+  sleepFor(ms, undefined, { signal });
+
+async function dumpXml(
+  serial: string,
+  signal: AbortSignal | undefined,
+  dependencies: AccessibilityDependencies,
+): Promise<string> {
+  const run = dependencies.execText ?? execText;
+  const sleep = dependencies.sleep ?? abortableSleep;
   const throwIfAborted = () => {
     if (!signal?.aborted) return;
     throw signal.reason instanceof Error
@@ -176,43 +194,62 @@ async function dumpXml(serial: string, signal?: AbortSignal): Promise<string> {
       : new Error("accessibility request aborted");
   };
   throwIfAborted();
-  const path = `/sdcard/window-${Date.now()}.xml`;
+  const stamp = Date.now();
   // uiautomator's output can carry device paths and stack traces: it stays in
   // the error's message for the server log, never in the public message.
   let lastError: CommandFailureError | undefined;
   for (let attempt = 1; attempt <= DUMP_ATTEMPTS; attempt++) {
-    const dump = await execText("adb", ["-s", serial, "shell", "uiautomator", "dump", path], {
-      timeout: 8_000,
-      signal,
-      lane: "interactive",
-    });
-    throwIfAborted();
-    if (dump.status !== 0 || dump.error) {
-      lastError = adbCommandFailure("uiautomator dump", dump);
-      await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
-      continue;
+    if (attempt > 1) {
+      try {
+        await sleep(150 * (attempt - 1), signal);
+      } catch (error) {
+        throwIfAborted();
+        throw error;
+      }
+      throwIfAborted();
     }
-    const result = await execText("adb", ["-s", serial, "shell", "cat", path], {
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: 8_000,
-      signal,
-      lane: "interactive",
-    });
-    throwIfAborted();
-    void execText("adb", ["-s", serial, "shell", "rm", path], { timeout: 2_000 });
-    if (result.status === 0 && !result.error) return result.stdout;
-    lastError = adbCommandFailure("uiautomator dump read", result);
-    await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
+    // One path per attempt, so this attempt's cleanup cannot race the next
+    // attempt's dump.
+    const path = `/sdcard/window-${stamp}-${attempt}.xml`;
+    try {
+      const dump = await run("adb", ["-s", serial, "shell", "uiautomator", "dump", path], {
+        timeout: 8_000,
+        signal,
+        lane: "interactive",
+      });
+      throwIfAborted();
+      if (dump.status !== 0 || dump.error) {
+        lastError = adbCommandFailure("uiautomator dump", dump);
+        continue;
+      }
+      const result = await run("adb", ["-s", serial, "shell", "cat", path], {
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 8_000,
+        signal,
+        lane: "interactive",
+      });
+      throwIfAborted();
+      if (result.status === 0 && !result.error) return result.stdout;
+      lastError = adbCommandFailure("uiautomator dump read", result);
+    } finally {
+      // The dump holds on-screen text in shared storage. Remove it on every
+      // exit, including an abort (so no session signal here); the device
+      // session's drain waits for this before shutdown.
+      await run("adb", ["-s", serial, "shell", "rm", "-f", path], {
+        timeout: CLEANUP_TIMEOUT_MS,
+        lane: "interactive",
+      }).catch(() => {});
+    }
   }
-  void execText("adb", ["-s", serial, "shell", "rm", path], { timeout: 2_000 });
   throw lastError ?? new CommandFailureError("adb-failed", "uiautomator dump failed");
 }
 
 export async function getAccessibilitySnapshot(
   serial: string,
   signal?: AbortSignal,
+  dependencies: AccessibilityDependencies = {},
 ): Promise<AccessibilitySnapshot> {
-  const xml = await dumpXml(serial, signal);
+  const xml = await dumpXml(serial, signal, dependencies);
   return {
     ok: true,
     capturedAt: new Date().toISOString(),
