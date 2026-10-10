@@ -132,4 +132,3 @@ test("a running but offline AVD keeps one row with its name and is not offered t
     }),
   ]);
 });
-
