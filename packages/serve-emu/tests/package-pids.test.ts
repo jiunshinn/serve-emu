@@ -65,7 +65,7 @@ describe("packagePids", () => {
     await expect(packagePids("device-a", "com.example.app", {}, exec.run)).resolves.toEqual([]);
   });
 
-  test("rejects names pidof should never see without running adb", async () => {
+  test("returns no PIDs for names pidof should never see, without running adb", async () => {
     const exec = fakeExec(result());
     await expect(packagePids("device-a", "com.example app", {}, exec.run)).resolves.toEqual([]);
     await expect(packagePids("device-a", "$(id)", {}, exec.run)).resolves.toEqual([]);
