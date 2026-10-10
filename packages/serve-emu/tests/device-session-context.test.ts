@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { AccessibilitySnapshot } from "../src/accessibility.ts";
 import {
   ActiveDeviceSession,
@@ -177,6 +177,64 @@ describe("ActiveDeviceSession disposal", () => {
     expect(cleanupCalls).toBe(1);
     expect(scrcpyCloseCalls).toBe(1);
     expect(clientCloseCalls).toBe(1);
+  });
+
+  test("logs a failed scrcpy cleanup and resolves only after it settles", async () => {
+    const closeGate = deferred<void>();
+    const cleanupError = new AggregateError(
+      [new Error("adb: device unauthorized")],
+      "scrcpy cleanup failed",
+    );
+    const context = new ActiveDeviceSession({
+      serial: "device-a",
+      generation: 9,
+      scrcpy: {
+        serial: "device-a",
+        meta: { width: 1080, height: 1920 },
+        close: () => closeGate.promise,
+      } as unknown as ScrcpySession,
+      applyLocation: async () => {},
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const disposed = context.dispose("device switched");
+      const beforeCleanup = await Promise.race([
+        disposed.then(() => "disposed" as const),
+        Bun.sleep(10).then(() => "pending" as const),
+      ]);
+      expect(beforeCleanup).toBe("pending");
+
+      closeGate.reject(cleanupError);
+      await disposed;
+      await Bun.sleep(0);
+      expect(unhandled).toEqual([]);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      expect(errorLog).toHaveBeenCalledWith(
+        "[scrcpy] cleanup failed for device-a:",
+        cleanupError,
+      );
+    } finally {
+      errorLog.mockRestore();
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("survives a scrcpy session whose close throws synchronously", async () => {
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const context = activeSession("device-a", 10, () => {
+        throw new Error("socket already destroyed");
+      });
+      await context.dispose("server stopped");
+      expect(errorLog).toHaveBeenCalledTimes(1);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   test("publishes its dispose promise before abort listeners can re-enter", async () => {

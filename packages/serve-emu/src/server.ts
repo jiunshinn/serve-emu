@@ -38,6 +38,7 @@ import {
 } from "./multipart-upload.ts";
 import { HttpBodyError, readJsonLimited } from "./request-body.ts";
 import {
+  closeScrcpySession,
   ScrcpyStreamError,
   startScrcpy,
   type ScrcpySession,
@@ -419,9 +420,7 @@ export async function startServer(
   try {
     initialContext = createContext(opts.serial, 0, initialScrcpy);
   } catch (err) {
-    try {
-      initialScrcpy.close();
-    } catch {}
+    await closeScrcpySession(initialScrcpy);
     throw err;
   }
   const sessions = new DeviceSessionManager(initialContext);
@@ -1354,9 +1353,7 @@ export async function startServer(
         try {
           return createContext(targetSerial, generation, scrcpy);
         } catch (err) {
-          try {
-            scrcpy.close();
-          } catch {}
+          await closeScrcpySession(scrcpy);
           throw err;
         }
       },
