@@ -440,6 +440,25 @@ describe("UploadManager", () => {
     });
   });
 
+  test("remembers only the most recent cancelled generations", async () => {
+    const manager = new UploadManager({ maxActive: 1, maxQueued: 1 });
+    for (let generation = 0; generation <= 32; generation++) {
+      await manager.cancelGeneration(generation);
+    }
+    await rejectsWithCode(
+      manager.run({ context: context(32, "latest") }, () => "never"),
+      "device-session-changed",
+    );
+    await rejectsWithCode(
+      manager.run({ context: context(1, "older") }, () => "never"),
+      "device-session-changed",
+    );
+    // The oldest entry is forgotten; its aborted session signal still guards it.
+    expect(
+      await manager.run({ context: context(0, "evicted") }, () => "accepted"),
+    ).toBe("accepted");
+  });
+
   test("close is reentrant, idempotent, and awaits every active cleanup", async () => {
     const manager = new UploadManager({ maxActive: 1, maxQueued: 1 });
     const cleanup = deferred<void>();
