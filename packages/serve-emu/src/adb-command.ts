@@ -237,15 +237,19 @@ export function adbCommandFailure(
   );
 }
 
-export type TerminateChildOptions = {
+export type TerminateChildOptions<Timer = ReturnType<typeof setTimeout>> = {
   /** Settles once the child has exited. */
   exited: Promise<unknown>;
-  /** How long to wait after SIGTERM, and again after SIGKILL. */
+  /** How long to wait after SIGTERM (and after SIGKILL, unless `killGraceMs`). */
   graceMs: number;
+  /** How long to wait after SIGKILL; defaults to `graceMs`. */
+  killGraceMs?: number;
   /** For the error message, for example "scrcpy process". */
   label: string;
-  setTimer?: (callback: () => void, ms: number) => ReturnType<typeof setTimeout>;
-  clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+  /** Called once, just before SIGKILL, when SIGTERM was not enough. */
+  onEscalate?: () => void;
+  setTimer?: (callback: () => void, ms: number) => Timer;
+  clearTimer?: (timer: Timer) => void;
 };
 
 /**
@@ -253,24 +257,29 @@ export type TerminateChildOptions = {
  * SIGKILL and wait up to `graceMs` again. Rejects if it still has not exited.
  * SIGTERM is sent synchronously, before the returned promise first awaits.
  */
-export async function terminateChild(
+export async function terminateChild<Timer = ReturnType<typeof setTimeout>>(
   child: Pick<ChildProcess, "kill">,
   {
     exited,
     graceMs,
+    killGraceMs = graceMs,
     label,
-    setTimer = (callback, ms) => setTimeout(callback, ms),
-    clearTimer = (timer) => clearTimeout(timer),
-  }: TerminateChildOptions,
+    onEscalate,
+    setTimer = ((callback, ms) => setTimeout(callback, ms)) as (callback: () => void, ms: number) => Timer,
+    clearTimer = ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>)) as (timer: Timer) => void,
+  }: TerminateChildOptions<Timer>,
 ): Promise<void> {
   const exitedWithin = (ms: number) =>
     new Promise<boolean>((resolve) => {
-      const timer = setTimer(() => resolve(false), ms);
+      let timer!: Timer;
       const done = () => {
         clearTimer(timer);
         resolve(true);
       };
+      // Subscribe to the exit first, so it wins a tie with a timer that
+      // fires on the same turn.
       exited.then(done, done);
+      timer = setTimer(() => resolve(false), ms);
     });
   const errors: unknown[] = [];
   const signal = (name: NodeJS.Signals) => {
@@ -283,7 +292,8 @@ export async function terminateChild(
 
   signal("SIGTERM");
   if (await exitedWithin(graceMs)) return;
+  onEscalate?.();
   signal("SIGKILL");
-  if (await exitedWithin(graceMs)) return;
+  if (await exitedWithin(killGraceMs)) return;
   throw new AggregateError(errors, `${label} did not exit after SIGTERM and SIGKILL`);
 }

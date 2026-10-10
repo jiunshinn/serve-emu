@@ -188,6 +188,53 @@ describe("terminateChild", () => {
     expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
   });
 
+  test("waits killGraceMs after SIGKILL and reports the escalation", async () => {
+    const child = new FakeChild("SIGKILL");
+    const delays: number[] = [];
+    let escalations = 0;
+    await terminateChild(child, {
+      exited: child.exited,
+      graceMs: 10_000,
+      killGraceMs: 2_000,
+      label: "test child",
+      onEscalate: () => {
+        escalations++;
+        expect(child.signals).toEqual(["SIGTERM"]);
+      },
+      // The SIGTERM grace period passes at once; the child then exits
+      // within the SIGKILL wait.
+      setTimer: (callback, ms) => {
+        delays.push(ms);
+        if (ms === 10_000) queueMicrotask(callback);
+        return ms;
+      },
+      clearTimer: () => {},
+    });
+    expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(escalations).toBe(1);
+    expect(delays).toEqual([10_000, 2_000]);
+  });
+
+  test("a child that has already exited never escalates", async () => {
+    const child = new FakeChild(null);
+    child.emit("exit");
+    let escalations = 0;
+    await terminateChild(child, {
+      exited: child.exited,
+      graceMs: 10_000,
+      label: "test child",
+      onEscalate: () => escalations++,
+      // A timer that fires on the same turn as the exit.
+      setTimer: (callback) => {
+        queueMicrotask(callback);
+        return 0;
+      },
+      clearTimer: () => {},
+    });
+    expect(child.signals).toEqual(["SIGTERM"]);
+    expect(escalations).toBe(0);
+  });
+
   test("sends SIGTERM before the returned promise first waits", () => {
     const child = new FakeChild("SIGTERM");
     void terminateChild(child, { exited: child.exited, graceMs: 50, label: "test child" });

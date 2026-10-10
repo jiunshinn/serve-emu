@@ -7,6 +7,7 @@ import {
   adbCommandFailure,
   adbSucceeded,
   runAdb,
+  terminateChild,
   type AdbDeps,
 } from "./adb-command.ts";
 import { CommandFailureError } from "./command-failure.ts";
@@ -634,10 +635,14 @@ async function launchOnPort(
       // that `emu kill` would reach; there is nothing left to stop.
       if (hasExited(proc)) return;
       if (confirmed) await adb(serial, ["emu", "kill"], dependencies).catch(() => {});
-      signalChild(proc, "SIGTERM");
-      if (await exited(proc, STOP_GRACE_MS, dependencies)) return;
-      signalChild(proc, "SIGKILL");
-      await exited(proc, KILL_REAP_MS, dependencies);
+      // A child that survives SIGKILL is left to the OS; stop still settles.
+      await terminateChild(proc, {
+        exited: exitOf(proc),
+        graceMs: STOP_GRACE_MS,
+        killGraceMs: KILL_REAP_MS,
+        label: "emulator",
+        ...sleepTimers(dependencies),
+      }).catch(() => {});
     })();
     return stopTask;
   };
@@ -676,42 +681,38 @@ async function launchOnPort(
   }
 }
 
-function signalChild(proc: ChildProcess, signal: NodeJS.Signals): void {
-  try {
-    proc.kill(signal);
-  } catch {}
-}
-
 function hasExited(proc: ChildProcess): boolean {
   return proc.exitCode !== null || proc.signalCode !== null;
 }
 
-/** Resolves true once `proc` has exited, or false after `timeoutMs`. */
-async function exited(
-  proc: ChildProcess,
-  timeoutMs: number,
-  dependencies: Pick<EmulatorRuntimeDependencies, "sleep">,
-): Promise<boolean> {
-  if (hasExited(proc)) return true;
-  let onExit!: () => void;
-  const exit = new Promise<true>((resolve) => {
-    onExit = () => resolve(true);
-    proc.once("exit", onExit);
-  });
-  // Cancelled once the process exits, so a caller that stopped the emulator
-  // is not kept alive for the rest of the grace period.
-  const timer = new AbortController();
+/** Settles once `proc` has exited (immediately if it already has). */
+function exitOf(proc: ChildProcess): Promise<void> {
+  if (hasExited(proc)) return Promise.resolve();
+  return new Promise((resolve) => proc.once("exit", () => resolve()));
+}
+
+/**
+ * terminateChild's timers on top of the injectable, abortable `sleep`:
+ * clearing a timer aborts its sleep, so a stopped emulator does not keep the
+ * caller waiting out the rest of the grace period.
+ */
+function sleepTimers(dependencies: Pick<EmulatorRuntimeDependencies, "sleep">) {
   const pause = dependencies.sleep ?? sleep;
-  const timedOut = Promise.resolve(
-    pause(timeoutMs, undefined, { signal: timer.signal }),
-  ).then(
-    () => false as const,
-    () => false as const,
-  );
-  try {
-    return await Promise.race([exit, timedOut]);
-  } finally {
-    proc.off("exit", onExit);
-    timer.abort();
-  }
+  return {
+    setTimer: (callback: () => void, ms: number): AbortController => {
+      const timer = new AbortController();
+      Promise.resolve(pause(ms, undefined, { signal: timer.signal }))
+        // Yield a turn first, so an exit already on its way (a sleep that
+        // resolves at once, as in tests) is seen before the timer fires.
+        .then(() => new Promise<void>((resolve) => setImmediate(resolve)))
+        .then(
+          () => {
+            if (!timer.signal.aborted) callback();
+          },
+          () => {},
+        );
+      return timer;
+    },
+    clearTimer: (timer: AbortController) => timer.abort(),
+  };
 }
