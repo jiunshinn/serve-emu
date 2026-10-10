@@ -92,6 +92,21 @@ describe("every /api failure uses the documented ApiFailure shape", () => {
       },
     },
     {
+      name: "adb timeout",
+      status: 504,
+      code: "downstream_timeout",
+      run: async () => {
+        const h = await createHarness({}, {
+          importMediaFile: async () => {
+            throw new AppManagementError("adb-timeout", "adb push '/tmp/x' timed out");
+          },
+        });
+        const form = new FormData();
+        form.set("file", new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "x.png", { type: "image/png" }));
+        return response(h.request("/api/files/import", { method: "POST", body: form, headers: { origin: ORIGIN } }));
+      },
+    },
+    {
       name: "emulator boot failure",
       status: 502,
       code: "downstream_failure",

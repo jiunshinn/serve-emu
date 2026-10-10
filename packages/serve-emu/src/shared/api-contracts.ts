@@ -13,6 +13,7 @@ export const API_ERROR_CODES = [
   "rate_limited",
   "downstream_failure",
   "service_unavailable",
+  "downstream_timeout",
   "internal_error",
 ] as const;
 

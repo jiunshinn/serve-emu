@@ -44,6 +44,7 @@ describe("ApiError", () => {
     [500, "internal_error"],
     [502, "downstream_failure"],
     [503, "service_unavailable"],
+    [504, "downstream_timeout"],
   ] as const)("serializes status %i and code %s", async (status, code) => {
     const response = apiErrorResponse(
       new ApiError(status, code, "Safe message"),
@@ -303,11 +304,11 @@ describe("createApiRouter", () => {
 
     const adb = await router.handle(new Request(url("/api/adb")), deps);
     const adbText = await adb!.text();
-    expect(adb!.status).toBe(502);
+    expect(adb!.status).toBe(504);
     expect(JSON.parse(adbText)).toEqual({
       ok: false,
       error: {
-        code: "downstream_failure",
+        code: "downstream_timeout",
         message: "screencap timed out",
         reason: "adb-timeout",
       },
@@ -323,7 +324,7 @@ describe("createApiRouter", () => {
 
     // Only server failures are logged, each with its original error.
     expect(calls.map(({ path, status, cause }) => [path, status, cause])).toEqual([
-      ["/api/adb", 502, thrown["/api/adb"]],
+      ["/api/adb", 504, thrown["/api/adb"]],
       ["/api/bug", 500, thrown["/api/bug"]],
     ]);
   });

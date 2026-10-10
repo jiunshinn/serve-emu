@@ -52,10 +52,11 @@ const api = (
  * The single translation from internal errors to API failures. Codes come
  * from API_ERROR_CODES, each sent with the one status API_ERROR_STATUS gives
  * it; finer distinctions the codes do not carry (a full upload queue vs a full
- * control queue, an adb timeout) go in `reason`.
+ * control queue, which adb step failed) go in `reason`.
  *
- * A downstream failure sends the command's public message, which names the
- * operation and never its output; an internal failure sends a fixed message.
+ * A downstream failure or timeout sends the command's public message, which
+ * names the operation and never its output; an internal failure sends a fixed
+ * message.
  * The original error is kept as `cause` for the log, never sent to the
  * client.
  */
@@ -100,10 +101,16 @@ export function toApiError(
     return api("conflict", message(err), err);
   }
   // adb or emulator failures, also as the cause of a route location update:
-  // only the operation's public message, never the command's output.
+  // only the operation's public message, never the command's output. A timed
+  // out adb command is a 504; every other command failure is a 502.
   const failure = commandFailureOf(err);
   if (failure) {
-    return api("downstream_failure", failure.publicMessage, err, failure.code);
+    return api(
+      failure.code === "adb-timeout" ? "downstream_timeout" : "downstream_failure",
+      failure.publicMessage,
+      err,
+      failure.code,
+    );
   }
   if (err instanceof RoutePlaybackApplyError) {
     // Route playback builds this message with publicErrorMessage, so it is

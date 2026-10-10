@@ -367,13 +367,21 @@ describe("RoutePlayback lifecycle", () => {
     });
   });
 
-  test("command failures are downstream failures without their output", async () => {
+  test("command failures are downstream failures or timeouts without their output", async () => {
     const output = "KO: /home/me/.emulator_console_auth_token";
     const errorLog = spyOn(console, "error").mockImplementation(() => {});
     try {
-      for (const [failure, status] of [
-        [new CommandFailureError("adb-failed", "adb emu geo fix failed", output), 502],
-        [new CommandFailureError("adb-timeout", "adb emu geo fix timed out"), 502],
+      for (const [failure, status, code] of [
+        [
+          new CommandFailureError("adb-failed", "adb emu geo fix failed", output),
+          502,
+          "downstream_failure",
+        ],
+        [
+          new CommandFailureError("adb-timeout", "adb emu geo fix timed out"),
+          504,
+          "downstream_timeout",
+        ],
       ] as const) {
         const playback = new RoutePlayback({
           clock: new ManualClock(),
@@ -399,7 +407,7 @@ describe("RoutePlayback lifecycle", () => {
         expect(await response.json()).toEqual({
           ok: false,
           error: {
-            code: "downstream_failure",
+            code,
             message: failure.publicMessage,
             reason: failure.code,
           },

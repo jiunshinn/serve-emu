@@ -19,6 +19,7 @@ export const API_ERROR_STATUS = {
   internal_error: 500,
   downstream_failure: 502,
   service_unavailable: 503,
+  downstream_timeout: 504,
 } as const satisfies Record<ApiErrorCode, number>;
 
 export type ApiErrorStatus = (typeof API_ERROR_STATUS)[ApiErrorCode];

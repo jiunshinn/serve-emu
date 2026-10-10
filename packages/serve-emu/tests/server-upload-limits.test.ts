@@ -678,12 +678,11 @@ describe("server request and upload limits", () => {
         },
       });
       expect(failedBody).not.toContain("serve-emu-upload");
-      // downstream_failure is always 502; the reason marks the timeout.
-      expect(timedOut.status).toBe(502);
+      expect(timedOut.status).toBe(504);
       expect(await timedOut.json()).toEqual({
         ok: false,
         error: {
-          code: "downstream_failure",
+          code: "downstream_timeout",
           message: "adb install timed out",
           reason: "adb-timeout",
         },
@@ -695,7 +694,7 @@ describe("server request and upload limits", () => {
         "[api] POST /api/apps/install -> 502 adb install failed:",
       );
       expect(String(errorLog.mock.calls[1]?.[0])).toBe(
-        "[api] POST /api/apps/install -> 502 adb install timed out:",
+        "[api] POST /api/apps/install -> 504 adb install timed out:",
       );
       expect((errorLog.mock.calls[0]?.[1] as Error).message).toBe(adbOutput);
     } finally {
