@@ -14,8 +14,8 @@ import { loadDeviceGrid } from "./device-grid.ts";
 import { createApiRouter } from "./api/router.ts";
 import type { ApplyLocationOptions } from "./api/dependencies.ts";
 import { createDeviceService, type DeviceService } from "./device-service.ts";
-import { ApiError, apiErrorResponse, type ApiErrorCode } from "./api/api-error.ts";
-import { toApiError } from "./api/error-mapping.ts";
+import { ApiError, apiErrorResponse } from "./api/api-error.ts";
+import { toApiError, type ApiErrorFallback } from "./api/error-mapping.ts";
 import { createApiRoutes } from "./api/routes/index.ts";
 import { importMediaFile, installApk } from "./app-management.ts";
 import { logApiFailure } from "./command-failure.ts";
@@ -555,7 +555,7 @@ export async function startServer(
   const errorResponse = (
     err: unknown,
     req: Request,
-    fallback: ApiErrorCode = "invalid_request",
+    fallback: ApiErrorFallback = "invalid_request",
   ) => {
     const error = toApiError(err, fallback);
     if (error.status >= 500) {
@@ -1353,7 +1353,7 @@ export async function startServer(
           ...apiServices,
           requestContext,
           srv,
-          errorResponse: (err: unknown, fallback?: ApiErrorCode) =>
+          errorResponse: (err: unknown, fallback?: ApiErrorFallback) =>
             errorResponse(err, req, fallback),
         });
         if (apiResponse) return apiResponse;

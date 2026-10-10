@@ -9,6 +9,8 @@ import {
   type ApiLogger,
   type ApiRoute,
 } from "../src/api/router.ts";
+import { CommandFailureError } from "../src/command-failure.ts";
+import { SessionChangedError } from "../src/device-session-context.ts";
 
 const url = (path: string) => `http://127.0.0.1:3011${path}`;
 
@@ -269,6 +271,61 @@ describe("createApiRouter", () => {
     });
     expect(text).not.toContain("hunter2");
     expect(text).not.toContain("super-secret");
+  });
+
+  test("maps uncaught errors through the same table as handled ones", async () => {
+    const calls: ApiErrorLogContext[] = [];
+    const thrown: Record<string, unknown> = {
+      "/api/stale": new SessionChangedError(1, 2),
+      "/api/adb": new CommandFailureError(
+        "adb-timeout",
+        "screencap timed out",
+        "/home/me/SECRET-PATH",
+      ),
+      "/api/bug": new TypeError("cannot read /home/me/SECRET-PATH"),
+    };
+    const router = createApiRouter<Deps>(
+      Object.entries(thrown).map(([path, error]) => ({
+        method: "GET",
+        path,
+        handler: () => {
+          throw error;
+        },
+      })),
+      { logger: { error: (_message, context) => calls.push(context) } },
+    );
+
+    const stale = await router.handle(new Request(url("/api/stale")), deps);
+    expect(stale!.status).toBe(409);
+    expect(await errorJson(stale)).toMatchObject({
+      error: { code: "conflict", reason: "session_changed" },
+    });
+
+    const adb = await router.handle(new Request(url("/api/adb")), deps);
+    const adbText = await adb!.text();
+    expect(adb!.status).toBe(502);
+    expect(JSON.parse(adbText)).toEqual({
+      ok: false,
+      error: {
+        code: "downstream_failure",
+        message: "screencap timed out",
+        reason: "adb-timeout",
+      },
+    });
+    expect(adbText).not.toContain("SECRET-PATH");
+
+    const bug = await router.handle(new Request(url("/api/bug")), deps);
+    expect(bug!.status).toBe(500);
+    expect(await errorJson(bug)).toEqual({
+      ok: false,
+      error: { code: "internal_error", message: "Internal server error" },
+    });
+
+    // Only server failures are logged, each with its original error.
+    expect(calls.map(({ path, status, cause }) => [path, status, cause])).toEqual([
+      ["/api/adb", 502, thrown["/api/adb"]],
+      ["/api/bug", 500, thrown["/api/bug"]],
+    ]);
   });
 
   test("can widen the claimed path set for composition routes", async () => {

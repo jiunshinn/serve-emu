@@ -98,7 +98,7 @@ describe("session replay input validation", () => {
     expect(toApiError(new Error("unexpected"), "internal_error")).toMatchObject({
       status: 500,
       code: "internal_error",
-      message: "internal server error",
+      message: "Internal server error",
     });
   });
 });

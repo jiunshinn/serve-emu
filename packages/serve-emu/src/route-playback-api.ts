@@ -1,5 +1,5 @@
 import { apiErrorResponse } from "./api/api-error.ts";
-import { toApiError } from "./api/error-mapping.ts";
+import { toApiError, type ApiErrorFallback } from "./api/error-mapping.ts";
 import { logApiFailure } from "./command-failure.ts";
 import { SessionChangedError } from "./device-session-context.ts";
 import type {
@@ -18,7 +18,7 @@ type RouteStarter = Pick<RoutePlayback, "start">;
  */
 export function routePlaybackErrorResponse(
   error: unknown,
-  fallback: "invalid_request" | "internal_error" = "internal_error",
+  fallback: ApiErrorFallback = "internal_error",
   request?: Pick<Request, "method" | "url">,
 ): Response {
   const apiError = toApiError(error, fallback);

@@ -60,12 +60,12 @@ describe("session replay API responses", () => {
       {
         error: new Error("unexpected"),
         status: 500,
-        body: { code: "internal_error", message: "internal server error" },
+        body: { code: "internal_error", message: "Internal server error" },
       },
       {
         error: "string failure",
         status: 500,
-        body: { code: "internal_error", message: "internal server error" },
+        body: { code: "internal_error", message: "Internal server error" },
       },
     ];
 
@@ -140,7 +140,7 @@ describe("session replay API responses", () => {
     expect(failed.status).toBe(500);
     expect(await failed.json()).toEqual({
       ok: false,
-      error: { code: "internal_error", message: "internal server error" },
+      error: { code: "internal_error", message: "Internal server error" },
     });
   });
 

@@ -363,7 +363,7 @@ describe("RoutePlayback lifecycle", () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({
       ok: false,
-      error: { code: "internal_error", message: "internal server error" },
+      error: { code: "internal_error", message: "Internal server error" },
     });
   });
 

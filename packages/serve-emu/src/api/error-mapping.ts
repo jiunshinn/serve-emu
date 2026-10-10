@@ -15,8 +15,17 @@ import { UploadManagerError } from "../upload-manager.ts";
 import {
   API_ERROR_STATUS,
   ApiError,
+  internalApiError,
   type ApiErrorCode,
 } from "./api-error.ts";
+
+/**
+ * How `toApiError` classifies an error it has no entry for. Route handlers
+ * throw plain errors for invalid input, so the errors they catch default to
+ * `invalid_request`; the router passes `internal_error` for errors no handler
+ * caught.
+ */
+export type ApiErrorFallback = "invalid_request" | "internal_error";
 
 const UPLOAD_MANAGER_ERRORS: Record<
   UploadManagerError["code"],
@@ -41,16 +50,18 @@ const api = (
 
 /**
  * The single translation from internal errors to API failures. Codes come
- * from API_ERROR_CODES; finer distinctions the codes do not carry (a full
- * upload queue vs a full control queue, an adb timeout) go in `reason`.
- * Downstream and internal failures get a fixed message; the original error
- * is kept as `cause` for the log, never sent to the client.
+ * from API_ERROR_CODES, each sent with the one status API_ERROR_STATUS gives
+ * it; finer distinctions the codes do not carry (a full upload queue vs a full
+ * control queue, an adb timeout) go in `reason`.
  *
- * `fallback` classifies plain errors, which routes throw for invalid input.
+ * A downstream failure sends the command's public message, which names the
+ * operation and never its output; an internal failure sends a fixed message.
+ * The original error is kept as `cause` for the log, never sent to the
+ * client.
  */
 export function toApiError(
   err: unknown,
-  fallback: ApiErrorCode = "invalid_request",
+  fallback: ApiErrorFallback = "invalid_request",
 ): ApiError {
   if (err instanceof ApiError) return err;
   if (err instanceof SessionChangedError) {
@@ -103,8 +114,7 @@ export function toApiError(
   if (err instanceof SessionReplayConflictError) {
     return api("conflict", message(err), err);
   }
-  if (API_ERROR_STATUS[fallback] >= 500) {
-    return api(fallback, fallback === "internal_error" ? "internal server error" : "request failed", err);
-  }
-  return api(fallback, message(err), err);
+  return fallback === "internal_error"
+    ? internalApiError(err)
+    : api("invalid_request", message(err), err);
 }

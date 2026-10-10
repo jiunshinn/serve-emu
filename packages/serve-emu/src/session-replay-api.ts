@@ -1,5 +1,5 @@
 import { apiErrorResponse } from "./api/api-error.ts";
-import { toApiError } from "./api/error-mapping.ts";
+import { toApiError, type ApiErrorFallback } from "./api/error-mapping.ts";
 import {
   SessionReplayConflictError,
   type ReplayHandlers,
@@ -14,7 +14,7 @@ type ReplayController = Pick<
 /** Replay failures: validation 400, conflicts 409, anything else 500. */
 export function sessionReplayErrorResponse(
   error: unknown,
-  fallback: "invalid_request" | "internal_error" = "internal_error",
+  fallback: ApiErrorFallback = "internal_error",
 ): Response {
   const apiError = toApiError(error, fallback);
   if (apiError.status >= 500) console.error(`[api] ${apiError.message}:`, error);
