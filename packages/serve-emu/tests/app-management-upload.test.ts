@@ -111,9 +111,9 @@ describe("staged app management uploads", () => {
       kind: "image",
     });
     expect(calls.map((call) => call.args.slice(2))).toEqual([
-      ["shell", "mkdir", "-p", "/sdcard/Pictures"],
+      ["shell", "mkdir", "-p", "'/sdcard/Pictures'"],
       ["push", file.path, partial],
-      ["shell", "mv", "-f", partial, final],
+      ["shell", "mv", "-f", `'${partial}'`, `'${final}'`],
       [
         "shell",
         "am",
@@ -121,7 +121,7 @@ describe("staged app management uploads", () => {
         "-a",
         "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
         "-d",
-        `file://${final}`,
+        `'file://${final}'`,
       ],
     ]);
     expect(calls.every((call) => call.args[1] === "old-device")).toBe(true);
@@ -154,7 +154,7 @@ describe("staged app management uploads", () => {
       "shell",
       "rm",
       "-f",
-      "/sdcard/Movies/.serve-emu-failed-clip.mp4.part",
+      "'/sdcard/Movies/.serve-emu-failed-clip.mp4.part'",
     ]);
     expect(calls.at(-1)?.opts.signal).toBeUndefined();
   });
@@ -181,8 +181,8 @@ describe("staged app management uploads", () => {
         "shell",
         "mv",
         "-f",
-        "/sdcard/Download/.serve-emu-safe-upload-safe.part",
-        final,
+        "'/sdcard/Download/.serve-emu-safe-upload-safe.part'",
+        `'${final}'`,
       ]);
     },
   );

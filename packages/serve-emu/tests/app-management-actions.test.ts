@@ -137,7 +137,7 @@ describe("app management actions", () => {
         "shell",
         "monkey",
         "-p",
-        "com.example.app",
+        "'com.example.app'",
         "-c",
         "android.intent.category.LAUNCHER",
         "1",
@@ -149,7 +149,7 @@ describe("app management actions", () => {
         "am",
         "start",
         "-n",
-        "com.example.app/.MainActivity",
+        "'com.example.app/.MainActivity'",
       ],
       [
         "-s",
@@ -158,13 +158,33 @@ describe("app management actions", () => {
         "am",
         "start",
         "-n",
-        "com.other/.Entry",
+        "'com.other/.Entry'",
       ],
     ]);
     expect(calls.every((call) => call.cmd === "adb")).toBe(true);
     expect(calls.every((call) => call.opts.timeout === 30_000)).toBe(true);
     expect(calls.every((call) => call.opts.lane === "background")).toBe(true);
     expect(calls.every((call) => call.opts.signal === undefined)).toBe(true);
+  });
+
+  test("quotes nested-class activities so the device shell keeps the $ suffix", async () => {
+    const calls: ExecCall[] = [];
+    const run = recordingExec(calls, result({ stdout: "Starting\n" }));
+    for (const activity of [
+      "Settings$WifiSettingsActivity",
+      ".Settings$WifiSettingsActivity",
+      "com.android.settings/.Settings$WifiSettingsActivity",
+    ]) {
+      await launchApp("device-a", "com.android.settings", activity, {
+        execText: run,
+      });
+    }
+
+    expect(calls.map((call) => call.args.slice(2))).toEqual([
+      ["shell", "am", "start", "-n", "'com.android.settings/Settings$WifiSettingsActivity'"],
+      ["shell", "am", "start", "-n", "'com.android.settings/.Settings$WifiSettingsActivity'"],
+      ["shell", "am", "start", "-n", "'com.android.settings/.Settings$WifiSettingsActivity'"],
+    ]);
   });
 
   test("builds clear, force-stop, and permission grant commands", async () => {
@@ -183,14 +203,14 @@ describe("app management actions", () => {
     );
 
     expect(calls.map((call) => call.args)).toEqual([
-      ["-s", "device-b", "shell", "pm", "clear", "com.example.app"],
+      ["-s", "device-b", "shell", "pm", "clear", "'com.example.app'"],
       [
         "-s",
         "device-b",
         "shell",
         "am",
         "force-stop",
-        "com.example.app",
+        "'com.example.app'",
       ],
       [
         "-s",
@@ -198,8 +218,8 @@ describe("app management actions", () => {
         "shell",
         "pm",
         "grant",
-        "com.example.app",
-        "android.permission.CAMERA",
+        "'com.example.app'",
+        "'android.permission.CAMERA'",
       ],
     ]);
   });
@@ -243,7 +263,7 @@ describe("app management actions", () => {
     await expect(nonzero).rejects.toMatchObject({
       name: "AppManagementError",
       code: "adb-failed",
-      message: "adb shell pm clear com.example.app failed",
+      message: "adb shell pm clear 'com.example.app' failed",
     });
 
     const spawnError = new Error("spawn adb ENOENT");
@@ -270,7 +290,7 @@ describe("app management actions", () => {
     await expect(timedOut).rejects.toMatchObject({
       code: "adb-timeout",
       message:
-        "adb shell pm grant com.example.app android.permission.CAMERA timed out",
+        "adb shell pm grant 'com.example.app' 'android.permission.CAMERA' timed out",
       cause: timeoutError,
     });
   });
@@ -354,7 +374,7 @@ describe("app management install and import boundaries", () => {
         "shell",
         "mkdir",
         "-p",
-        directory,
+        `'${directory}'`,
       ]);
     },
   );
@@ -400,8 +420,8 @@ describe("app management install and import boundaries", () => {
       "shell",
       "mv",
       "-f",
-      "/sdcard/Pictures/.serve-emu-committed-photo.jpg.part",
-      "/sdcard/Pictures/photo.jpg",
+      "'/sdcard/Pictures/.serve-emu-committed-photo.jpg.part'",
+      "'/sdcard/Pictures/photo.jpg'",
     ]);
   });
 
@@ -427,7 +447,7 @@ describe("app management install and import boundaries", () => {
       "shell",
       "rm",
       "-f",
-      "/sdcard/Movies/.serve-emu-cancelled-clip.mp4.part",
+      "'/sdcard/Movies/.serve-emu-cancelled-clip.mp4.part'",
     ]);
     expect(calls.at(-1)?.opts.signal).toBeUndefined();
   });

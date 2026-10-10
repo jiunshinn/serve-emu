@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { adbOperation, CommandFailureError } from "./command-failure.ts";
 import { execText } from "./exec.ts";
+import { shellQuote } from "./shell-quote.ts";
 import type {
   AppActionResponse,
   FileImportResponse,
@@ -186,7 +187,7 @@ export async function importMediaFile(
   try {
     await adb(
       serial,
-      ["shell", "mkdir", "-p", remoteDir],
+      ["shell", "mkdir", "-p", shellQuote(remoteDir)],
       30_000,
       signal,
       runExec,
@@ -200,7 +201,7 @@ export async function importMediaFile(
     );
     await adb(
       serial,
-      ["shell", "mv", "-f", partialPath, remotePath],
+      ["shell", "mv", "-f", shellQuote(partialPath), shellQuote(remotePath)],
       30_000,
       signal,
       runExec,
@@ -213,7 +214,7 @@ export async function importMediaFile(
       "-a",
       "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
       "-d",
-      `file://${remotePath}`,
+      shellQuote(`file://${remotePath}`),
     ], 30_000, signal, runExec);
     return {
       ok: true,
@@ -229,7 +230,7 @@ export async function importMediaFile(
       try {
         await adb(
           serial,
-          ["shell", "rm", "-f", partialPath],
+          ["shell", "rm", "-f", shellQuote(partialPath)],
           5_000,
           undefined,
           runExec,
@@ -263,7 +264,7 @@ export function launchApp(
     const component = act.includes("/") ? act : `${pkg}/${act}`;
     return adb(
       serial,
-      ["shell", "am", "start", "-n", component],
+      ["shell", "am", "start", "-n", shellQuote(component)],
       30_000,
       undefined,
       dependencies.execText,
@@ -275,7 +276,7 @@ export function launchApp(
       "shell",
       "monkey",
       "-p",
-      pkg,
+      shellQuote(pkg),
       "-c",
       "android.intent.category.LAUNCHER",
       "1",
@@ -293,7 +294,7 @@ export function clearAppData(
 ): Promise<AppActionResult> {
   return adb(
     serial,
-    ["shell", "pm", "clear", packageName(packageNameValue)],
+    ["shell", "pm", "clear", shellQuote(packageName(packageNameValue))],
     30_000,
     undefined,
     dependencies.execText,
@@ -307,7 +308,7 @@ export function forceStopApp(
 ): Promise<AppActionResult> {
   return adb(
     serial,
-    ["shell", "am", "force-stop", packageName(packageNameValue)],
+    ["shell", "am", "force-stop", shellQuote(packageName(packageNameValue))],
     30_000,
     undefined,
     dependencies.execText,
@@ -326,8 +327,8 @@ export function grantPermission(
       "shell",
       "pm",
       "grant",
-      packageName(packageNameValue),
-      permissionName(permissionValue),
+      shellQuote(packageName(packageNameValue)),
+      shellQuote(permissionName(permissionValue)),
     ],
     30_000,
     undefined,
