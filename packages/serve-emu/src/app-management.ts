@@ -1,5 +1,13 @@
 import { randomBytes } from "node:crypto";
-import { adbOperation, CommandFailureError } from "./command-failure.ts";
+import {
+  adbCommandFailure,
+  adbOperation,
+  adbSucceeded,
+} from "./adb-command.ts";
+import {
+  CommandFailureError,
+  type CommandFailureCode,
+} from "./command-failure.ts";
 import { execText } from "./exec.ts";
 import { shellQuote } from "./shell-quote.ts";
 import type {
@@ -17,10 +25,7 @@ export type LocalUploadFile = {
   size: number;
 };
 
-export type AppManagementErrorCode =
-  | "adb-failed"
-  | "adb-timeout"
-  | "adb-cleanup-failed";
+export type AppManagementErrorCode = Exclude<CommandFailureCode, "emulator-failed">;
 
 export type AppManagementDependencies = {
   execText?: typeof execText;
@@ -30,6 +35,9 @@ export type AppManagementDependencies = {
 const PUBLIC_MESSAGES: Record<AppManagementErrorCode, string> = {
   "adb-failed": "adb command failed",
   "adb-timeout": "adb command timed out",
+  "adb-aborted": "adb command was cancelled",
+  "adb-output-limit": "adb command printed more output than allowed",
+  "adb-device-unavailable": "adb command failed: the device is unavailable",
   "adb-cleanup-failed": "adb cleanup failed",
 };
 
@@ -81,26 +89,15 @@ async function adb(
       : new DOMException("The operation was aborted", "AbortError");
   }
   const text = output(result.stdout, result.stderr);
-  const operation = adbOperation(args);
-  if (result.timedOut) {
+  if (!adbSucceeded(result)) {
+    const failure = adbCommandFailure(adbOperation(args), result);
+    const fallback = result.timedOut
+      ? `adb ${args.join(" ")} timed out`
+      : result.error?.message || `adb ${args.join(" ")} failed`;
     throw new AppManagementError(
-      "adb-timeout",
-      text || `adb ${args.join(" ")} timed out`,
-      { cause: result.error, publicMessage: `${operation} timed out` },
-    );
-  }
-  if (result.error) {
-    throw new AppManagementError(
-      "adb-failed",
-      text || result.error.message || `adb ${args.join(" ")} failed`,
-      { cause: result.error, publicMessage: `${operation} failed` },
-    );
-  }
-  if (result.status !== 0) {
-    throw new AppManagementError(
-      "adb-failed",
-      text || `adb ${args.join(" ")} failed`,
-      { publicMessage: `${operation} failed` },
+      failure.code as AppManagementErrorCode,
+      text || fallback,
+      { cause: result.error ?? undefined, publicMessage: failure.publicMessage },
     );
   }
   return { ok: true, output: text };

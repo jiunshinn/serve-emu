@@ -2,13 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { spawn } from "node:child_process";
 import {
+  adbCommandFailure,
+  adbFailureCode,
+  adbOperation,
+  adbSucceeded,
   isConnectionClosed,
   isDeviceUnavailable,
   runAdb,
   spawnAdb,
   terminateChild,
 } from "../src/adb-command.ts";
-import type { ExecOpts, ExecResult, execText } from "../src/exec.ts";
+import { toApiError } from "../src/api/error-mapping.ts";
+import { CommandFailureError } from "../src/command-failure.ts";
+import { ExecError, type ExecOpts, type ExecResult, type execText } from "../src/exec.ts";
 
 const ok: ExecResult<string> = { status: 0, signal: null, stdout: "", stderr: "", timedOut: false, error: null };
 
@@ -100,6 +106,64 @@ class FakeChild extends EventEmitter {
   }
   exited = new Promise<void>((resolve) => this.once("exit", () => resolve()));
 }
+
+describe("adb command failures", () => {
+  const failed = (overrides: Partial<ExecResult<string>>): ExecResult<string> => ({
+    ...ok,
+    status: 1,
+    ...overrides,
+  });
+
+  test.each([
+    ["timeout", failed({ status: null, timedOut: true, error: new ExecError("deadline-exceeded", "command deadline exceeded") }), "adb-timeout", 504, "timed out"],
+    ["abort", failed({ status: null, error: new ExecError("aborted", "command was aborted") }), "adb-aborted", 502, "was cancelled"],
+    ["output limit", failed({ status: null, error: new ExecError("output-limit", "combined stdout and stderr exceed 1024 bytes") }), "adb-output-limit", 502, "printed more output than allowed"],
+    ["offline device", failed({ stderr: "adb: device offline\n" }), "adb-device-unavailable", 503, "failed: the device is unavailable"],
+    ["unauthorized device", failed({ stderr: "adb: device unauthorized.\n" }), "adb-device-unavailable", 503, "failed: the device is unavailable"],
+    ["closed connection", failed({ stderr: "error: closed\n" }), "adb-device-unavailable", 503, "failed: the device is unavailable"],
+    ["command error", failed({ stderr: "Error: unknown command 'frobnicate'\n" }), "adb-failed", 502, "failed"],
+  ] as const)("classifies a %s", (_, result, code, status, outcome) => {
+    expect(adbSucceeded(result)).toBe(false);
+    expect(adbFailureCode(result)).toBe(code);
+    const error = adbCommandFailure("adb shell cmd", result);
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error.code).toBe(code);
+    expect(error.publicMessage).toBe(`adb shell cmd ${outcome}`);
+    expect(toApiError(error)).toMatchObject({ status, reason: code });
+  });
+
+  test("keeps output and the full command out of the public message", () => {
+    const error = adbCommandFailure(
+      "adb push",
+      failed({ stderr: "failed to copy '/home/me/secret.apk'\n", stdout: "ignored" }),
+      "adb -s emulator-5554 push /home/me/secret.apk /data/local/tmp/x",
+    );
+    expect(error.publicMessage).toBe("adb push failed");
+    expect(error.message).toBe(
+      "adb push failed: adb -s emulator-5554 push /home/me/secret.apk /data/local/tmp/x: failed to copy '/home/me/secret.apk'",
+    );
+  });
+
+  test("detail prefers stderr, then the executor error, then stdout", () => {
+    const cause = new ExecError("queue-full", "executor queue is full");
+    expect(adbCommandFailure("x", failed({ stderr: "err", stdout: "out", error: cause })).message).toBe("x failed: err");
+    expect(adbCommandFailure("x", failed({ stdout: "out", error: cause })).message).toBe("x failed: executor queue is full");
+    expect(adbCommandFailure("x", failed({ stdout: "out" })).message).toBe("x failed: out");
+    expect(adbCommandFailure("x", failed({})).message).toBe("x failed: status 1");
+    expect(adbCommandFailure("x", failed({ error: cause })).cause).toBe(cause);
+  });
+
+  test("a clean exit succeeds, and an error or non-zero status does not", () => {
+    expect(adbSucceeded(ok)).toBe(true);
+    expect(adbSucceeded(failed({}))).toBe(false);
+    expect(adbSucceeded({ ...ok, error: new Error("spawn adb ENOENT") })).toBe(false);
+  });
+
+  test("names an invocation by its subcommand only", () => {
+    expect(adbOperation(["push", "/home/me/a.apk", "/data/local/tmp/a"])).toBe("adb push");
+    expect(adbOperation(["shell", "pm", "install", "x"])).toBe("adb shell pm");
+  });
+});
 
 describe("terminateChild", () => {
   test("stops after SIGTERM when the child exits", async () => {

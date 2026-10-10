@@ -1,8 +1,9 @@
-import type { ExecResult } from "./exec.ts";
-
 export type CommandFailureCode =
   | "adb-failed"
   | "adb-timeout"
+  | "adb-aborted"
+  | "adb-output-limit"
+  | "adb-device-unavailable"
   | "adb-cleanup-failed"
   | "emulator-failed";
 
@@ -22,42 +23,6 @@ export class CommandFailureError extends Error {
     super(detail ? `${publicMessage}: ${detail}` : publicMessage, options);
     this.name = "CommandFailureError";
   }
-}
-
-function resultDetail(result: ExecResult<string | Buffer>): string {
-  const stdout = typeof result.stdout === "string" ? result.stdout.trim() : "";
-  return (
-    result.stderr.trim() || result.error?.message || stdout || "unknown error"
-  );
-}
-
-/**
- * Names an adb invocation by its subcommand (`adb push`, `adb shell mv`) so
- * paths and other arguments stay out of public messages. `args` must be
- * code-supplied: `args[1]` of a shell call is the command name.
- */
-export function adbOperation(args: readonly string[]): string {
-  return args[0] === "shell" ? `adb shell ${args[1]}` : `adb ${args[0]}`;
-}
-
-/** Wraps a failed adb invocation; `operation` must not contain user input. */
-export function adbCommandFailure(
-  operation: string,
-  result: ExecResult<string | Buffer>,
-): CommandFailureError {
-  return result.timedOut
-    ? new CommandFailureError(
-        "adb-timeout",
-        `${operation} timed out`,
-        resultDetail(result),
-        { cause: result.error ?? undefined },
-      )
-    : new CommandFailureError(
-        "adb-failed",
-        `${operation} failed`,
-        resultDetail(result),
-        { cause: result.error ?? undefined },
-      );
 }
 
 /** The message an API response or shared status may carry for `err`. */

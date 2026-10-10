@@ -3,7 +3,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { listAllDevices } from "./adb.ts";
-import { adbCommandFailure, CommandFailureError } from "./command-failure.ts";
+import { adbCommandFailure } from "./adb-command.ts";
+import { CommandFailureError } from "./command-failure.ts";
 import type { Device } from "./shared/api-contracts.ts";
 import { execText, type ExecResult } from "./exec.ts";
 

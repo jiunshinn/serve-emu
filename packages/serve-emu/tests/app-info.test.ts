@@ -206,7 +206,7 @@ describe("getForegroundApp", () => {
       },
       {
         result: textResult("", { status: 1 }),
-        message: "adb shell dumpsys failed: unknown error",
+        message: "adb shell dumpsys failed: status 1",
         cause: undefined,
       },
     ];

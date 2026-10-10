@@ -96,7 +96,7 @@ unauthorized-1 unauthorized
       { value: result("stdout", { status: 1, stderr: "stderr" }), detail: "stderr" },
       { value: result("stdout", { status: null, error: processError }), detail: "spawn ENOENT" },
       { value: result(" stdout detail ", { status: 1 }), detail: "stdout detail" },
-      { value: result("", { status: 1 }), detail: "unknown error" },
+      { value: result("", { status: 1 }), detail: "status 1" },
     ];
 
     for (const { value, detail } of cases) {
@@ -131,7 +131,7 @@ describe("ADB screenshot", () => {
     const failedBuffer = (async () =>
       result(Buffer.from("binary diagnostic"), { status: 1 })) as typeof execBuffer;
     await expect(screencapPng("device-1", failedBuffer)).rejects.toThrow(
-      "screencap failed: unknown error",
+      "screencap failed: status 1",
     );
   });
 });

@@ -1,4 +1,5 @@
-import { adbCommandFailure, CommandFailureError } from "./command-failure.ts";
+import { adbCommandFailure } from "./adb-command.ts";
+import { CommandFailureError } from "./command-failure.ts";
 import { execBuffer, execText, type ExecResult } from "./exec.ts";
 import type {
   Device,

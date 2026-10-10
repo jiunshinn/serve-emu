@@ -1,5 +1,6 @@
 import { setTimeout as sleepFor } from "node:timers/promises";
-import { adbCommandFailure, CommandFailureError } from "./command-failure.ts";
+import { adbCommandFailure } from "./adb-command.ts";
+import { CommandFailureError } from "./command-failure.ts";
 import { execText } from "./exec.ts";
 import type {
   AccessibilityNode,

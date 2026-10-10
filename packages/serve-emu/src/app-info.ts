@@ -1,4 +1,4 @@
-import { adbCommandFailure } from "./command-failure.ts";
+import { adbCommandFailure } from "./adb-command.ts";
 import { execText } from "./exec.ts";
 import { packagePids } from "./package-pids.ts";
 import type { ForegroundApp } from "./shared/api-contracts.ts";
