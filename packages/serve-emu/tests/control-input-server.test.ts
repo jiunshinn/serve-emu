@@ -17,6 +17,38 @@ const IMMEDIATE_CLOCK: ControlInputClock = {
   },
 };
 
+/** Holds every gesture step sleep until the test releases it. */
+class SteppedClock implements ControlInputClock {
+  readonly #waiting: Array<() => void> = [];
+  #free = false;
+
+  get waiting(): number {
+    return this.#waiting.length;
+  }
+
+  async sleep(_ms: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) throw signal.reason;
+    if (this.#free) return;
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      this.#waiting.push(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      });
+    });
+  }
+
+  releaseOne(): void {
+    this.#waiting.shift()?.();
+  }
+
+  releaseAll(): void {
+    this.#free = true;
+    for (const release of this.#waiting.splice(0)) release();
+  }
+}
+
 type PendingWrite = {
   resolve: () => void;
   reject: (reason: unknown) => void;
@@ -193,6 +225,7 @@ async function createHarness(options: {
   serials?: string[];
   maxDepth?: number;
   maxBytes?: number;
+  clock?: ControlInputClock;
 } = {}) {
   const serials = options.serials ?? ["device-a"];
   const sessions = new Map(
@@ -217,7 +250,7 @@ async function createHarness(options: {
       if (!writer) throw new Error(`missing fake writer ${session.serial}`);
       const queue = new ControlInputQueue({
         writer,
-        clock: IMMEDIATE_CLOCK,
+        clock: options.clock ?? IMMEDIATE_CLOCK,
         maxDepth: options.maxDepth,
         maxBytes: options.maxBytes,
       });
@@ -449,6 +482,44 @@ describe("server control input integration", () => {
       expect(ws.sent).toHaveLength(4);
     } finally {
       writer.release();
+      harness.started.stop();
+    }
+  });
+
+  test("a new client's reset-video is written between the steps of a running swipe", async () => {
+    const clock = new SteppedClock();
+    const harness = await createHarness({ clock });
+    const writer = harness.writers.get("device-a")!;
+    try {
+      const swipe = harness.post("/api/swipe", {
+        x1: 0.5,
+        y1: 0.8,
+        x2: 0.5,
+        y2: 0.2,
+        durationMs: 1_000,
+      });
+      await waitFor(
+        () => writer.packets.length === 1 && clock.waiting === 1,
+        "swipe did not start",
+      );
+
+      // Opening a client asks for a key frame while the swipe is sleeping.
+      await harness.openWebSocket();
+      clock.releaseOne();
+      await waitFor(() => writer.packets.length >= 3, "swipe step not written");
+      // Touch down, then the reset ahead of the next touch move, not after
+      // the whole one-second swipe.
+      expect(writer.packets.slice(0, 3).map((packet) => packet[0])).toEqual([
+        2, 17, 2,
+      ]);
+
+      clock.releaseAll();
+      expect((await swipe).status).toBe(200);
+      expect(
+        writer.packets.filter((packet) => packet[0] === 17),
+      ).toHaveLength(1);
+    } finally {
+      clock.releaseAll();
       harness.started.stop();
     }
   });

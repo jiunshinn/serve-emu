@@ -113,6 +113,12 @@ admitted reset has not yet produced a key frame, further reset requests from
 the watchdog or clients are coalesced into it. The wait starts at 2.5 seconds
 and doubles for each reset that produces no frames, up to 30 seconds.
 
+Reset-video packets take a priority lane in the control queue: they are written
+at the next step boundary of whatever gesture is running (at most one ~16–20 ms
+step away) rather than after it, a queued reset absorbs later reset requests
+even when gestures were queued in between, and resets do not count against the
+gesture depth limit.
+
 ## Control socket packets
 
 The current scrcpy 4.0 server accepts the following messages written by

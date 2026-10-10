@@ -9,6 +9,8 @@ import {
 
 export const DEFAULT_CONTROL_QUEUE_MAX_DEPTH = 128;
 export const DEFAULT_CONTROL_QUEUE_MAX_BYTES = 1024 * 1024;
+// Priority packets coalesce by key, so this only bounds distinct keys.
+const MAX_PRIORITY_ENTRIES = 8;
 
 export type ControlInputErrorCode =
   | "control-queue-overloaded"
@@ -258,6 +260,7 @@ export class ControlInputQueue {
   readonly #maxBytes: number;
   readonly #controller = new AbortController();
   #pending: QueueEntry[] = [];
+  #priority: QueueEntry[] = [];
   #active: QueueEntry | null = null;
   #depth = 0;
   #bytes = 0;
@@ -345,9 +348,16 @@ export class ControlInputQueue {
     return { gesture: compiled.gesture, completion: waiter.promise };
   }
 
+  /**
+   * Queues a standalone control packet. A `priority` packet (one that does not
+   * touch pointer state, such as reset-video) is written at the next step
+   * boundary of whatever gesture is running instead of waiting behind the
+   * queue, merges into a pending priority packet with the same key, and does
+   * not count against the gesture depth limit.
+   */
   enqueuePacket(
     packet: Buffer,
-    options: { coalesceKey?: string } = {},
+    options: { coalesceKey?: string; priority?: boolean } = {},
   ): ControlPacketHandle {
     this.#assertOpen();
     if (!Buffer.isBuffer(packet) || packet.length === 0) {
@@ -356,6 +366,36 @@ export class ControlInputQueue {
     const bytes = packet.length;
     const coalesceKey = options.coalesceKey ?? null;
     const waiter = this.#createWaiter();
+    if (options.priority) {
+      const queued = coalesceKey
+        ? this.#priority.find((entry) => entry.coalesceKey === coalesceKey)
+        : undefined;
+      if (queued) {
+        const previous = queued.waiters.at(-1);
+        if (previous) previous.status = "coalesced";
+        queued.steps = [{ delayMs: 0, packet: Buffer.from(packet) }];
+        queued.bytes = bytes;
+        queued.waiters.push(waiter.waiter);
+        return { completion: waiter.promise };
+      }
+      if (this.#priority.length >= MAX_PRIORITY_ENTRIES) {
+        throw new ControlInputError(
+          "control-queue-overloaded",
+          "scrcpy control priority queue is full",
+          { entries: this.#priority.length },
+        );
+      }
+      this.#priority.push({
+        steps: [{ delayMs: 0, packet: Buffer.from(packet) }],
+        bytes,
+        gesture: null,
+        moveKey: null,
+        coalesceKey,
+        waiters: [waiter.waiter],
+      });
+      this.#schedule();
+      return { completion: waiter.promise };
+    }
     const tail = this.#pending.at(-1);
 
     if (coalesceKey && tail?.coalesceKey === coalesceKey) {
@@ -402,6 +442,9 @@ export class ControlInputQueue {
       this.#rejectEntry(entry, this.#closedError);
       this.#release(entry);
     }
+    const priority = this.#priority;
+    this.#priority = [];
+    for (const entry of priority) this.#rejectEntry(entry, this.#closedError);
   }
 
   snapshot(): ControlInputQueueSnapshot {
@@ -409,7 +452,8 @@ export class ControlInputQueue {
       closed: this.#closedError !== null,
       depth: this.#depth,
       bytes: this.#bytes,
-      entries: this.#pending.length + (this.#active ? 1 : 0),
+      entries:
+        this.#pending.length + this.#priority.length + (this.#active ? 1 : 0),
       active: this.#active !== null,
       reservedReleases: this.#openPointers.size,
       maxDepth: this.#maxDepth,
@@ -501,7 +545,16 @@ export class ControlInputQueue {
     if (this.#running || this.#closedError) return;
     this.#running = true;
     try {
-      while (!this.#closedError && this.#pending.length > 0) {
+      while (
+        !this.#closedError &&
+        (this.#pending.length > 0 || this.#priority.length > 0)
+      ) {
+        try {
+          await this.#writePriority();
+        } catch {
+          return; // #writePriority already closed the queue with the failure.
+        }
+        if (this.#closedError || this.#pending.length === 0) continue;
         const entry = this.#pending.shift()!;
         this.#active = entry;
         try {
@@ -541,7 +594,44 @@ export class ControlInputQueue {
       }
     } finally {
       this.#running = false;
-      if (!this.#closedError && this.#pending.length > 0) this.#schedule();
+      if (
+        !this.#closedError &&
+        (this.#pending.length > 0 || this.#priority.length > 0)
+      ) {
+        this.#schedule();
+      }
+    }
+  }
+
+  /** Writes queued priority packets; a failure closes the queue. */
+  async #writePriority(): Promise<void> {
+    while (!this.#closedError && this.#priority.length > 0) {
+      const entry = this.#priority.shift()!;
+      try {
+        for (const step of entry.steps) {
+          await this.#writer.write(step.packet, this.#controller.signal);
+        }
+        if (this.#controller.signal.aborted) {
+          throw signalError(this.#controller.signal, "control input queue closed");
+        }
+      } catch (err) {
+        const failure = this.#controller.signal.aborted
+          ? signalError(this.#controller.signal, "control input queue closed")
+          : err instanceof ControlInputError
+            ? err
+            : new ControlInputError(
+                "control-dispatch-failed",
+                `scrcpy control dispatch failed: ${err instanceof Error ? err.message : String(err)}`,
+                undefined,
+                { cause: err },
+              );
+        this.#rejectEntry(entry, failure);
+        this.close(failure);
+        throw failure;
+      }
+      for (const waiter of entry.waiters) {
+        waiter.resolve({ status: waiter.status });
+      }
     }
   }
 
@@ -562,6 +652,11 @@ export class ControlInputQueue {
           "control input queue closed",
         );
       }
+      // Between two steps of a long gesture, let a waiting priority packet
+      // (a video reset) go out ahead of the next step instead of holding it
+      // for the whole gesture. Checking after the step's sleep also sends a
+      // reset that arrived during that sleep before the step, not after it.
+      await this.#writePriority();
       await this.#writer.write(step.packet, this.#controller.signal);
       if (this.#controller.signal.aborted) {
         throw signalError(

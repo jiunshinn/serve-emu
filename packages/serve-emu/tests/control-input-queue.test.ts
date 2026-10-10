@@ -701,3 +701,101 @@ describe("ControlInputQueue cancellation and failures", () => {
     });
   });
 });
+
+describe("ControlInputQueue priority packets", () => {
+  const RESET = Buffer.from([17]);
+  const types = (writer: FakeWriter) => writer.writes.map((packet) => packet[0]);
+
+  async function drain(clock: ManualClock): Promise<void> {
+    while (clock.waits.length > 0) await clock.advanceNext();
+  }
+
+  test("writes a reset at the next step boundary of a long swipe", async () => {
+    const writer = new FakeWriter();
+    const clock = new ManualClock();
+    const queue = makeQueue(writer, clock);
+    const swipe = queue.enqueue(
+      { type: "swipe", x1: 0.5, y1: 0.8, x2: 0.5, y2: 0.2, durationMs: 1_000 },
+      SCREEN,
+    );
+    await flushMicrotasks();
+    expect(types(writer)).toEqual([2]); // touch down, now sleeping
+
+    const reset = queue.enqueuePacket(RESET, {
+      coalesceKey: "reset-video",
+      priority: true,
+    });
+    await clock.advanceNext();
+    expect(types(writer)).toEqual([2, 17, 2]);
+    expect(await reset.completion).toEqual({ status: "completed" });
+
+    await drain(clock);
+    await swipe.completion;
+    const swipePackets = writer.writes.filter((packet) => packet[0] === 2);
+    expect(swipePackets).toHaveLength(64); // down, 62 moves, up
+    expect(types(writer).filter((type) => type === 17)).toHaveLength(1);
+  });
+
+  test("merges resets even with gestures queued between them", async () => {
+    const writer = new FakeWriter();
+    const clock = new ManualClock();
+    const queue = makeQueue(writer, clock);
+    const swipe = queue.enqueue(
+      { type: "swipe", x1: 0.5, y1: 0.8, x2: 0.5, y2: 0.2, durationMs: 500 },
+      SCREEN,
+    );
+    await flushMicrotasks();
+    const first = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+    const tap = queue.enqueue({ type: "tap", x: 0.5, y: 0.5 }, SCREEN);
+    const second = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+
+    await drain(clock);
+    await Promise.all([swipe.completion, tap.completion]);
+    expect(await first.completion).toEqual({ status: "coalesced" });
+    expect(await second.completion).toEqual({ status: "completed" });
+    expect(types(writer).filter((type) => type === 17)).toHaveLength(1);
+  });
+
+  test("a full gesture queue cannot block a reset", async () => {
+    const writer = new FakeWriter();
+    const clock = new ManualClock();
+    const queue = makeQueue(writer, clock, { maxDepth: 2 });
+    queue.enqueue({ type: "tap", x: 0.1, y: 0.1 }, SCREEN);
+    queue.enqueue({ type: "tap", x: 0.2, y: 0.2 }, SCREEN);
+    expectOverloaded(() => queue.enqueue({ type: "tap", x: 0.3, y: 0.3 }, SCREEN));
+    const reset = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+    await flushMicrotasks();
+    await drain(clock);
+    expect(await reset.completion).toEqual({ status: "completed" });
+  });
+
+  test("an idle queue writes a priority packet at once and close rejects queued ones", async () => {
+    const writer = new FakeWriter();
+    const clock = new ManualClock();
+    const queue = makeQueue(writer, clock);
+    const idle = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+    await flushMicrotasks();
+    expect(await idle.completion).toEqual({ status: "completed" });
+
+    const blocked = writer.deferNext();
+    const key = queue.enqueue({ type: "key", keycode: 3 }, SCREEN);
+    const keyResult = key.completion.catch((error: unknown) => error);
+    await flushMicrotasks();
+    const pending = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+    expect(queue.snapshot().entries).toBe(2);
+    queue.close(new Error("session ended"));
+    blocked.resolve();
+    await expect(pending.completion).rejects.toThrow("session ended");
+    expect(await keyResult).toBeInstanceOf(Error);
+  });
+
+  test("bounds distinct priority keys", () => {
+    const queue = makeQueue(new FakeWriter(), new ManualClock());
+    for (let key = 0; key < 8; key++) {
+      queue.enqueuePacket(RESET, { coalesceKey: `k${key}`, priority: true });
+    }
+    expectOverloaded(() =>
+      queue.enqueuePacket(RESET, { coalesceKey: "k8", priority: true }),
+    );
+  });
+});
