@@ -369,6 +369,54 @@ async function pushFrame(
 }
 
 describe("server recovery watchdog", () => {
+  test("an idle screen backs off stall resets, /health says idle, and a tap does not reset it (#165)", async () => {
+    const harness = await createHarness();
+    const session = harness.sessions.get("A")!;
+    try {
+      await harness.openWebSocket();
+      await pushFrame(harness, "A", keyFrame(), 1);
+      const opened = session.fakeControlSocket.writes.length;
+
+      // Nothing changes on screen: the first quiet window is a stall.
+      harness.clock.advance(3_000);
+      harness.clock.fireActive();
+      await waitFor(() => session.fakeControlSocket.writes.length === opened + 1);
+      // The restarted encoder answers with its key frame, then goes quiet.
+      await pushFrame(harness, "A", keyFrame(), 2);
+      harness.clock.advance(3_000);
+      harness.clock.fireActive();
+
+      let health = await harness.health();
+      expect(session.fakeControlSocket.writes).toHaveLength(opened + 1);
+      expect(health).toMatchObject({
+        sourceState: "idle",
+        lastVideoResetReason: "video source stalled",
+        keyFrameRecovery: { stallResetAfterMs: 5_000 },
+      });
+
+      // An action that changes nothing on screen sends no frame. It must not
+      // reset the backoff or trigger a check of its own.
+      const beforeTap = session.fakeControlSocket.writes.length;
+      expect((await harness.post("/api/tap", { x: 0.5, y: 0.5 })).status).toBe(200);
+      // The tap's touch down and up.
+      await waitFor(() => session.fakeControlSocket.writes.length === beforeTap + 2);
+      health = await harness.health();
+      expect(health.keyFrameRecovery.stallResetAfterMs).toBe(5_000);
+      harness.clock.advance(3_000);
+      harness.clock.fireActive();
+      health = await harness.health();
+      // The next restart is the idle check due 5 s after the last frame, not
+      // a "stalled" check of the tap's.
+      expect(health).toMatchObject({
+        videoResetRequests: 3,
+        lastVideoResetReason: "video source idle",
+        keyFrameRecovery: { stallResetAfterMs: 10_000 },
+      });
+    } finally {
+      harness.started.stop();
+    }
+  });
+
   test("a staggered client joins the pending restart, then retries continue every window", async () => {
     const harness = await createHarness();
     const session = harness.sessions.get("A")!;

@@ -59,6 +59,7 @@ describe("buildHealthSnapshot", () => {
     nowMs,
     recovery: null,
     idleResetBackoffMs: 750,
+    baseStallResetMs: 2_500,
     responseMetrics: { health: { count: 2, bytes: 10, maxBytes: 6, lastBytes: 4 } } as never,
     uploads: { active: 0, queued: 0 } as never,
     executor: { active: 1, queued: 0 } as never,
@@ -79,12 +80,14 @@ describe("buildHealthSnapshot", () => {
       clients: 0,
       sourceFps: 0,
       sourceFrameAgeMs: 3_000,
+      sourceState: "starting",
       keyFrameRecovery: {
         awaitingClients: 0,
         oldestAwaitingAgeMs: null,
         lastResetAttemptAt: null,
         pendingResetAgeMs: null,
         resetBackoffMs: 750,
+        stallResetAfterMs: 2_500,
       },
       lastFrameAt: null,
       responseMetrics: { health: { count: 2 } },
@@ -112,6 +115,8 @@ describe("buildHealthSnapshot", () => {
       context,
       sources(10_000, {
         recovery: {
+          sourceState: "streaming",
+          stallResetAfterMs: 10_000,
           sourceFps: 30,
           lastFrameMs: 9_900,
           sourceFrameAgeMs: 100,
@@ -126,8 +131,10 @@ describe("buildHealthSnapshot", () => {
     expect(health).toMatchObject({
       clients: 1,
       sourceFps: 30,
+      sourceState: "streaming",
       lastFrameAt: new Date(9_900).toISOString(),
       keyFrameRecovery: {
+        stallResetAfterMs: 10_000,
         awaitingClients: 1,
         lastResetAttemptAt: new Date(9_500).toISOString(),
         pendingResetAgeMs: 500,

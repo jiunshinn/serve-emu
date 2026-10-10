@@ -284,6 +284,20 @@ refreshes reuse one `adb devices` snapshot while resolving running AVD names.
 Long install/import work uses a background lane; the default executor reserves
 one active slot and eight queue positions for interactive work such as GPS.
 
+`sourceState` says whether video is `streaming` (a frame in the last 2.5 s),
+`idle` (no recent frame, and no reset is waiting for one), `stalled` (a reset
+got no frame, or the first frame never came), or `starting`. While a stream
+client is connected, the server restarts the encoder after 2.5 s without
+frames to check that it is alive. Each check that the encoder answers with
+only its own key frame doubles that wait, up to 30 s
+(`keyFrameRecovery.stallResetAfterMs`). A sustained run of frames (more than
+16, each within 1 s of the last) brings it back to 2.5 s. Input does not:
+an action that changes nothing on screen sends no frame either, so taps and
+keys never trigger a check of their own. An encoder that stops answering is
+found by the next check and retried with growing gaps while `sourceState`
+reports `stalled`. With no stream client connected the server sends no
+checks, so a quiet source reports `idle` without having been checked.
+
 AVD lifecycle helpers:
 
 ```sh
