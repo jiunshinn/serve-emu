@@ -28,12 +28,28 @@ export type SessionRecoveryWatchdogOptions<
   sessionResetCooldownMs?: number;
   firstFrameResetMs?: number;
   sourceStallResetMs?: number;
+  /** Cap for the stall threshold while stall resets keep finding an idle screen. */
+  maxSourceStallResetMs?: number;
+  /**
+   * The longest run of frames that is still one change's burst (a frame plus
+   * its repeats). A longer run means the screen keeps changing.
+   */
+  resetBurstFrames?: number;
   awaitingKeyFrameResetMs?: number;
   resetSettleMs?: number;
   maxResetSettleMs?: number;
 };
 
+/**
+ * `idle`: no recent frames, but the encoder answers resets (a static screen).
+ * `stalled`: no frame since a reset that had time to answer, or no first frame.
+ */
+export type SourceState = "starting" | "streaming" | "idle" | "stalled";
+
 export type SessionRecoverySnapshot = {
+  sourceState: SourceState;
+  /** Quiet time after which the next stall reset is sent. */
+  stallResetAfterMs: number;
   sourceFps: number;
   lastFrameMs: number | null;
   sourceFrameAgeMs: number;
@@ -48,6 +64,13 @@ const DEFAULT_INTERVAL_MS = 1_000;
 const DEFAULT_SESSION_RESET_COOLDOWN_MS = 500;
 const DEFAULT_FIRST_FRAME_RESET_MS = 5_000;
 const DEFAULT_SOURCE_STALL_RESET_MS = 2_500;
+const DEFAULT_MAX_SOURCE_STALL_RESET_MS = 30_000;
+// A restarted encoder sends its key frame, and on a static screen Android
+// repeats a frame at most 10 more times, so each change (a restart, a status
+// bar tick) arrives as a run of about 11 frames.
+const DEFAULT_RESET_BURST_FRAMES = 16;
+// Frames closer together than this belong to one run.
+const FRAME_RUN_GAP_MS = 1_000;
 const DEFAULT_AWAITING_KEYFRAME_RESET_MS = 2_500;
 const DEFAULT_RESET_SETTLE_MS = 2_500;
 const DEFAULT_MAX_RESET_SETTLE_MS = 30_000;
@@ -76,6 +99,8 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
   #sessionResetCooldownMs: number;
   #firstFrameResetMs: number;
   #sourceStallResetMs: number;
+  #maxSourceStallResetMs: number;
+  #resetBurstFrames: number;
   #awaitingKeyFrameResetMs: number;
   #resetSettleMs: number;
   #maxResetSettleMs: number;
@@ -89,6 +114,10 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
   #lastSessionResetAttemptMs: number | null = null;
   #pendingResetSinceMs: number | null = null;
   #resetsWithoutFrame = 0;
+  #idleStallResets = 0;
+  #runFrames = 0;
+  #lastInputMs: number | null = null;
+  #unansweredResetSinceMs: number | null = null;
 
   constructor(options: SessionRecoveryWatchdogOptions<TClient>) {
     this.#clock = options.clock ?? SYSTEM_RECOVERY_WATCHDOG_CLOCK;
@@ -103,6 +132,10 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
       options.firstFrameResetMs ?? DEFAULT_FIRST_FRAME_RESET_MS;
     this.#sourceStallResetMs =
       options.sourceStallResetMs ?? DEFAULT_SOURCE_STALL_RESET_MS;
+    this.#maxSourceStallResetMs =
+      options.maxSourceStallResetMs ?? DEFAULT_MAX_SOURCE_STALL_RESET_MS;
+    this.#resetBurstFrames =
+      options.resetBurstFrames ?? DEFAULT_RESET_BURST_FRAMES;
     this.#awaitingKeyFrameResetMs =
       options.awaitingKeyFrameResetMs ??
       DEFAULT_AWAITING_KEYFRAME_RESET_MS;
@@ -132,10 +165,30 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
   }
 
   recordFrame(isKeyFrame = false): void {
+    const now = this.#clock.now();
+    this.#runFrames =
+      this.#lastFrameMs !== null && now - this.#lastFrameMs < FRAME_RUN_GAP_MS
+        ? this.#runFrames + 1
+        : 1;
     this.#frameCount++;
-    this.#lastFrameMs = this.#clock.now();
+    this.#lastFrameMs = now;
     this.#resetsWithoutFrame = 0;
+    this.#unansweredResetSinceMs = null;
     if (isKeyFrame) this.#pendingResetSinceMs = null;
+    // A run longer than one change's burst: the screen keeps changing, so a
+    // stall is measured from the base threshold again. Occasional small
+    // changes on an idle screen (a clock tick) keep the backoff.
+    if (this.#runFrames > this.#resetBurstFrames) this.#idleStallResets = 0;
+  }
+
+  /**
+   * Input reached the device, so a changing screen will send frames. Stalls
+   * are measured from the input, at the base threshold, so a dead encoder is
+   * found quickly once someone interacts with an idle screen.
+   */
+  noteInput(nowMs = this.#clock.now()): void {
+    this.#lastInputMs = nowMs;
+    this.#idleStallResets = 0;
   }
 
   markAwaiting(client: TClient): void {
@@ -179,6 +232,7 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
   noteResetAdmitted(nowMs = this.#clock.now()): void {
     this.#lastSessionResetAttemptMs = nowMs;
     this.#pendingResetSinceMs = nowMs;
+    this.#unansweredResetSinceMs ??= nowMs;
     this.#resetsWithoutFrame++;
     for (const client of this.#clients()) {
       if (client.awaitingKeyFrame) client.lastKeyFrameRequestMs = nowMs;
@@ -200,6 +254,36 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
 
     this.noteResetAdmitted(now);
     return true;
+  }
+
+  #stallResetAfterMs(): number {
+    const doublings = Math.min(this.#idleStallResets, 16);
+    return Math.max(
+      this.#sourceStallResetMs,
+      Math.min(
+        this.#sourceStallResetMs * 2 ** doublings,
+        this.#maxSourceStallResetMs,
+      ),
+    );
+  }
+
+  #sourceState(nowMs: number): SourceState {
+    if (this.#lastFrameMs === null) {
+      return nowMs - this.startedMs >= this.#firstFrameResetMs
+        ? "stalled"
+        : "starting";
+    }
+    // Measured from the first reset without an answer, so later retries do
+    // not make a dead source look idle again.
+    if (
+      this.#unansweredResetSinceMs !== null &&
+      nowMs - this.#unansweredResetSinceMs >= this.#resetSettleMs
+    ) {
+      return "stalled";
+    }
+    return nowMs - this.#lastFrameMs < this.#sourceStallResetMs
+      ? "streaming"
+      : "idle";
   }
 
   #resetSettleWindowMs(): number {
@@ -225,11 +309,28 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
       now - this.startedMs >= this.#firstFrameResetMs
     ) {
       this.requestVideoReset("first video frame not received");
-    } else if (
-      this.#lastFrameMs !== null &&
-      now - this.#lastFrameMs >= this.#sourceStallResetMs
-    ) {
-      this.requestVideoReset("video source stalled");
+    } else if (this.#lastFrameMs !== null) {
+      const quietSinceMs = Math.max(
+        this.#lastFrameMs,
+        this.#lastInputMs ?? this.#lastFrameMs,
+      );
+      // A static screen answers a restart with only its burst, then goes quiet
+      // again (#165). While the encoder keeps answering, each check doubles
+      // the wait for the next one, until a longer run of frames or input shows
+      // the screen is changing. A source that did not answer its last reset
+      // is not idle: its retries follow the no-frame settle backoff instead.
+      const answering = this.#resetsWithoutFrame === 0;
+      if (
+        now - quietSinceMs >= this.#stallResetAfterMs() &&
+        this.requestVideoReset(
+          answering && this.#idleStallResets > 0
+            ? "video source idle"
+            : "video source stalled",
+        ) &&
+        answering
+      ) {
+        this.#idleStallResets++;
+      }
     }
 
     const awaitingRetry = clients.some((client) => {
@@ -264,6 +365,8 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
     }
 
     return {
+      sourceState: this.#sourceState(nowMs),
+      stallResetAfterMs: this.#stallResetAfterMs(),
       sourceFps: this.#sourceFps,
       lastFrameMs: this.#lastFrameMs,
       sourceFrameAgeMs: Math.max(

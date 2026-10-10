@@ -281,7 +281,14 @@ curl -X POST "$BASE/api/devices/select" \
 ```
 
 `/health` includes bounded subprocess executor activity, queue depth, lane
-counts, deadlines, overload rejections, and output-limit totals. Device-grid
+counts, deadlines, overload rejections, and output-limit totals.
+`sourceState` says whether video is `streaming`, `idle` (a static screen: no
+new frames, but the encoder answers resets), `stalled` (a reset got no frame,
+or the first frame never came), or `starting`. On a quiet screen the server
+restarts the encoder after 2.5 s to check it is alive. While it answers with
+only its own key frame, each check doubles the wait, up to 30 s
+(`keyFrameRecovery.stallResetAfterMs`); new frames or any input bring it
+back to 2.5 s. Device-grid
 refreshes reuse one `adb devices` snapshot while resolving running AVD names.
 Long install/import work uses a background lane; the default executor reserves
 one active slot and eight queue positions for interactive work such as GPS.

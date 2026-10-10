@@ -11,6 +11,8 @@ export type HealthSources = {
   recovery: SessionRecoverySnapshot | null;
   /** Reported as the reset backoff while there is no watchdog yet. */
   idleResetBackoffMs: number;
+  /** Reported as the stall threshold while there is no watchdog yet. */
+  baseStallResetMs: number;
   responseMetrics: Record<string, JsonResponseMetric>;
   uploads: UploadManagerSnapshot;
   executor: ExecSnapshot;
@@ -19,7 +21,9 @@ export type HealthSources = {
 /** The `/health` body for one device session: a pure read of its state. */
 export function buildHealthSnapshot(context: DeviceContext, sources: HealthSources) {
   const now = sources.nowMs;
-  const recoverySnapshot = sources.recovery ?? {
+  const recoverySnapshot: SessionRecoverySnapshot = sources.recovery ?? {
+    sourceState: "starting",
+    stallResetAfterMs: sources.baseStallResetMs,
     sourceFps: 0,
     lastFrameMs: null,
     sourceFrameAgeMs: Math.max(0, now - context.startedMs),
@@ -41,6 +45,7 @@ export function buildHealthSnapshot(context: DeviceContext, sources: HealthSourc
     frames: context.frameCount,
     sourceFps: recoverySnapshot.sourceFps,
     sourceFrameAgeMs: recoverySnapshot.sourceFrameAgeMs,
+    sourceState: recoverySnapshot.sourceState,
     keyFrameRecovery: {
       awaitingClients: recoverySnapshot.awaitingClients,
       oldestAwaitingAgeMs: recoverySnapshot.oldestAwaitingAgeMs,
@@ -50,6 +55,7 @@ export function buildHealthSnapshot(context: DeviceContext, sources: HealthSourc
           : new Date(recoverySnapshot.lastResetAttemptMs).toISOString(),
       pendingResetAgeMs: recoverySnapshot.pendingResetAgeMs,
       resetBackoffMs: recoverySnapshot.resetBackoffMs,
+      stallResetAfterMs: recoverySnapshot.stallResetAfterMs,
     },
     frameStats: context.frameStats.summary(),
     configPackets: context.configPacketCount,

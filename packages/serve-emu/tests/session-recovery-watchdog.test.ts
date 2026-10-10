@@ -404,4 +404,168 @@ describe("SessionRecoveryWatchdog", () => {
       oldestAwaitingAgeMs: 2_100,
     });
   });
+
+  describe("idle screens (#165)", () => {
+    /**
+     * A static screen: every admitted reset is answered by one key frame and
+     * ten repeats 100 ms apart, then nothing. Steps time in 100 ms and ticks
+     * once a second, like the server's interval.
+     */
+    function runStaticScreen(
+      h: ReturnType<typeof harness>,
+      durationMs: number,
+      onStep?: (nowMs: number) => void,
+    ) {
+      const burst: number[] = [];
+      let answered = h.resets.length;
+      for (let elapsed = 0; elapsed < durationMs; elapsed += 100) {
+        h.clock.advance(100);
+        while (answered < h.resets.length) {
+          const at = h.resets[answered++]!.nowMs;
+          for (let frame = 0; frame <= 10; frame++) burst.push(at + 100 * (frame + 1));
+        }
+        while (burst.length > 0 && burst[0]! <= h.clock.nowMs) {
+          const first = burst.length % 11 === 0;
+          burst.shift();
+          h.watchdog.recordFrame(first);
+        }
+        onStep?.(h.clock.nowMs);
+        if (h.clock.nowMs % 1_000 === 0) h.watchdog.tick();
+      }
+    }
+
+    test("stall resets on a static screen back off to the cap", () => {
+      const h = harness({ clients: [client()] });
+      h.watchdog.recordFrame(true);
+      runStaticScreen(h, 600_000);
+
+      const gaps = h.resets.slice(1).map((reset, i) => reset.nowMs - h.resets[i]!.nowMs);
+      // 2.5 s, then 5, 10, 20 and 30 s of quiet after each 1 s burst.
+      expect(gaps.slice(0, 4)).toEqual([7_000, 12_000, 22_000, 32_000]);
+      expect(new Set(gaps.slice(4))).toEqual(new Set([32_000]));
+      expect(h.resets.length).toBeLessThan(25);
+      expect(h.resets[0]).toEqual({ reason: "video source stalled", nowMs: 3_000 });
+      expect(new Set(h.resets.slice(1).map((reset) => reset.reason))).toEqual(
+        new Set(["video source idle"]),
+      );
+      expect(h.watchdog.snapshot()).toMatchObject({
+        sourceState: "idle",
+        stallResetAfterMs: 30_000,
+      });
+    });
+
+    test("occasional small changes on an idle screen keep the backoff", () => {
+      const h = harness({ clients: [client()] });
+      h.watchdog.recordFrame(true);
+      // A status bar tick every 60 s: one changed frame plus 10 repeats.
+      const tick = (nowMs: number) => {
+        const sinceTick = nowMs % 60_000;
+        if (sinceTick >= 100 && sinceTick <= 1_100 && sinceTick % 100 === 0) {
+          h.watchdog.recordFrame();
+        }
+      };
+      runStaticScreen(h, 600_000, tick);
+      expect(h.resets.length).toBeLessThan(35);
+      expect(h.watchdog.snapshot().stallResetAfterMs).toBe(30_000);
+    });
+
+    test("frames beyond a restart's burst bring the base threshold back", () => {
+      const h = harness({ clients: [client()] });
+      h.watchdog.recordFrame(true);
+      runStaticScreen(h, 60_000);
+      expect(h.watchdog.snapshot().stallResetAfterMs).toBe(30_000);
+
+      // The screen starts changing: a steady stream of frames.
+      for (let frame = 0; frame < 20; frame++) {
+        h.clock.advance(50);
+        h.watchdog.recordFrame();
+      }
+      expect(h.watchdog.snapshot()).toMatchObject({
+        sourceState: "streaming",
+        stallResetAfterMs: 2_500,
+      });
+      const before = h.resets.length;
+      h.clock.advance(2_500);
+      h.watchdog.tick();
+      expect(h.resets.slice(before)).toEqual([
+        { reason: "video source stalled", nowMs: h.clock.nowMs },
+      ]);
+    });
+
+    test("input after an idle period finds a dead encoder at the base threshold", () => {
+      const h = harness({ clients: [client()] });
+      h.watchdog.recordFrame(true);
+      runStaticScreen(h, 60_000);
+      expect(h.watchdog.snapshot().stallResetAfterMs).toBe(30_000);
+      const before = h.resets.length;
+
+      // Someone taps; the screen should change, but the encoder is dead.
+      h.watchdog.noteInput();
+      const inputAt = h.clock.nowMs;
+      expect(h.watchdog.snapshot().stallResetAfterMs).toBe(2_500);
+      for (let second = 1; second <= 3; second++) {
+        h.clock.advance(1_000);
+        h.watchdog.tick();
+      }
+      // Quiet time counts from the input, not from the last frame long ago.
+      expect(h.resets.slice(before)).toEqual([
+        { reason: "video source stalled", nowMs: inputAt + 3_000 },
+      ]);
+
+      // No frame ever answers: the source stays stalled through every retry,
+      // and retries follow the no-frame settle backoff, not the idle one.
+      const states = new Set<string>();
+      for (let second = 1; second <= 60; second++) {
+        h.clock.advance(1_000);
+        h.watchdog.tick();
+        if (second >= 3) states.add(h.watchdog.snapshot().sourceState);
+      }
+      expect(states).toEqual(new Set(["stalled"]));
+      const retries = h.resets.slice(before);
+      expect(new Set(retries.map((reset) => reset.reason))).toEqual(
+        new Set(["video source stalled"]),
+      );
+      const gaps = retries.slice(1).map((reset, i) => reset.nowMs - retries[i]!.nowMs);
+      // The settle window: 2.5 s (rounded up to the tick), then doubling.
+      expect(gaps).toEqual([3_000, 5_000, 10_000, 20_000]);
+      expect(h.watchdog.snapshot().stallResetAfterMs).toBe(5_000);
+    });
+
+    test("input does not trigger a reset while frames are still expected", () => {
+      const h = harness({ clients: [client()] });
+      h.watchdog.recordFrame(true);
+      for (let second = 1; second <= 10; second++) {
+        h.clock.advance(1_000);
+        h.watchdog.noteInput();
+        h.watchdog.tick();
+      }
+      expect(h.resets).toEqual([]);
+    });
+
+    test("reports starting, streaming, idle, and stalled sources", () => {
+      const h = harness({ clients: [client()] });
+      expect(h.watchdog.snapshot().sourceState).toBe("starting");
+      h.clock.advance(5_000);
+      expect(h.watchdog.snapshot().sourceState).toBe("stalled");
+
+      h.watchdog.recordFrame(true);
+      expect(h.watchdog.snapshot().sourceState).toBe("streaming");
+      h.clock.advance(2_500);
+      expect(h.watchdog.snapshot().sourceState).toBe("idle");
+
+      // A reset that the encoder answers keeps the source idle.
+      expect(h.watchdog.requestVideoReset("probe")).toBe(true);
+      h.clock.advance(100);
+      h.watchdog.recordFrame(true);
+      h.clock.advance(5_000);
+      expect(h.watchdog.snapshot().sourceState).toBe("idle");
+
+      // A reset that gets no frame for a settle window is a stall.
+      expect(h.watchdog.requestVideoReset("probe")).toBe(true);
+      h.clock.advance(2_499);
+      expect(h.watchdog.snapshot().sourceState).toBe("idle");
+      h.clock.advance(1);
+      expect(h.watchdog.snapshot().sourceState).toBe("stalled");
+    });
+  });
 });

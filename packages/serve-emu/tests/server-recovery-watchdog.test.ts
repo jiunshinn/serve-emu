@@ -369,6 +369,40 @@ async function pushFrame(
 }
 
 describe("server recovery watchdog", () => {
+  test("an idle screen backs off stall resets, /health says idle, and input restores the base (#165)", async () => {
+    const harness = await createHarness();
+    const session = harness.sessions.get("A")!;
+    try {
+      await harness.openWebSocket();
+      await pushFrame(harness, "A", keyFrame(), 1);
+      const opened = session.fakeControlSocket.writes.length;
+
+      // Nothing changes on screen: the first quiet window is a stall.
+      harness.clock.advance(3_000);
+      harness.clock.fireActive();
+      await waitFor(() => session.fakeControlSocket.writes.length === opened + 1);
+      // The restarted encoder answers with its key frame, then goes quiet.
+      await pushFrame(harness, "A", keyFrame(), 2);
+      harness.clock.advance(3_000);
+      harness.clock.fireActive();
+
+      let health = await harness.health();
+      expect(session.fakeControlSocket.writes).toHaveLength(opened + 1);
+      expect(health).toMatchObject({
+        sourceState: "idle",
+        lastVideoResetReason: "video source stalled",
+        keyFrameRecovery: { stallResetAfterMs: 5_000 },
+      });
+
+      // Input means frames should follow, so stalls count from the base again.
+      expect((await harness.post("/api/tap", { x: 0.5, y: 0.5 })).status).toBe(200);
+      health = await harness.health();
+      expect(health.keyFrameRecovery.stallResetAfterMs).toBe(2_500);
+    } finally {
+      harness.started.stop();
+    }
+  });
+
   test("a staggered client joins the pending restart, then retries continue every window", async () => {
     const harness = await createHarness();
     const session = harness.sessions.get("A")!;

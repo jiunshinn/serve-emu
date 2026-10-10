@@ -454,6 +454,7 @@ export async function startServer(
       nowMs: now,
       recovery: recoveries.get(context)?.snapshot(now) ?? null,
       idleResetBackoffMs: RESET_SETTLE_MS,
+      baseStallResetMs: SOURCE_STALL_RESET_MS,
       responseMetrics: responseMetrics.snapshot(),
       uploads: uploads.snapshot(),
       executor: getExecSnapshot(),
@@ -630,6 +631,7 @@ export async function startServer(
       throw new Error(`session is ${context.status}`);
     }
     const accepted = context.inputQueue.enqueue(gesture, { ...context.screen });
+    recoveries.get(context)?.noteInput();
     if (record) context.recorder.recordGesture(accepted.gesture, source);
     return accepted;
   };
