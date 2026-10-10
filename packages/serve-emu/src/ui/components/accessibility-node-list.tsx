@@ -6,7 +6,7 @@ import {
   getFixedScrollTopForIndex,
   getFixedVirtualRange,
 } from "../lib/fixed-virtual-list";
-import type { AccessibilityNode } from "./accessibility-panel";
+import type { AccessibilityNode } from "../../shared/api-contracts";
 
 export const ACCESSIBILITY_ROW_HEIGHT = 40;
 export const ACCESSIBILITY_VIEWPORT_HEIGHT = 220;

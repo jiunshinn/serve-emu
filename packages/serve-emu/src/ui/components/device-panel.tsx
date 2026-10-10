@@ -1,17 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
 import type {
   DeviceGridResponse,
-  FontScaleResponse,
   GridDevice,
-  NetworkStatus,
-  NightMode,
-  NightModeResponse,
-  OrientationMode as Orientation,
-  OrientationResponse,
-  NetworkResponse,
   SessionStatus,
 } from "../../shared/api-contracts";
 import { apiErrorMessage, apiRequest } from "../lib/api-client";
+import { DEVICE_SETTINGS, useDeviceSetting } from "../lib/device-setting";
 import { deviceSessionStore, useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { usePoll } from "../lib/use-poll";
 
@@ -147,190 +141,38 @@ export function DevicePanel() {
   );
 }
 
-export function OrientationPanel() {
-  const [orientation, setOrientation] = useState<Orientation | "unknown">("unknown");
-  const [orientationStatus, setOrientationStatus] = useState("Loading...");
-  const deviceSession = useDeviceSessionSnapshot();
+type SettingOption<Next> = { value: Next; label: string };
 
-  const applyOrientation = useCallback((json: OrientationResponse) => {
-    const next = json.orientation.orientation;
-    setOrientation(next);
-    setOrientationStatus(next === "unknown" ? json.orientation.raw || "Unknown" : next);
-  }, []);
-
-  const { refresh: refreshOrientation } = usePoll({
-    poll: ({ signal }) =>
-      apiRequest("/api/orientation", { method: "GET", cache: "no-store", signal }),
-    onResult: applyOrientation,
-    onError: (error) => {
-      setOrientation("unknown");
-      setOrientationStatus(apiErrorMessage(error));
-    },
-    intervalMs: null,
-    pollKey: deviceSession.revision,
-    enabled: !deviceSession.transitioning,
-  });
-
-  const setDeviceOrientation = useCallback(async (next: Orientation) => {
-    setOrientationStatus("Applying...");
-    try {
-      applyOrientation(
-        await apiRequest("/api/orientation", {
-          method: "POST",
-          body: { orientation: next },
-        }),
-      );
-      refreshOrientation();
-    } catch (err) {
-      setOrientationStatus(apiErrorMessage(err));
-    }
-  }, [applyOrientation, refreshOrientation]);
-
+/** A device setting's heading, status line, and one button per option. */
+function SettingPanel<Value, Next extends Value>({
+  title,
+  className,
+  rowClassName = "segmented-row",
+  setting,
+  options,
+  isSelected = (value, option) => value === option,
+}: {
+  title: string;
+  className: string;
+  rowClassName?: string;
+  setting: ReturnType<typeof useDeviceSetting<Value, Next>>;
+  options: readonly SettingOption<Next>[];
+  isSelected?: (value: Value, option: Next) => boolean;
+}) {
   return (
-    <section className="tool-panel orientation-panel">
+    <section className={`tool-panel ${className}`}>
       <div className="panel-heading">
-        <h2>Orientation</h2>
-        <div className="location-status">{orientationStatus}</div>
+        <h2>{title}</h2>
+        <div className="location-status">{setting.status}</div>
       </div>
-      <div className="segmented-row">
-        <button
-          className={orientation === "portrait" ? "selected" : ""}
-          onClick={() => void setDeviceOrientation("portrait")}
-        >
-          Portrait
-        </button>
-        <button
-          className={orientation === "landscape" ? "selected" : ""}
-          onClick={() => void setDeviceOrientation("landscape")}
-        >
-          Landscape
-        </button>
-        <button
-          className={orientation === "auto" ? "selected" : ""}
-          onClick={() => void setDeviceOrientation("auto")}
-        >
-          Auto
-        </button>
-      </div>
-    </section>
-  );
-}
-
-export function NightModePanel() {
-  const [nightMode, setNightMode] = useState<NightMode | "unknown">("unknown");
-  const [nightModeStatus, setNightModeStatus] = useState("Loading...");
-  const deviceSession = useDeviceSessionSnapshot();
-
-  const applyNightMode = useCallback((json: NightModeResponse) => {
-    const next = json.nightMode.mode;
-    setNightMode(next);
-    setNightModeStatus(next === "unknown" ? json.nightMode.raw || "Unknown" : next);
-  }, []);
-
-  const { refresh: refreshNightMode } = usePoll({
-    poll: ({ signal }) =>
-      apiRequest("/api/night-mode", { method: "GET", cache: "no-store", signal }),
-    onResult: applyNightMode,
-    onError: (error) => {
-      setNightMode("unknown");
-      setNightModeStatus(apiErrorMessage(error));
-    },
-    intervalMs: null,
-    pollKey: deviceSession.revision,
-    enabled: !deviceSession.transitioning,
-  });
-
-  const setDeviceNightMode = useCallback(async (next: NightMode) => {
-    setNightModeStatus("Applying...");
-    try {
-      applyNightMode(
-        await apiRequest("/api/night-mode", { method: "POST", body: { mode: next } }),
-      );
-      refreshNightMode();
-    } catch (err) {
-      setNightModeStatus(apiErrorMessage(err));
-    }
-  }, [applyNightMode, refreshNightMode]);
-
-  return (
-    <section className="tool-panel night-mode-panel">
-      <div className="panel-heading">
-        <h2>Theme</h2>
-        <div className="location-status">{nightModeStatus}</div>
-      </div>
-      <div className="segmented-row">
-        <button
-          className={nightMode === "dark" ? "selected" : ""}
-          onClick={() => void setDeviceNightMode("dark")}
-        >
-          Dark
-        </button>
-        <button
-          className={nightMode === "light" ? "selected" : ""}
-          onClick={() => void setDeviceNightMode("light")}
-        >
-          Light
-        </button>
-        <button
-          className={nightMode === "auto" ? "selected" : ""}
-          onClick={() => void setDeviceNightMode("auto")}
-        >
-          Auto
-        </button>
-      </div>
-    </section>
-  );
-}
-
-export function FontScalePanel() {
-  const [fontScale, setFontScale] = useState<number | null>(null);
-  const [fontScaleStatus, setFontScaleStatus] = useState("Loading...");
-  const deviceSession = useDeviceSessionSnapshot();
-
-  const applyFontScale = useCallback((json: FontScaleResponse) => {
-    setFontScale(json.fontScale.scale);
-    setFontScaleStatus(`${Math.round(json.fontScale.scale * 100)}%`);
-  }, []);
-
-  const { refresh: refreshFontScale } = usePoll({
-    poll: ({ signal }) =>
-      apiRequest("/api/font-scale", { method: "GET", cache: "no-store", signal }),
-    onResult: applyFontScale,
-    onError: (error) => {
-      setFontScale(null);
-      setFontScaleStatus(apiErrorMessage(error));
-    },
-    intervalMs: null,
-    pollKey: deviceSession.revision,
-    enabled: !deviceSession.transitioning,
-  });
-
-  const setDeviceFontScale = useCallback(async (next: number) => {
-    setFontScaleStatus("Applying...");
-    try {
-      applyFontScale(
-        await apiRequest("/api/font-scale", { method: "POST", body: { scale: next } }),
-      );
-      refreshFontScale();
-    } catch (err) {
-      setFontScaleStatus(apiErrorMessage(err));
-    }
-  }, [applyFontScale, refreshFontScale]);
-
-  return (
-    <section className="tool-panel font-scale-panel">
-      <div className="panel-heading">
-        <h2>Font Size</h2>
-        <div className="location-status">{fontScaleStatus}</div>
-      </div>
-      <div className="font-scale-row">
-        {FONT_SCALE_PRESETS.map((scale) => (
+      <div className={rowClassName}>
+        {options.map((option) => (
           <button
-            key={scale}
-            className={fontScale !== null && Math.abs(fontScale - scale) < 0.01 ? "selected" : ""}
-            onClick={() => void setDeviceFontScale(scale)}
+            key={String(option.value)}
+            className={isSelected(setting.value, option.value) ? "selected" : ""}
+            onClick={() => void setting.apply(option.value)}
           >
-            {Math.round(scale * 100)}%
+            {option.label}
           </button>
         ))}
       </div>
@@ -338,70 +180,64 @@ export function FontScalePanel() {
   );
 }
 
-function networkLabel(network: NetworkStatus): string {
-  const state = network.enabled === true ? "on" : network.enabled === false ? "off" : "unknown";
-  const wifi = network.wifi && network.wifi !== "unknown" ? `wifi ${network.wifi}` : "wifi ?";
-  const mobileData =
-    network.mobileData && network.mobileData !== "unknown" ? `data ${network.mobileData}` : "data ?";
-  return `${state} (${wifi}, ${mobileData})`;
+export function OrientationPanel() {
+  return (
+    <SettingPanel
+      title="Orientation"
+      className="orientation-panel"
+      setting={useDeviceSetting(DEVICE_SETTINGS.orientation)}
+      options={[
+        { value: "portrait", label: "Portrait" },
+        { value: "landscape", label: "Landscape" },
+        { value: "auto", label: "Auto" },
+      ]}
+    />
+  );
+}
+
+export function NightModePanel() {
+  return (
+    <SettingPanel
+      title="Theme"
+      className="night-mode-panel"
+      setting={useDeviceSetting(DEVICE_SETTINGS.nightMode)}
+      options={[
+        { value: "dark", label: "Dark" },
+        { value: "light", label: "Light" },
+        { value: "auto", label: "Auto" },
+      ]}
+    />
+  );
+}
+
+export function FontScalePanel() {
+  return (
+    <SettingPanel
+      title="Font Size"
+      className="font-scale-panel"
+      rowClassName="font-scale-row"
+      setting={useDeviceSetting(DEVICE_SETTINGS.fontScale)}
+      options={FONT_SCALE_PRESETS.map((scale) => ({
+        value: scale,
+        label: `${Math.round(scale * 100)}%`,
+      }))}
+      isSelected={(value, option) => value !== null && Math.abs(value - option) < 0.01}
+    />
+  );
 }
 
 export function NetworkPanel() {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [networkStatus, setNetworkStatus] = useState("Loading...");
-  const deviceSession = useDeviceSessionSnapshot();
-
-  const applyNetwork = useCallback((json: NetworkResponse) => {
-    setEnabled(json.network.enabled);
-    setNetworkStatus(networkLabel(json.network));
-  }, []);
-
-  const { refresh: refreshNetwork } = usePoll({
-    poll: ({ signal }) =>
-      apiRequest("/api/network", { method: "GET", cache: "no-store", signal }),
-    onResult: applyNetwork,
-    onError: (error) => {
-      setEnabled(null);
-      setNetworkStatus(apiErrorMessage(error));
-    },
-    intervalMs: null,
-    pollKey: deviceSession.revision,
-    enabled: !deviceSession.transitioning,
-  });
-
-  const setDeviceNetwork = useCallback(async (next: boolean) => {
-    setNetworkStatus("Applying...");
-    try {
-      applyNetwork(
-        await apiRequest("/api/network", { method: "POST", body: { enabled: next } }),
-      );
-      refreshNetwork();
-    } catch (err) {
-      setNetworkStatus(apiErrorMessage(err));
-    }
-  }, [applyNetwork, refreshNetwork]);
-
   return (
-    <section className="tool-panel network-panel">
-      <div className="panel-heading">
-        <h2>Network</h2>
-        <div className="location-status">{networkStatus}</div>
-      </div>
-      <div className="segmented-row network-row">
-        <button
-          className={enabled === true ? "selected" : ""}
-          onClick={() => void setDeviceNetwork(true)}
-        >
-          On
-        </button>
-        <button
-          className={enabled === false ? "selected" : ""}
-          onClick={() => void setDeviceNetwork(false)}
-        >
-          Off
-        </button>
-      </div>
-    </section>
+    <SettingPanel
+      title="Network"
+      className="network-panel"
+      rowClassName="segmented-row network-row"
+      setting={useDeviceSetting(DEVICE_SETTINGS.network)}
+      options={[
+        { value: true, label: "On" },
+        { value: false, label: "Off" },
+      ]}
+    />
   );
 }
 

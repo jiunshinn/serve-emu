@@ -1,20 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
+import type {
+  AccessibilityNode,
+  AccessibilitySelector,
+} from "../../shared/api-contracts";
 import { apiErrorMessage, apiRequest } from "../lib/api-client";
 import { useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { usePoll } from "../lib/use-poll";
 import { AccessibilityNodeList } from "./accessibility-node-list";
-
-export type AccessibilityNode = {
-  id: string;
-  text: string;
-  contentDescription: string;
-  resourceId: string;
-  className: string;
-  packageName: string;
-  clickable: boolean;
-  enabled: boolean;
-  bounds: { left: number; top: number; right: number; bottom: number };
-};
 
 type Props = {
   enabled: boolean;
@@ -24,13 +16,6 @@ type Props = {
   onNodesChange: (nodes: AccessibilityNode[]) => void;
   onHighlight: (id: string | null) => void;
 };
-
-type AccessibilitySelector = Partial<
-  Pick<
-    AccessibilityNode,
-    "id" | "text" | "contentDescription" | "resourceId" | "className" | "packageName" | "clickable" | "enabled"
-  >
-> & { index?: number };
 
 function preferredSelectorForNode(node: AccessibilityNode): AccessibilitySelector {
   if (node.resourceId) return { resourceId: node.resourceId };

@@ -1,5 +1,6 @@
 import { publicErrorMessage } from "./command-failure.ts";
 import type { GeoFix } from "./location.ts";
+import { MAX_ROUTE_WAYPOINTS } from "./shared/route-limits.ts";
 
 export type {
   RoutePlaybackRequest,
@@ -56,7 +57,6 @@ type PreparedRoute = {
 const EARTH_RADIUS_METERS = 6_371_000;
 const DEFAULT_SPEED_KPH = 30;
 const DEFAULT_INTERVAL_MS = 1000;
-const MAX_WAYPOINTS = 10_000;
 const MIN_INTERVAL_MS = 250;
 const MAX_INTERVAL_MS = 60_000;
 
@@ -195,7 +195,7 @@ export function parseRoutePlaybackRequest(value: unknown): RoutePlaybackRequest 
   if (!isRecord(value)) throw new Error("route payload must be an object");
   if (!Array.isArray(value.waypoints)) throw new Error("waypoints must be an array");
   if (value.waypoints.length < 1) throw new Error("route must include at least one waypoint");
-  if (value.waypoints.length > MAX_WAYPOINTS) throw new Error(`route cannot exceed ${MAX_WAYPOINTS} waypoints`);
+  if (value.waypoints.length > MAX_ROUTE_WAYPOINTS) throw new Error(`route cannot exceed ${MAX_ROUTE_WAYPOINTS} waypoints`);
 
   const speedKph = optionalNumber(value.speedKph, "speedKph") ?? DEFAULT_SPEED_KPH;
   const multiplier = optionalNumber(value.multiplier, "multiplier") ?? 1;
