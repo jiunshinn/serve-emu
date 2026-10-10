@@ -20,6 +20,7 @@ import {
 } from "../lib/route-map";
 import type { RoutePlaybackSnapshot } from "../../shared/api-contracts";
 import { apiErrorMessage, apiRequest } from "../lib/api-client";
+import { useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { DEFAULT_MAX_ROUTE_FILE_BYTES } from "../lib/route-parser";
 import type {
   RouteParserWorkerCommand,
@@ -149,13 +150,36 @@ export function LocationPanel() {
     return () => observer.disconnect();
   }, []);
 
+  // The panel stays mounted across device switches. Load the location on
+  // mount, and once a different session has settled, drop the previous
+  // device's fix and status before loading the new device's location.
+  const deviceSession = useDeviceSessionSnapshot();
+  const settledSession =
+    !deviceSession.transitioning && deviceSession.sessionGeneration !== null
+      ? `${deviceSession.serial}#${deviceSession.sessionGeneration}`
+      : null;
+  const locationSessionRef = useRef<string | null | undefined>(undefined);
+  const locationRequestRef = useRef(0);
   useEffect(() => {
+    const previous = locationSessionRef.current;
+    if (previous !== undefined) {
+      if (settledSession === null || settledSession === previous) return;
+      locationSessionRef.current = settledSession;
+      // The mount fetch already covered the first settled session.
+      if (previous === null) return;
+      setStatus("Ready");
+      syncDraft(DEFAULT_LOCATION, true);
+    } else {
+      locationSessionRef.current = settledSession;
+    }
+    const request = ++locationRequestRef.current;
     apiRequest("/api/location", { method: "GET" })
       .then((data) => {
+        if (request !== locationRequestRef.current) return;
         if (data.location) syncDraft(data.location, true);
       })
       .catch(() => {});
-  }, [syncDraft]);
+  }, [settledSession, syncDraft]);
 
   useEffect(() => {
     let cancelled = false;

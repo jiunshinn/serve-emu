@@ -195,3 +195,28 @@ test("structured API errors render as text and keep the stream mounted", async (
   await expect(page.locator("canvas").first()).toBeVisible();
   await expect(page.locator("header .meta")).toContainText("streaming");
 });
+
+test("a device switch keeps open tool sections open", async ({ page, request }) => {
+  await page.goto("/");
+  await streaming(page);
+  const session = page.getByRole("button", { name: "Session", exact: true });
+  const location = page.getByRole("button", { name: "Location", exact: true });
+  await session.click();
+  await location.click();
+  await expect(session).toHaveAttribute("aria-expanded", "true");
+  await expect(location).toHaveAttribute("aria-expanded", "true");
+
+  const health = await (await request.get("/health")).json();
+  const target = health.serial === "device-a" ? "device-b" : "device-a";
+  await page
+    .locator(".device-row")
+    .filter({ has: page.locator(".device-name", { hasText: target }) })
+    .locator(".device-row-main")
+    .click();
+  await expect(page.locator(".device-row.current")).toContainText(target);
+  await streaming(page);
+
+  await expect(session).toHaveAttribute("aria-expanded", "true");
+  await expect(location).toHaveAttribute("aria-expanded", "true");
+  await expect(page.locator(".session-panel")).toBeVisible();
+});
