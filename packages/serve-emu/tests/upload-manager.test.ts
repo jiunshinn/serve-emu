@@ -5,63 +5,8 @@ import {
   type UploadManagerClock,
   type UploadManagerErrorCode,
 } from "../src/upload-manager.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-type Timer = {
-  callback: () => void;
-  dueMs: number;
-  active: boolean;
-};
-
-class ManualClock implements UploadManagerClock {
-  nowMs = 0;
-  readonly timers: Timer[] = [];
-
-  now(): number {
-    return this.nowMs;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): unknown {
-    const timer = {
-      callback,
-      dueMs: this.nowMs + delayMs,
-      active: true,
-    };
-    this.timers.push(timer);
-    return timer;
-  }
-
-  clearTimeout(value: unknown): void {
-    (value as Timer).active = false;
-  }
-
-  advance(ms: number): void {
-    this.nowMs += ms;
-  }
-
-  fireDue(): void {
-    for (const timer of this.timers) {
-      if (!timer.active || timer.dueMs > this.nowMs) continue;
-      timer.active = false;
-      timer.callback();
-    }
-  }
-}
+import { deferred } from "./helpers/deferred.ts";
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 const context = (generation: number, serial = `device-${generation}`) => ({
   serial,

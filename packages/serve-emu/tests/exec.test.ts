@@ -8,44 +8,7 @@ import {
   type ExecClock,
   type ExecSpawner,
 } from "../src/exec.ts";
-
-type Timer = {
-  callback: () => void;
-  dueMs: number;
-  active: boolean;
-};
-
-class ManualClock implements ExecClock {
-  nowMs = 0;
-  readonly timers: Timer[] = [];
-
-  now(): number {
-    return this.nowMs;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): unknown {
-    const timer = {
-      callback,
-      dueMs: this.nowMs + delayMs,
-      active: true,
-    };
-    this.timers.push(timer);
-    return timer;
-  }
-
-  clearTimeout(value: unknown): void {
-    (value as Timer).active = false;
-  }
-
-  advance(ms: number): void {
-    this.nowMs += ms;
-    for (const timer of this.timers) {
-      if (!timer.active || timer.dueMs > this.nowMs) continue;
-      timer.active = false;
-      timer.callback();
-    }
-  }
-}
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
@@ -274,9 +237,9 @@ describe("ProcessExecutor", () => {
     const active = executor.execText("active", []);
     const queued = executor.execText("queued", [], { timeout: 100 });
 
-    clock.advance(99);
+    clock.tick(99);
     expect(executor.snapshot()).toMatchObject({ active: 1, queued: 1 });
-    clock.advance(1);
+    clock.tick(1);
     const result = await queued;
 
     expect(result.timedOut).toBe(true);
@@ -305,7 +268,7 @@ describe("ProcessExecutor", () => {
       settled = true;
     });
 
-    clock.advance(100);
+    clock.tick(100);
     await flush();
     expect(children[0]!.child.killSignals).toEqual(["SIGKILL"]);
     expect(settled).toBe(false);
@@ -369,7 +332,7 @@ describe("ProcessExecutor", () => {
       signal: abortFirstController.signal,
     });
     abortFirstController.abort(new Error("request gone"));
-    clock.advance(100);
+    clock.tick(100);
     expect(children[0]!.child.killSignals).toEqual(["SIGKILL"]);
     children[0]!.child.close(null, "SIGKILL");
     const abortResult = await abortFirst;
@@ -381,7 +344,7 @@ describe("ProcessExecutor", () => {
       timeout: 100,
       signal: deadlineFirstController.signal,
     });
-    clock.advance(100);
+    clock.tick(100);
     deadlineFirstController.abort(new Error("too late"));
     expect(children[1]!.child.killSignals).toEqual(["SIGKILL"]);
     children[1]!.child.close(null, "SIGKILL");

@@ -1,19 +1,7 @@
 import { expect, test } from "bun:test";
 import { getNetworkStatus } from "../src/adb.ts";
 import type { execText } from "../src/exec.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve(value: T): void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
+import { deferred } from "./helpers/deferred.ts";
 
 test("getNetworkStatus reads Wi-Fi and mobile settings concurrently", async () => {
   const wifi = deferred<string>();

@@ -1,80 +1,31 @@
 import { describe, expect, test } from "bun:test";
-import { EventEmitter } from "node:events";
-import { Socket } from "node:net";
-import type { ChildProcess } from "node:child_process";
 import { startServer } from "../src/server.ts";
+import type { ScrcpySession } from "../src/scrcpy.ts";
+import { deferred } from "./helpers/deferred.ts";
 import {
-  FramedReader,
-  type ScrcpySession,
-} from "../src/scrcpy.ts";
+  createHarness,
+  fakeScrcpy,
+  response,
+} from "./helpers/server-harness.ts";
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-function fakeSession(
-  serial: string,
-  onClose: () => void = () => {},
-): ScrcpySession {
-  const videoSocket = new Socket();
-  const controlSocket = new Socket();
-  const frame = deferred<null>();
-  const proc = new EventEmitter() as EventEmitter & {
-    kill: () => boolean;
-  };
-  proc.kill = () => true;
-  let closeTask: Promise<void> | null = null;
-
-  return {
-    transport: "scrcpy",
-    meta: {
-      deviceName: serial,
-      codecId: "h264",
-      width: 1080,
-      height: 1920,
-    },
-    protocol: 3,
-    videoReader: new FramedReader(videoSocket),
-    controlSocket,
-    proc: proc as unknown as ChildProcess,
-    scid: "00000001",
-    localPort: 27200,
-    serial,
-    readFrame: () => frame.promise,
-    close: () => {
-      if (closeTask) return closeTask;
-      closeTask = Promise.resolve().then(() => {
-        onClose();
-        frame.resolve(null);
-        videoSocket.destroy();
-        controlSocket.destroy();
-      });
-      return closeTask;
-    },
-  };
-}
+const selectDevice = (serial: string): RequestInit => ({
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ serial }),
+});
 
 describe("live device switching", () => {
+  // Requests go to the server's fetch handler, not a socket: this catches a
+  // switch that blocks the event loop or the handler, not the HTTP transport.
   test("keeps timers and HTTP responsive while the next scrcpy session waits", async () => {
-    const initial = fakeSession("device-1");
-    const next = fakeSession("device-2");
+    const initial = fakeScrcpy("device-1");
+    const next = fakeScrcpy("device-2");
     const nextStart = deferred<ScrcpySession>();
     const nextRequested = deferred<void>();
 
-    const started = await startServer(
-      { serial: "device-1", host: "127.0.0.1", port: 0 },
+    const harness = await createHarness(
+      { sessions: [initial, next] },
       {
-        log: () => {},
-        listDevices: async () => [
-          { serial: "device-1", state: "device" },
-          { serial: "device-2", state: "device" },
-        ],
         openScrcpy: async (serial) => {
           if (serial === "device-1") return initial;
           nextRequested.resolve();
@@ -84,12 +35,9 @@ describe("live device switching", () => {
     );
 
     try {
-      const baseUrl = `http://127.0.0.1:${started.server.port}`;
-      const switching = fetch(`${baseUrl}/api/devices/select`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ serial: "device-2" }),
-      });
+      const switching = response(
+        harness.request("/api/devices/select", selectDevice("device-2")),
+      );
       await nextRequested.promise;
 
       let timerAdvanced = false;
@@ -99,7 +47,7 @@ describe("live device switching", () => {
       await Bun.sleep(20);
 
       const healthResponse = await Promise.race([
-        fetch(`${baseUrl}/health`),
+        response(harness.request("/health")),
         Bun.sleep(500).then(() => {
           throw new Error("health request stalled during device switch");
         }),
@@ -123,27 +71,21 @@ describe("live device switching", () => {
         serial: "device-2",
       });
     } finally {
+      // The harness stops the server after the test; release the gated open
+      // so that stop cannot wait on it forever.
       nextStart.resolve(next);
-      await started.stop();
     }
   });
 
   test("server stop aborts and awaits a pending session switch", async () => {
-    let initialCloseCount = 0;
-    let candidateCloseCount = 0;
-    const initial = fakeSession("device-1", () => initialCloseCount++);
-    const candidate = fakeSession("device-2", () => candidateCloseCount++);
+    const initial = fakeScrcpy("device-1");
+    const candidate = fakeScrcpy("device-2");
     const candidateStart = deferred<ScrcpySession>();
     const candidateRequested = deferred<AbortSignal>();
 
-    const started = await startServer(
-      { serial: "device-1", host: "127.0.0.1", port: 0 },
+    const harness = await createHarness(
+      { sessions: [initial, candidate] },
       {
-        log: () => {},
-        listDevices: async () => [
-          { serial: "device-1", state: "device" },
-          { serial: "device-2", state: "device" },
-        ],
         openScrcpy: async (serial, signal) => {
           if (serial === "device-1") return initial;
           candidateRequested.resolve(signal!);
@@ -152,18 +94,14 @@ describe("live device switching", () => {
       },
     );
 
-    let stopping: Promise<void> | null = null;
     try {
-      const baseUrl = `http://127.0.0.1:${started.server.port}`;
-      const switching = fetch(`${baseUrl}/api/devices/select`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ serial: "device-2" }),
-      }).catch((error) => error);
+      const switching = harness
+        .request("/api/devices/select", selectDevice("device-2"))
+        .catch((error) => error);
       const switchSignal = await candidateRequested.promise;
 
       let stopSettled = false;
-      stopping = started.stop().then(() => {
+      const stopping = harness.started.stop().then(() => {
         stopSettled = true;
       });
       expect(switchSignal.aborted).toBe(true);
@@ -173,23 +111,23 @@ describe("live device switching", () => {
       candidateStart.resolve(candidate);
       await stopping;
       await switching;
-      expect(initialCloseCount).toBe(1);
-      expect(candidateCloseCount).toBe(1);
+      expect(initial.closeCalls).toBe(1);
+      expect(candidate.closeCalls).toBe(1);
     } finally {
-      // A failed expectation must not leave the real server listening.
+      // A failed expectation must not leave the harness's stop waiting on the
+      // gated open.
       candidateStart.resolve(candidate);
-      await (stopping ?? started.stop());
     }
   });
 
   test("closes the initial session when the HTTP port cannot bind", async () => {
+    // A real Bun.serve: the bind failure needs an OS port that is already taken.
     const occupied = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
       fetch: () => new Response("occupied"),
     });
-    let closeCount = 0;
-    const initial = fakeSession("device-1", () => closeCount++);
+    const initial = fakeScrcpy("device-1");
 
     try {
       await expect(
@@ -205,7 +143,7 @@ describe("live device switching", () => {
           },
         ),
       ).rejects.toMatchObject({ code: "EADDRINUSE" });
-      expect(closeCount).toBe(1);
+      expect(initial.closeCalls).toBe(1);
     } finally {
       occupied.stop(true);
     }

@@ -7,52 +7,12 @@ import {
   type VisibilitySource,
 } from "../src/ui/lib/polling.ts";
 import { createDeviceSessionStore } from "../src/ui/lib/device-session-store.ts";
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((onResolve, onReject) => {
-    resolve = onResolve;
-    reject = onReject;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred } from "./helpers/deferred.ts";
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 async function flushPromises() {
   await Promise.resolve();
   await Promise.resolve();
-}
-
-class FakeScheduler {
-  now = 0;
-  nextId = 1;
-  tasks = new Map<number, { at: number; callback: () => void }>();
-
-  readonly scheduler: PollScheduler = {
-    setTimeout: (callback, delayMs) => {
-      const id = this.nextId++;
-      this.tasks.set(id, { at: this.now + delayMs, callback });
-      return id;
-    },
-    clearTimeout: (handle) => {
-      this.tasks.delete(handle as number);
-    },
-  };
-
-  advance(delayMs: number) {
-    const target = this.now + delayMs;
-    while (true) {
-      const next = Array.from(this.tasks.entries())
-        .filter(([, task]) => task.at <= target)
-        .sort((left, right) => left[1].at - right[1].at || left[0] - right[0])[0];
-      if (!next) break;
-      const [id, task] = next;
-      this.tasks.delete(id);
-      this.now = task.at;
-      task.callback();
-    }
-    this.now = target;
-  }
 }
 
 class FakeVisibilitySource implements VisibilitySource {
@@ -81,30 +41,30 @@ describe("createPollController", () => {
   });
 
   test("uses completion-based fake timers and never overlaps polls", async () => {
-    const clock = new FakeScheduler();
+    const clock = new ManualClock();
     const runs = [deferred<number>(), deferred<number>()];
     let calls = 0;
     const results: number[] = [];
     const controller = createPollController({
       intervalMs: 1_000,
-      scheduler: clock.scheduler,
+      scheduler: clock,
       task: () => runs[calls++].promise,
       onResult: (result) => results.push(result),
     });
 
     controller.start("session-1");
     expect(calls).toBe(1);
-    clock.advance(30_000);
+    clock.tick(30_000);
     expect(calls).toBe(1);
-    expect(clock.tasks.size).toBe(0);
+    expect(clock.pendingTimeouts).toBe(0);
 
     runs[0].resolve(1);
     await flushPromises();
     expect(results).toEqual([1]);
-    expect(clock.tasks.size).toBe(1);
-    clock.advance(999);
+    expect(clock.pendingTimeouts).toBe(1);
+    clock.tick(999);
     expect(calls).toBe(1);
-    clock.advance(1);
+    clock.tick(1);
     expect(calls).toBe(2);
   });
 
@@ -220,12 +180,12 @@ describe("createPollController", () => {
   });
 
   test("schedules the next attempt after a current error", async () => {
-    const clock = new FakeScheduler();
+    const clock = new ManualClock();
     const errors: string[] = [];
     let calls = 0;
     const controller = createPollController({
       intervalMs: 250,
-      scheduler: clock.scheduler,
+      scheduler: clock,
       task: async () => {
         calls += 1;
         throw new Error("offline");
@@ -237,25 +197,25 @@ describe("createPollController", () => {
     controller.start("errors");
     await flushPromises();
     expect(errors).toEqual(["offline"]);
-    clock.advance(250);
+    clock.tick(250);
     await flushPromises();
     expect(calls).toBe(2);
   });
 
   test("null interval performs a single request", async () => {
-    const clock = new FakeScheduler();
+    const clock = new ManualClock();
     let calls = 0;
     const controller = createPollController({
       intervalMs: null,
-      scheduler: clock.scheduler,
+      scheduler: clock,
       task: async () => ++calls,
       onResult: () => {},
     });
     controller.start("once");
     await flushPromises();
-    clock.advance(60_000);
+    clock.tick(60_000);
     expect(calls).toBe(1);
-    expect(clock.tasks.size).toBe(0);
+    expect(clock.pendingTimeouts).toBe(0);
   });
 
   test("accepts undefined as an explicit polling key", async () => {
@@ -344,7 +304,6 @@ describe("device session store", () => {
     expect(store.getSnapshot()).toMatchObject({ serial: "second", transitioning: false });
   });
 });
-
 
 test("canonical health generation refreshes other tabs without a local transition", () => {
   const store = createDeviceSessionStore();

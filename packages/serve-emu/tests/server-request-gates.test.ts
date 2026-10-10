@@ -114,6 +114,7 @@ describe("server request gates", () => {
 
   test("refuses to start with a token the cookie or URL would corrupt", async () => {
     for (const token of ["abc;def", "a+b", "a b"]) {
+      // startServer itself must reject, so there is no harness to return.
       await expect(
         startServer({ serial: "emulator-5554", port: 0, token }, { openScrcpy: async () => fakeScrcpy() }),
       ).rejects.toThrow(InvalidTokenError);
@@ -730,6 +731,7 @@ describe("server shutdown and errors", () => {
     const session = fakeScrcpy();
     let serveCalls = 0;
 
+    // startServer itself must reject, so there is no harness to return.
     await expect(
       startServer(
         { serial: session.serial, port: 33_041 },

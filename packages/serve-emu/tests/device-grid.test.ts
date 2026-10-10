@@ -4,19 +4,7 @@ import {
   type DeviceGridDependencies,
 } from "../src/device-grid.ts";
 import type { Device } from "../src/shared/api-contracts.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve(value: T): void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
+import { deferred } from "./helpers/deferred.ts";
 
 test("device grid performs one adb discovery and reuses its snapshot", async () => {
   const deviceGate = deferred<Device[]>();

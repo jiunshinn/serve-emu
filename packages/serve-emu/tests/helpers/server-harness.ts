@@ -1,4 +1,3 @@
-import { afterEach } from "bun:test";
 import { EventEmitter } from "node:events";
 import { type ScrcpySession, type VideoPacket } from "../../src/scrcpy.ts";
 import {
@@ -7,22 +6,7 @@ import {
   type ServerOpts,
 } from "../../src/server.ts";
 import type { RecoveryWatchdogClock } from "../../src/session-recovery-watchdog.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred, type Deferred } from "./deferred.ts";
 
 type FrameFeedEntry =
   | { type: "value"; value: VideoPacket | null }
@@ -68,9 +52,12 @@ class FakeControlSocket extends EventEmitter {
   readonly destroyed = false;
   readonly writable = true;
   readonly writes: Buffer[] = [];
+  /** Records each write, then throws this error instead of completing it. */
+  throwOnWrite: Error | null = null;
 
   write(packet: Buffer, callback?: (error?: Error | null) => void): boolean {
     this.writes.push(Buffer.from(packet));
+    if (this.throwOnWrite) throw this.throwOnWrite;
     callback?.();
     return true;
   }
@@ -84,7 +71,10 @@ type FakeScrcpy = ScrcpySession & {
   failFrames(error: unknown): void;
 };
 
-function fakeScrcpy(serial = "emulator-5554"): FakeScrcpy {
+function fakeScrcpy(
+  serial = "emulator-5554",
+  options: { meta?: Partial<ScrcpySession["meta"]> } = {},
+): FakeScrcpy {
   const frames = new FrameFeed();
   const controlSocket = new FakeControlSocket();
   let settled = false;
@@ -98,6 +88,7 @@ function fakeScrcpy(serial = "emulator-5554"): FakeScrcpy {
       codecId: "h264",
       width: 720,
       height: 1280,
+      ...options.meta,
     },
     proc: new EventEmitter(),
     controlSocket,
@@ -144,6 +135,8 @@ type UpgradeData = {
 };
 
 type CapturedHandlers = {
+  /** The HTTP body ceiling startServer derived from its upload limits. */
+  maxRequestBodySize?: number;
   fetch(
     request: Request,
     server: CapturedServer,
@@ -211,24 +204,66 @@ function fakeWebSocket(
 
 type Harness = {
   started: Awaited<ReturnType<typeof startServer>>;
+  /** The first device's session; the one the server starts on. */
   session: FakeScrcpy;
+  /** One fake scrcpy session per serial in `options.serials`. */
+  sessions: Map<string, FakeScrcpy>;
+  /** Each serial the harness's openScrcpy was asked for, in order. */
+  openCalls: string[];
   server: CapturedServer;
   handlers: CapturedHandlers;
   request(path: string, init?: RequestInit): Promise<Response | undefined>;
+  /** Upgrades `/ws` (plus `query`) and opens the socket on the server. */
+  openWebSocket(
+    options?: Parameters<typeof fakeWebSocket>[1] & { query?: string },
+  ): Promise<FakeWebSocket>;
+};
+
+type HarnessOptions = Partial<ServerOpts> & {
+  /**
+   * The devices fake adb lists, each with its own fake scrcpy session. The
+   * server starts on the first. Defaults to `[options.serial]`.
+   */
+  serials?: string[];
+  /**
+   * Prebuilt sessions instead of `serials`, for a test that also overrides
+   * openScrcpy (to gate or fail an open) and needs the same sessions.
+   */
+  sessions?: FakeScrcpy[];
 };
 
 const activeServers: Array<Awaited<ReturnType<typeof startServer>>> = [];
 
-afterEach(async () => {
+/**
+ * Stops every server the harness started. `tests/helpers/preload.ts` runs it
+ * after each test: Bun attaches an `afterEach` registered in a shared module
+ * only to the first test file that imports it.
+ */
+async function stopHarnesses(): Promise<void> {
   const servers = activeServers.splice(0);
   await Promise.allSettled(servers.map((server) => server.stop()));
-});
+}
 
 async function createHarness(
-  options: Partial<ServerOpts> = {},
+  options: HarnessOptions = {},
   dependencyOverrides: ServerDependencies = {},
 ): Promise<Harness> {
-  const session = fakeScrcpy(options.serial);
+  const {
+    serials: requestedSerials,
+    sessions: givenSessions,
+    ...serverOptions
+  } = options;
+  const sessions = new Map(
+    (
+      givenSessions ??
+      (requestedSerials ?? [options.serial ?? "emulator-5554"]).map((serial) =>
+        fakeScrcpy(serial),
+      )
+    ).map((fake) => [fake.serial, fake]),
+  );
+  const serials = [...sessions.keys()];
+  const session = sessions.get(serials[0]!)!;
+  const openCalls: string[] = [];
   let handlers: CapturedHandlers | null = null;
   const server: CapturedServer = {
     port: options.port ?? 33_040,
@@ -250,15 +285,26 @@ async function createHarness(
   }) as unknown as typeof Bun.serve;
   const started = await startServer(
     {
+      ...serverOptions,
       serial: options.serial ?? session.serial,
       port: options.port ?? server.port,
-      host: options.host,
-      token: options.token,
-      allowedHosts: options.allowedHosts,
     },
     {
       log: () => {},
-      openScrcpy: async () => session,
+      openScrcpy: async (serial) => {
+        openCalls.push(serial);
+        const opened = sessions.get(serial);
+        if (!opened) throw new Error(`no fake scrcpy session for ${serial}`);
+        return opened;
+      },
+      // With explicit serials, fake adb lists exactly those devices. Without,
+      // the real listing runs (tests stub `adb` on PATH for it).
+      ...(requestedSerials || givenSessions
+        ? {
+            listDevices: async () =>
+              serials.map((serial) => ({ serial, state: "device" })),
+          }
+        : {}),
       recoveryClock: INERT_RECOVERY_CLOCK,
       serve,
       ...dependencyOverrides,
@@ -268,23 +314,38 @@ async function createHarness(
   if (!handlers) throw new Error("Bun.serve options were not captured");
   const capturedHandlers = handlers as CapturedHandlers;
 
+  const request: Harness["request"] = async (path, init = {}) => {
+    const headers = new Headers(init.headers);
+    if (!headers.has("host")) {
+      headers.set("host", `${server.hostname}:${server.port}`);
+    }
+    return capturedHandlers.fetch(
+      new Request(`http://${server.hostname}:${server.port}${path}`, {
+        ...init,
+        headers,
+      }),
+      server,
+    );
+  };
+
   return {
     started,
     session,
+    sessions,
+    openCalls,
     server,
     handlers: capturedHandlers,
-    async request(path, init = {}) {
-      const headers = new Headers(init.headers);
-      if (!headers.has("host")) {
-        headers.set("host", `${server.hostname}:${server.port}`);
+    request,
+    async openWebSocket({ query = "", ...socketOptions } = {}) {
+      const upgraded = await request(`/ws${query}`);
+      if (upgraded !== undefined) {
+        throw new Error(`websocket upgrade was refused with ${upgraded.status}`);
       }
-      return capturedHandlers.fetch(
-        new Request(`http://${server.hostname}:${server.port}${path}`, {
-          ...init,
-          headers,
-        }),
-        server,
-      );
+      const data = server.upgrades.at(-1);
+      if (!data) throw new Error("websocket upgrade data was not captured");
+      const socket = fakeWebSocket(data, socketOptions);
+      capturedHandlers.websocket.open(socket);
+      return socket;
     },
   };
 }
@@ -299,13 +360,14 @@ async function response(
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
+  message = "condition was not met before timeout",
 ): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
-  throw new Error("condition was not met before timeout");
+  throw new Error(message);
 }
 
 export {
@@ -314,6 +376,7 @@ export {
   fakeWebSocket,
   INERT_RECOVERY_CLOCK,
   response,
+  stopHarnesses,
   waitFor,
 };
-export type { FakeWebSocket, Harness };
+export type { FakeScrcpy, FakeWebSocket, Harness, HarnessOptions };

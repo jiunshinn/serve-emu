@@ -10,24 +10,9 @@ import {
   type AdbCommandResult,
   type ScrcpyDependencies,
 } from "../src/scrcpy.ts";
+import { deferred, type Deferred } from "./helpers/deferred.ts";
 
 const SERIAL = "device-test-serial";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason: unknown) => void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 function ok(stdout = ""): AdbCommandResult {
   return { status: 0, stdout, stderr: "", timedOut: false, error: null };

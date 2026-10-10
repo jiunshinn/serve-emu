@@ -4,44 +4,7 @@ import {
   type RecoveryClientState,
   type RecoveryWatchdogClock,
 } from "../src/session-recovery-watchdog.ts";
-
-type Timer = {
-  callback: () => void;
-  active: boolean;
-};
-
-class ManualClock implements RecoveryWatchdogClock {
-  nowMs = 0;
-  readonly timers: Timer[] = [];
-
-  now(): number {
-    return this.nowMs;
-  }
-
-  setInterval(callback: () => void): unknown {
-    const timer = { callback, active: true };
-    this.timers.push(timer);
-    return timer;
-  }
-
-  clearInterval(value: unknown): void {
-    (value as Timer).active = false;
-  }
-
-  advance(ms: number): void {
-    this.nowMs += ms;
-  }
-
-  fireActive(): void {
-    for (const timer of this.timers) {
-      if (timer.active) timer.callback();
-    }
-  }
-
-  get activeTimers(): number {
-    return this.timers.filter((timer) => timer.active).length;
-  }
-}
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 const client = (
   overrides: Partial<RecoveryClientState> = {},
@@ -369,17 +332,17 @@ describe("SessionRecoveryWatchdog", () => {
     watchdog.markAwaiting(waiting);
     watchdog.start();
     watchdog.start();
-    expect(clock.activeTimers).toBe(1);
+    expect(clock.activeIntervals).toBe(1);
     const oldTimer = clock.timers[0]!;
 
     watchdog.stop();
-    expect(clock.activeTimers).toBe(0);
+    expect(clock.activeIntervals).toBe(0);
     clock.advance(5_000);
     oldTimer.callback();
     expect(resets).toHaveLength(0);
 
     watchdog.start();
-    expect(clock.activeTimers).toBe(1);
+    expect(clock.activeIntervals).toBe(1);
     oldTimer.callback();
     expect(resets).toHaveLength(0);
     clock.fireActive();
