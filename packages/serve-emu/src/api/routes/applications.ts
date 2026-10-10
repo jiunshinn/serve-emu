@@ -1,9 +1,3 @@
-import {
-  clearAppData,
-  forceStopApp,
-  grantPermission,
-  launchApp,
-} from "../../app-management.ts";
 import type { ApiDependencies } from "../dependencies.ts";
 import type { ApiRoute } from "../router.ts";
 
@@ -29,14 +23,15 @@ export function applicationRoutes(): ApiRoute<ApiDependencies>[] {
       method: "POST",
       path: "/api/apps/launch",
       handler: async ({ request: req, deps }) => {
-        const { appJsonEndpoint, requestContext } = deps;
-        return appJsonEndpoint(requestContext, req, (payload) =>
-          launchApp(
+        const { appJsonEndpoint, requestContext, device } = deps;
+        return appJsonEndpoint(requestContext, req, (payload, signal) =>
+          device.launchApp(
             requestContext.serial,
             String(payload.packageName ?? ""),
             typeof payload.activity === "string" && payload.activity.trim()
               ? payload.activity
               : undefined,
+            signal,
           ),
         );
       },
@@ -45,11 +40,12 @@ export function applicationRoutes(): ApiRoute<ApiDependencies>[] {
       method: "POST",
       path: "/api/apps/clear",
       handler: async ({ request: req, deps }) => {
-        const { appJsonEndpoint, requestContext } = deps;
-        return appJsonEndpoint(requestContext, req, (payload) =>
-          clearAppData(
+        const { appJsonEndpoint, requestContext, device } = deps;
+        return appJsonEndpoint(requestContext, req, (payload, signal) =>
+          device.clearAppData(
             requestContext.serial,
             String(payload.packageName ?? ""),
+            signal,
           ),
         );
       },
@@ -58,11 +54,12 @@ export function applicationRoutes(): ApiRoute<ApiDependencies>[] {
       method: "POST",
       path: "/api/apps/force-stop",
       handler: async ({ request: req, deps }) => {
-        const { appJsonEndpoint, requestContext } = deps;
-        return appJsonEndpoint(requestContext, req, (payload) =>
-          forceStopApp(
+        const { appJsonEndpoint, requestContext, device } = deps;
+        return appJsonEndpoint(requestContext, req, (payload, signal) =>
+          device.forceStopApp(
             requestContext.serial,
             String(payload.packageName ?? ""),
+            signal,
           ),
         );
       },
@@ -71,12 +68,13 @@ export function applicationRoutes(): ApiRoute<ApiDependencies>[] {
       method: "POST",
       path: "/api/apps/grant",
       handler: async ({ request: req, deps }) => {
-        const { appJsonEndpoint, requestContext } = deps;
-        return appJsonEndpoint(requestContext, req, (payload) =>
-          grantPermission(
+        const { appJsonEndpoint, requestContext, device } = deps;
+        return appJsonEndpoint(requestContext, req, (payload, signal) =>
+          device.grantPermission(
             requestContext.serial,
             String(payload.packageName ?? ""),
             String(payload.permission ?? ""),
+            signal,
           ),
         );
       },

@@ -10,6 +10,7 @@
 - HTTP entry point, access-control gate, WebSocket handlers, and `/health`: `packages/serve-emu/src/server.ts`.
 - REST API routes: `packages/serve-emu/src/api/routes/*`, dispatched by `src/api/router.ts`; errors in `src/api/api-error.ts`.
 - API routes and their methods: the `ApiRoute` lists in `src/api/routes/*`, collected by `src/api/routes/index.ts`; `src/api/router.ts` answers other methods with 405 and `Allow`. Request body limits (`MAX_*_BYTES`): `src/server.ts`. Slow-client frame decisions: `src/server/backpressure.ts`.
+- Device commands for routes (screenshot, settings, foreground app, app actions): `packages/serve-emu/src/device-service.ts`, reached as `deps.device`. Routes do not import `adb.ts`, `app-info.ts`, `app-management.ts`, or `emulator.ts`; they call `deps.device` inside `runForContext(context, (ctx, signal) => …, req.signal)` so a device switch or a client disconnect kills the adb process.
 - Wire contracts shared by server and UI (API responses, control, frame metadata, WebSocket, worker messages): `packages/serve-emu/src/shared`.
 - scrcpy process, adb forward tunnel, socket setup, and frame parsing: `packages/serve-emu/src/scrcpy.ts`.
 - scrcpy control socket message encoding for taps, swipes, keys, text, and video reset: `packages/serve-emu/src/input.ts`.

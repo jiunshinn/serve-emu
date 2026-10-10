@@ -1,6 +1,5 @@
-import { SessionChangedError } from "../../device-session-context.ts";
 import { parseGeoFix } from "../../location.ts";
-import { routePlaybackErrorResponse } from "../../route-playback-api.ts";
+import { startRoutePlaybackResponse } from "../../route-playback-api.ts";
 import { parseRoutePlaybackRequest } from "../../route-playback.ts";
 import { shouldRecordPayload } from "../../session-api.ts";
 import type { ApiDependencies } from "../dependencies.ts";
@@ -41,8 +40,10 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
           const location = await applyLocation(
             requestContext,
             parseGeoFix(payload),
-            "rest:location",
-            shouldRecordPayload(payload),
+            {
+              source: "rest:location",
+              record: shouldRecordPayload(payload),
+            },
           );
           return Response.json({ ok: true, location });
         } catch (err) {
@@ -78,17 +79,14 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
           return errorResponse(err, 400);
         }
         try {
-          const start = requestContext.route.start(route);
-          const snapshot = await requestContext.trackDrain(start);
-          sessions.assertCurrent(requestContext);
-          return Response.json({
-            ok: true,
-            route: snapshot,
+          return await startRoutePlaybackResponse(requestContext.route, route, {
+            assertCurrent: () => sessions.assertCurrent(requestContext),
+            track: (start) => requestContext.trackDrain(start),
+            req,
           });
         } catch (err) {
-          return err instanceof SessionChangedError
-            ? errorResponse(err)
-            : routePlaybackErrorResponse(err, undefined, req);
+          // Only a session change escapes the helper: 409 session_changed.
+          return errorResponse(err);
         }
       },
     },

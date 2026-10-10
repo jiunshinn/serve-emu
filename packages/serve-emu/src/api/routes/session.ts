@@ -69,7 +69,7 @@ export function sessionRoutes(): ApiRoute<ApiDependencies>[] {
           errorResponse,
           sessions,
           enqueueGesture,
-          setLocation,
+          applyLocation,
         } = deps;
         const replayRecorder = requestContext.recorder;
         const replayAdmissionEpoch = replayRecorder.replayAdmissionEpoch;
@@ -102,17 +102,18 @@ export function sessionRoutes(): ApiRoute<ApiDependencies>[] {
               false,
             ).completion.then(() => {}),
           setLocation: async (fix, signal) => {
-            requestContext.route.stop();
-            await setLocation(requestContext.serial, fix, signal);
-            if (!isCurrentReplaySession()) {
-              throw new SessionReplayConflictError(
-                "device session changed during session replay",
-              );
-            }
-            requestContext.lastLocation = {
-              ...fix,
-              appliedAt: new Date().toISOString(),
-            };
+            await applyLocation(requestContext, fix, {
+              source: "session:replay",
+              record: false,
+              signal,
+              ensureCurrent: () => {
+                if (!isCurrentReplaySession()) {
+                  throw new SessionReplayConflictError(
+                    "device session changed during session replay",
+                  );
+                }
+              },
+            });
           },
         });
         return startSessionReplayResponse(
