@@ -10,6 +10,7 @@ import {
 import { pickDevice } from "./adb.ts";
 import { CliLifecycle } from "./cli-lifecycle.ts";
 import { listAvds, listRunningAvds, listWebcams, startEmulator } from "./emulator.ts";
+import { describePortOwner } from "./port-owner.ts";
 import { SCRCPY_DEFAULTS } from "./scrcpy.ts";
 import {
   DEFAULT_HOST,
@@ -135,7 +136,10 @@ Options:
       --max-active-uploads <n>      Concurrent uploads (default: ${DEFAULT_MAX_ACTIVE_UPLOADS})
       --max-queued-uploads <n>      Queued uploads (default: ${DEFAULT_MAX_QUEUED_UPLOADS})
       --upload-queue-timeout-ms <ms> Upload queue wait limit (default: ${DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS})
-      --avd <name>       Launch this Android Virtual Device before streaming
+      --avd <name>       Launch this Android Virtual Device before streaming.
+                         If serve-emu started the emulator, serve-emu exits
+                         when it exits while it is still the streamed device
+                         (not for an AVD that was already running).
       --gpu <mode>       Emulator GPU mode for --avd launches (default: host).
                          host uses the real GPU for smooth ~60fps; the AVD's
                          own auto often falls back to a software compositor that
@@ -295,6 +299,12 @@ async function main(values: CliValues) {
       await stop();
       return;
     }
+    if ((err as { code?: unknown } | null)?.code === "EADDRINUSE") {
+      const owner = await describePortOwner(host, port);
+      if (owner) {
+        throw new Error(`${owner} Stop it, or choose another port with -p.`, { cause: err });
+      }
+    }
     throw err;
   }
   if (lifecycle.signal.aborted) {
@@ -302,6 +312,21 @@ async function main(values: CliValues) {
     return;
   }
   const { server } = activeServer;
+  if (emulatorLaunch) {
+    const avd = values.avd;
+    lifecycle.watchEmulator(emulatorLaunch, () => activeServer.deviceSerial, (exit) => {
+      const how = exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`;
+      console.error(
+        `error: the emulator serve-emu launched (${exit.serial}, AVD ${avd}) exited with ${how}; stopping serve-emu.`,
+      );
+      void stop()
+        .catch((err) => console.error("Shutdown cleanup failed:", err))
+        .finally(() => process.exit(1));
+    });
+    // It exited while the server was starting: watchEmulator already began
+    // the shutdown, so don't print a URL that is about to stop working.
+    if (lifecycle.signal.aborted) return;
+  }
 
   const base = `http://${displayHost(host)}:${server.port}`;
   console.log(`serve-emu → ${startupUrl(base, token)}  (device: ${serial})`);

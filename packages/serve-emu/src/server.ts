@@ -453,6 +453,15 @@ export async function startServer(
       const context = sessions.current;
       return context.signal.aborted ? null : context.scrcpy;
     },
+    /**
+     * The device this server still depends on: the published session's
+     * serial, even after that session failed, or null while stopping or once
+     * a client stopped that device on purpose.
+     */
+    get deviceSerial(): string | null {
+      const context = sessions.current;
+      return stopRequested || context.stoppedByClient ? null : context.serial;
+    },
     stop,
   };
 }

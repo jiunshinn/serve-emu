@@ -120,7 +120,7 @@ serve-emu --webcam-list
 | `--max-active-uploads` | `2` | Maximum upload operations reading, staging, or running through ADB concurrently |
 | `--max-queued-uploads` | `4` | Maximum uploads waiting for an active slot; further requests receive `429` |
 | `--upload-queue-timeout-ms` | `5000` | Maximum time an upload may wait for a slot before receiving `503` |
-| `--avd` | none | Launch this Android Virtual Device before streaming |
+| `--avd` | none | Launch this Android Virtual Device before streaming; if `serve-emu` started it, `serve-emu` exits when it exits while it is still the streamed device |
 | `--gpu` | `host` | Emulator GPU mode for `--avd` launches. `host` renders on the real GPU for smooth ~60fps; see [Smooth Emulator Playback](#smooth-emulator-playback) |
 | `--restart-avd` | false | Stop a running matching AVD before launching it |
 | `--camera-back` | AVD setting | Experimental. Back camera for `--avd` launches, such as `webcam0` for a host webcam; see [Camera](#camera) |
@@ -330,6 +330,15 @@ was already running is only attached to and is left alone. Stopping an emulator
 sends `emu kill` and SIGTERM, then SIGKILL after 10 seconds. An emulator that
 exits on its own is forgotten, so another AVD that later takes its port is not
 stopped with the server.
+
+The CLI's lifetime follows an `--avd` emulator it started. If that emulator
+exits on its own (window closed, `adb emu kill`, a crash) while it is still
+the streamed device, `serve-emu` logs the exit and stops with exit code 1,
+freeing its port. It keeps running if a client switched to another device
+first, or stopped that emulator through `/api/avds/stop`. An `--avd` that
+was already running is only attached to, so its exit does not stop
+`serve-emu`. When the port is already
+taken by another `serve-emu`, startup names that server's device and status.
 
 ### Input
 
