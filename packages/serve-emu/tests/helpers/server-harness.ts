@@ -196,10 +196,25 @@ function fakeWebSocket(
 
 type Harness = {
   started: Awaited<ReturnType<typeof startServer>>;
+  /** The first device's session; the one the server starts on. */
   session: FakeScrcpy;
+  /** One fake scrcpy session per serial in `options.serials`. */
+  sessions: Map<string, FakeScrcpy>;
   server: CapturedServer;
   handlers: CapturedHandlers;
   request(path: string, init?: RequestInit): Promise<Response | undefined>;
+  /** Upgrades `/ws` (plus `query`) and opens the socket on the server. */
+  openWebSocket(
+    options?: Parameters<typeof fakeWebSocket>[1] & { query?: string },
+  ): Promise<FakeWebSocket>;
+};
+
+type HarnessOptions = Partial<ServerOpts> & {
+  /**
+   * The devices fake adb lists, each with its own fake scrcpy session. The
+   * server starts on the first. Defaults to `[options.serial]`.
+   */
+  serials?: string[];
 };
 
 const activeServers: Array<Awaited<ReturnType<typeof startServer>>> = [];
@@ -210,10 +225,12 @@ afterEach(async () => {
 });
 
 async function createHarness(
-  options: Partial<ServerOpts> = {},
+  options: HarnessOptions = {},
   dependencyOverrides: ServerDependencies = {},
 ): Promise<Harness> {
-  const session = fakeScrcpy(options.serial);
+  const serials = options.serials ?? [options.serial ?? "emulator-5554"];
+  const sessions = new Map(serials.map((serial) => [serial, fakeScrcpy(serial)]));
+  const session = sessions.get(serials[0]!)!;
   let handlers: CapturedHandlers | null = null;
   const server: CapturedServer = {
     port: options.port ?? 33_040,
@@ -243,7 +260,19 @@ async function createHarness(
     },
     {
       log: () => {},
-      openScrcpy: async () => session,
+      openScrcpy: async (serial) => {
+        const opened = sessions.get(serial);
+        if (!opened) throw new Error(`no fake scrcpy session for ${serial}`);
+        return opened;
+      },
+      // With explicit serials, fake adb lists exactly those devices. Without,
+      // the real listing runs (tests stub `adb` on PATH for it).
+      ...(options.serials
+        ? {
+            listDevices: async () =>
+              serials.map((serial) => ({ serial, state: "device" })),
+          }
+        : {}),
       recoveryClock: INERT_RECOVERY_CLOCK,
       serve,
       ...dependencyOverrides,
@@ -253,23 +282,37 @@ async function createHarness(
   if (!handlers) throw new Error("Bun.serve options were not captured");
   const capturedHandlers = handlers as CapturedHandlers;
 
+  const request: Harness["request"] = async (path, init = {}) => {
+    const headers = new Headers(init.headers);
+    if (!headers.has("host")) {
+      headers.set("host", `${server.hostname}:${server.port}`);
+    }
+    return capturedHandlers.fetch(
+      new Request(`http://${server.hostname}:${server.port}${path}`, {
+        ...init,
+        headers,
+      }),
+      server,
+    );
+  };
+
   return {
     started,
     session,
+    sessions,
     server,
     handlers: capturedHandlers,
-    async request(path, init = {}) {
-      const headers = new Headers(init.headers);
-      if (!headers.has("host")) {
-        headers.set("host", `${server.hostname}:${server.port}`);
+    request,
+    async openWebSocket({ query = "", ...socketOptions } = {}) {
+      const upgraded = await request(`/ws${query}`);
+      if (upgraded !== undefined) {
+        throw new Error(`websocket upgrade was refused with ${upgraded.status}`);
       }
-      return capturedHandlers.fetch(
-        new Request(`http://${server.hostname}:${server.port}${path}`, {
-          ...init,
-          headers,
-        }),
-        server,
-      );
+      const data = server.upgrades.at(-1);
+      if (!data) throw new Error("websocket upgrade data was not captured");
+      const socket = fakeWebSocket(data, socketOptions);
+      capturedHandlers.websocket.open(socket);
+      return socket;
     },
   };
 }
@@ -295,10 +338,12 @@ async function waitFor(
 
 export {
   createHarness,
+  FakeControlSocket,
   fakeScrcpy,
+  FrameFeed,
   fakeWebSocket,
   INERT_RECOVERY_CLOCK,
   response,
   waitFor,
 };
-export type { FakeWebSocket, Harness };
+export type { CapturedServer, FakeScrcpy, FakeWebSocket, Harness, HarnessOptions };
