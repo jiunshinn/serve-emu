@@ -1,4 +1,8 @@
-import { StreamPerformance, StreamClockSync } from "./stream-performance";
+import {
+  StreamPerformance,
+  StreamClockSync,
+  admitDuringRecovery,
+} from "./stream-performance";
 import { parseWsServerJson } from "../../shared/websocket-contracts";
 import { buildCodecString, scanAU } from "./h264";
 import { epochNowMs, parseFramePacket } from "../../shared/frame-meta";
@@ -478,24 +482,23 @@ const feedFrame = (raw: ArrayBuffer, generation: number) => {
   const spsBytes = scanned?.spsBytes ?? null;
   if (spsBytes && !ensureDecoder(spsBytes, generation)) return;
 
-  if (droppingUntilKeyframe) {
-    if (!isKey) return;
-    if (!decoder || decoder.state !== "configured") {
-      requestKeyframe(generation);
-      return;
-    }
-    droppingUntilKeyframe = false;
-  }
-
-  if (!decoder || decoder.state !== "configured") {
-    if (!isKey) requestKeyframe(generation);
+  const admission = admitDuringRecovery({
+    dropping: droppingUntilKeyframe,
+    isKey,
+    decoderReady: decoder?.state === "configured",
+    backlogged: () =>
+      streamPerformance.shouldRecover(decoder?.decodeQueueSize ?? 0, recvMs),
+  });
+  if (admission.action === "drop") {
+    if (admission.requestKeyframe) requestKeyframe(generation);
     return;
   }
-
-  if (streamPerformance.shouldRecover(decoder.decodeQueueSize, recvMs)) {
+  if (admission.action === "recover") {
     recoverToKeyframe();
     return;
   }
+  if (admission.endsDrop) droppingUntilKeyframe = false;
+  if (!decoder) return;
 
   if (!sawKeyframe) {
     if (!isKey) {
