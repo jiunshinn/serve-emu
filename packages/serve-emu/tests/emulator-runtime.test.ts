@@ -186,6 +186,7 @@ describe("emulator lifecycle", () => {
       adbCalls.push(adbCommand);
       if (adbCommand === "get-state") return result("device\n");
       if (adbCommand === "shell getprop sys.boot_completed") return result("1\n");
+      if (adbCommand === "emu avd name") return result("Pixel_8\nOK\n");
       if (adbCommand === "emu kill") return result("");
       throw new Error(`unexpected adb command: ${adbCommand}`);
     }) as typeof execText;
@@ -261,7 +262,8 @@ describe("emulator lifecycle", () => {
     );
     expect(launch.serial).toBe("emulator-5560");
     expect(commands).toContain("emulator-5554 emu kill");
-    expect(deviceReads).toBe(2);
+    // Running-AVD lookup, wait for the old one to exit, explicit-port check.
+    expect(deviceReads).toBe(3);
   });
 
   test("does not spawn a replacement while the old emulator is still registered", async () => {
@@ -392,6 +394,101 @@ describe("emulator lifecycle", () => {
     await expect(runFailure(exitedProcess.proc, exitExec)).rejects.toThrow(
       "emulator exited before boot completed (code 9)",
     );
+  });
+
+  test("rejects an explicit port another emulator already uses, before spawning", async () => {
+    const adbCalls: string[] = [];
+    const runExec = (async (command, args) => {
+      if (command === "/sdk/emulator") return result("Pixel_8\nTablet\n");
+      const adbCommand = args.slice(2).join(" ");
+      adbCalls.push(`${args[1]} ${adbCommand}`);
+      if (adbCommand === "emu avd name") return result("Tablet\nOK\n");
+      return result("");
+    }) as typeof execText;
+    let spawns = 0;
+    await expect(
+      startEmulator(
+        { avd: "Pixel_8", emulatorPath: "/sdk/emulator", port: 5554 },
+        {
+          execText: runExec,
+          listAllDevices: async () => [{ serial: "emulator-5554", state: "device" }],
+          spawn: (() => {
+            spawns++;
+            throw new Error("should not spawn");
+          }) as unknown as typeof spawn,
+        },
+      ),
+    ).rejects.toThrow('--emulator-port 5554 is already in use by emulator-5554 (AVD "Tablet")');
+    expect(spawns).toBe(0);
+    expect(adbCalls.some((call) => call.endsWith("emu kill"))).toBe(false);
+  });
+
+  test("refuses another AVD that answers on the launch port and never kills it", async () => {
+    const adbCalls: string[] = [];
+    const runExec = (async (command, args) => {
+      if (command === "/sdk/emulator") return result("Pixel_8\nTablet\n");
+      const adbCommand = args.slice(2).join(" ");
+      adbCalls.push(`${args[1]} ${adbCommand}`);
+      if (adbCommand === "get-state") return result("device\n");
+      if (adbCommand === "shell getprop sys.boot_completed") return result("1\n");
+      if (adbCommand === "emu avd name") return result("Tablet\nOK\n");
+      return result("");
+    }) as typeof execText;
+    const { proc, killSignals } = fakeProcess();
+    let reads = 0;
+    await expect(
+      startEmulator(
+        { avd: "Pixel_8", emulatorPath: "/sdk/emulator", port: 5556 },
+        {
+          execText: runExec,
+          // The other emulator registers with adb only after the port check.
+          listAllDevices: async () =>
+            ++reads <= 2 ? [] : [{ serial: "emulator-5556", state: "device" }],
+          spawn: spawnWith(proc),
+        },
+      ),
+    ).rejects.toThrow('emulator-5556 is running AVD "Tablet", not "Pixel_8"');
+    expect(adbCalls.some((call) => call.endsWith("emu kill"))).toBe(false);
+    expect(killSignals).toEqual(["SIGTERM"]);
+  });
+
+  test("concurrent launches pick different ports", async () => {
+    let releaseBoot!: () => void;
+    const booted = new Promise<void>((resolve) => {
+      releaseBoot = resolve;
+    });
+    const runExec = (async (command, args) => {
+      if (command === "/sdk/emulator") return result("Pixel_8\nTablet\n");
+      const adbCommand = args.slice(2).join(" ");
+      if (adbCommand === "get-state") {
+        await booted;
+        return result("device\n");
+      }
+      if (adbCommand === "shell getprop sys.boot_completed") return result("1\n");
+      if (adbCommand === "emu avd name") {
+        return result(args[1] === "emulator-5554" ? "Pixel_8\nOK\n" : "Tablet\nOK\n");
+      }
+      return result("");
+    }) as typeof execText;
+    const spawnCalls: unknown[][] = [];
+    const dependencies = {
+      execText: runExec,
+      listAllDevices: async () => [],
+      spawn: spawnWith(fakeProcess().proc, spawnCalls),
+    };
+    const first = startEmulator({ avd: "Pixel_8", emulatorPath: "/sdk/emulator" }, dependencies);
+    const second = startEmulator({ avd: "Tablet", emulatorPath: "/sdk/emulator" }, dependencies);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseBoot();
+    const launches = await Promise.all([first, second]);
+    expect(launches.map((launch) => launch.serial).sort()).toEqual([
+      "emulator-5554",
+      "emulator-5556",
+    ]);
+    expect(spawnCalls.map((call) => (call[1] as string[])[2]).sort()).toEqual([
+      "5554",
+      "5556",
+    ]);
   });
 
   test("reports stop failures", async () => {

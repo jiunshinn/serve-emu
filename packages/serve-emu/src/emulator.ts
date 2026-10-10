@@ -305,14 +305,41 @@ async function usedEmulatorPorts(
   return ports;
 }
 
+// Ports picked by launches in this process that have not registered with adb
+// yet. Two concurrent launches would otherwise both pick the first free port.
+const reservedPorts = new Set<number>();
+
+/** Picks and reserves a free port; the caller releases it after boot. */
 async function pickEmulatorPort(
   readDevices: typeof listAllDevices = listAllDevices,
 ): Promise<number> {
   const used = await usedEmulatorPorts(readDevices);
   for (let port = 5554; port <= 5682; port += 2) {
-    if (!used.has(port)) return port;
+    if (!used.has(port) && !reservedPorts.has(port)) {
+      reservedPorts.add(port);
+      return port;
+    }
   }
   throw new Error("No available emulator console ports in the 5554-5682 range.");
+}
+
+async function assertPortFree(
+  port: number,
+  dependencies: Pick<EmulatorRuntimeDependencies, "execText" | "listAllDevices">,
+): Promise<void> {
+  const used = await usedEmulatorPorts(dependencies.listAllDevices);
+  if (!used.has(port) && !reservedPorts.has(port)) {
+    reservedPorts.add(port);
+    return;
+  }
+  const owner = used.has(port)
+    ? await runningAvdName(`emulator-${port}`, dependencies.execText)
+    : null;
+  throw new Error(
+    `--emulator-port ${port} is already in use by emulator-${port}` +
+      (owner ? ` (AVD "${owner}")` : "") +
+      ". Pick another port or omit --emulator-port.",
+  );
 }
 
 function validateEmulatorPort(port: number): void {
@@ -422,6 +449,7 @@ async function waitForEmulatorExit(
 
 async function waitForBoot(
   serial: string,
+  avd: string,
   proc: ChildProcess,
   timeoutMs: number,
   dependencies: Pick<EmulatorRuntimeDependencies, "execText" | "sleep" | "now"> = {},
@@ -442,13 +470,30 @@ async function waitForBoot(
         ["shell", "getprop", "sys.boot_completed"],
         runExec,
       );
-      if (execSucceeded(boot) && boot.stdout.trim() === "1") return;
+      if (execSucceeded(boot) && boot.stdout.trim() === "1") {
+        // Another emulator that was already booted on this port also answers
+        // here; only the requested AVD counts as ours.
+        const running = await runningAvdName(serial, runExec);
+        if (running === avd) return;
+        throw new EmulatorIdentityError(serial, avd, running);
+      }
     }
 
     await pause(1_000);
   }
 
   throw new Error(`Timed out waiting for ${serial} to boot.`);
+}
+
+/** The booted emulator on the launch's port is not the requested AVD. */
+export class EmulatorIdentityError extends Error {
+  constructor(serial: string, expected: string, actual: string | null) {
+    super(
+      `${serial} is running AVD "${actual ?? "unknown"}", not "${expected}"; ` +
+        "it was left running.",
+    );
+    this.name = "EmulatorIdentityError";
+  }
 }
 
 export async function startEmulator(
@@ -480,9 +525,28 @@ export async function startEmulator(
     await waitForEmulatorExit(running.serial, 30_000, dependencies);
   }
 
+  if (opts.port !== undefined) {
+    validateEmulatorPort(opts.port);
+    await assertPortFree(opts.port, dependencies);
+  }
   const port = opts.port ?? (await pickEmulatorPort(dependencies.listAllDevices));
-  validateEmulatorPort(port);
+  try {
+    return await launchOnPort(port, name, emulator, camera, opts, dependencies);
+  } finally {
+    // Booted emulators are listed by adb, so the reservation is no longer needed.
+    reservedPorts.delete(port);
+  }
+}
 
+async function launchOnPort(
+  port: number,
+  name: string,
+  emulator: string,
+  camera: string[],
+  opts: StartEmulatorOpts,
+  dependencies: EmulatorRuntimeDependencies,
+): Promise<EmulatorLaunch> {
+  const runExec = dependencies.execText ?? execText;
   const args = [emulatorAvdArg(name), "-port", String(port)];
   if (opts.gpu) args.push("-gpu", opts.gpu);
   args.push(...camera);
@@ -495,11 +559,14 @@ export async function startEmulator(
   });
   const serial = `emulator-${port}`;
   let stopped = false;
+  // Until the AVD on this port is confirmed to be ours, `emu kill` could reach
+  // someone else's emulator; signalling our own child is always safe.
+  let confirmed = false;
 
   const stop = () => {
     if (stopped) return;
     stopped = true;
-    adb(serial, ["emu", "kill"], runExec).catch(() => {});
+    if (confirmed) adb(serial, ["emu", "kill"], runExec).catch(() => {});
     try {
       proc.kill("SIGTERM");
     } catch {}
@@ -509,12 +576,14 @@ export async function startEmulator(
     await Promise.race([
       waitForBoot(
         serial,
+        name,
         proc,
         opts.bootTimeoutMs ?? 120_000,
         dependencies,
       ),
       spawnError,
     ]);
+    confirmed = true;
     return { serial, proc, ownsProcess: true, stop };
   } catch (err) {
     stop();
