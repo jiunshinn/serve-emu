@@ -220,3 +220,65 @@ test("a device switch keeps open tool sections open", async ({ page, request }) 
   await expect(location).toHaveAttribute("aria-expanded", "true");
   await expect(page.locator(".session-panel")).toBeVisible();
 });
+
+async function setPageHidden(page: Page, hidden: boolean) {
+  await page.evaluate((value) => {
+    Object.defineProperty(document, "hidden", { configurable: true, get: () => value });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => (value ? "hidden" : "visible"),
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, hidden);
+}
+
+test("a hidden tab stops polling and refreshes as soon as it is visible again", async ({ page }) => {
+  // Tall enough that every opened section is on screen (the Session section
+  // also stops polling while scrolled out of view).
+  await page.setViewportSize({ width: 1280, height: 2400 });
+  const polled: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === "/health" || path.startsWith("/api/")) polled.push(path);
+  });
+  await page.goto("/");
+  await streaming(page);
+  // Network loads once when opened; Location and Session poll every second.
+  for (const name of ["Network", "Location", "Session"]) {
+    await page.getByRole("button", { name, exact: true }).click();
+  }
+  const pollers = ["/api/network", "/api/route", "/api/session", "/health"];
+  await expect.poll(() => pollers.every((path) => polled.includes(path))).toBe(true);
+
+  await setPageHidden(page, true);
+  await page.waitForTimeout(300);
+  polled.length = 0;
+  await page.waitForTimeout(3_500);
+  expect(polled).toEqual([]);
+
+  // Becoming visible refreshes every poll at once, not a second later.
+  await setPageHidden(page, false);
+  await page.waitForTimeout(500);
+  expect(pollers.filter((path) => !polled.includes(path))).toEqual([]);
+});
+
+test("a route error keeps its own line and leaves the location status alone", async ({ page, request }) => {
+  await page.goto("/");
+  await streaming(page);
+  await page.getByRole("button", { name: "Location", exact: true }).click();
+  // The fixture has no emulator, so applying the route's first fix fails.
+  await request.post("/api/route", {
+    data: { waypoints: [{ latitude: 37.5, longitude: 127 }, { latitude: 37.6, longitude: 127.1 }] },
+  });
+  const routeError = page.locator(".route-error");
+  await expect(routeError).not.toBeEmpty();
+  const panel = page.locator(".location-panel");
+  await panel.getByLabel("Lat", { exact: true }).fill("not a number");
+  await panel.getByRole("button", { name: "Set Location" }).click();
+  const status = panel.locator(".panel-heading .location-status").first();
+  await expect(status).toHaveText("Coordinates must be numbers");
+  // Several route polls later, the status line still shows the user's result.
+  await page.waitForTimeout(2_500);
+  await expect(status).toHaveText("Coordinates must be numbers");
+  await expect(routeError).not.toBeEmpty();
+});

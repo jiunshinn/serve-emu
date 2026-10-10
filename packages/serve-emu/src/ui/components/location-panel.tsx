@@ -22,6 +22,8 @@ import type { RoutePlaybackSnapshot } from "../../shared/api-contracts";
 import { apiErrorMessage, apiRequest } from "../lib/api-client";
 import { useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { DEFAULT_MAX_ROUTE_FILE_BYTES } from "../lib/route-parser";
+import { useDeviceSessionSnapshot } from "../lib/device-session-store";
+import { usePoll } from "../lib/use-poll";
 import type {
   RouteParserWorkerCommand,
   RouteParserWorkerResponse,
@@ -86,8 +88,6 @@ export function LocationPanel() {
   const dragFrameRef = useRef(0);
   const routeWorkerRef = useRef<Worker | null>(null);
   const routeRequestRef = useRef(0);
-  const routePollGenerationRef = useRef(0);
-  const routePollAbortRef = useRef<AbortController | null>(null);
   const routeMutationCountRef = useRef(0);
   const routeProjectionCache = useMemo(() => new RouteProjectionCache(), []);
   const [size, setSize] = useState(DEFAULT_SIZE);
@@ -116,23 +116,45 @@ export function LocationPanel() {
     if (recenter) setCenter(normalized);
   }, []);
 
-  const invalidateRoutePoll = useCallback(() => {
-    routePollGenerationRef.current += 1;
-    routePollAbortRef.current?.abort();
-  }, []);
+  // Read by the route poll; toggling Follow must not restart polling.
+  const followRouteRef = useRef(followRoute);
+  followRouteRef.current = followRoute;
+  const deviceSession = useDeviceSessionSnapshot();
+  const { refresh: refreshRoute } = usePoll({
+    pollKey: deviceSession.revision,
+    enabled: !deviceSession.transitioning,
+    intervalMs: 1_000,
+    // The typed client rejects failures and malformed snapshots.
+    poll: ({ signal }) => apiRequest("/api/route", { method: "GET", signal }),
+    onResult: (route) => {
+      // A start/stop in flight owns the route state until it settles.
+      if (routeMutationCountRef.current > 0) return;
+      setRouteStatus(route);
+      if (route.currentLocation) {
+        syncDraft(
+          route.currentLocation,
+          followRouteRef.current &&
+            route.status === "running" &&
+            dragRef.current === null,
+        );
+      }
+    },
+    // Route state is auxiliary to video and input, so a failed poll keeps the
+    // last good snapshot and the next tick retries.
+  });
 
   const beginRouteMutation = useCallback(() => {
     routeMutationCountRef.current += 1;
-    invalidateRoutePoll();
-  }, [invalidateRoutePoll]);
+  }, []);
 
   const endRouteMutation = useCallback(() => {
     routeMutationCountRef.current = Math.max(
       0,
       routeMutationCountRef.current - 1,
     );
-    invalidateRoutePoll();
-  }, [invalidateRoutePoll]);
+    // Drops any poll that started before the mutation settled.
+    refreshRoute();
+  }, [refreshRoute]);
 
   useEffect(() => {
     const node = mapRef.current;
@@ -180,64 +202,6 @@ export function LocationPanel() {
       })
       .catch(() => {});
   }, [settledSession, syncDraft]);
-
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let controller: AbortController | null = null;
-    const syncRoute = async () => {
-      if (routeMutationCountRef.current > 0) {
-        if (!cancelled) timer = setTimeout(syncRoute, 1_000);
-        return;
-      }
-      controller = new AbortController();
-      routePollAbortRef.current = controller;
-      const generation = routePollGenerationRef.current;
-      try {
-        const route = await apiRequest("/api/route", {
-          method: "GET",
-          signal: controller.signal,
-        });
-        if (
-          cancelled ||
-          generation !== routePollGenerationRef.current ||
-          routeMutationCountRef.current > 0
-        ) {
-          return;
-        }
-        setRouteStatus(route);
-        if (route.currentLocation) {
-          syncDraft(
-            route.currentLocation,
-            followRoute &&
-              route.status === "running" &&
-              dragRef.current === null,
-          );
-        }
-        if (route.lastError) setStatus(route.lastError);
-      } catch (error) {
-        if (!cancelled && !(error instanceof DOMException && error.name === "AbortError")) {
-          // Route state is auxiliary to video/input controls, so keep the last
-          // good snapshot and retry rather than surfacing transient poll noise.
-        }
-      } finally {
-        if (routePollAbortRef.current === controller) {
-          routePollAbortRef.current = null;
-        }
-        controller = null;
-        if (!cancelled) timer = setTimeout(syncRoute, 1_000);
-      }
-    };
-    void syncRoute();
-    return () => {
-      cancelled = true;
-      controller?.abort();
-      if (routePollAbortRef.current === controller) {
-        routePollAbortRef.current = null;
-      }
-      if (timer) clearTimeout(timer);
-    };
-  }, [followRoute, syncDraft]);
 
   const centerPixel = useMemo(
     () => projectLocation(center, zoom),
@@ -743,6 +707,13 @@ export function LocationPanel() {
             : ""}
           {routeStatus ? ` • ${formatDistance(routeStatus.progressMeters)} / ${formatDistance(routeStatus.totalMeters)}` : ""}
         </div>
+        {routeStatus?.lastError ? (
+          // Its own line, so the panel status (e.g. "Applied …") is not
+          // overwritten on every poll while a route error persists.
+          <div className="route-error" role="status">
+            {routeStatus.lastError}
+          </div>
+        ) : null}
         <div className="coordinate-grid">
           <label>
             km/h

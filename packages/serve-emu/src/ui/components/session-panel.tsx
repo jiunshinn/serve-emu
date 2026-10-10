@@ -5,7 +5,8 @@ import type {
   SessionSummary,
 } from "../../shared/api-contracts";
 import { apiErrorMessage, apiRequest } from "../lib/api-client";
-import { VisibilityPoller } from "../lib/visibility-poller";
+import { useDeviceSessionSnapshot } from "../lib/device-session-store";
+import { usePoll } from "../lib/use-poll";
 
 const RECENT_EVENT_LIMIT = 6;
 const POLL_INTERVAL_MS = 1_000;
@@ -25,73 +26,61 @@ function errorMessage(error: unknown, fallback: string): string {
 
 export function SessionPanel() {
   const sectionRef = useRef<HTMLElement | null>(null);
-  const pollerRef = useRef<VisibilityPoller<SessionPage> | null>(null);
   const actionGenerationRef = useRef(0);
   const mountedRef = useRef(false);
   const [session, setSession] = useState<SessionSummary | null>(null);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [multiplier, setMultiplier] = useState("1");
   const [status, setStatus] = useState("Ready");
+  // Poll only while the section is on screen; usePoll also pauses while the
+  // tab is hidden and refreshes as soon as either condition clears.
+  const [onScreen, setOnScreen] = useState(false);
+  const deviceSession = useDeviceSessionSnapshot();
+
+  const { refresh } = usePoll<SessionPage, number>({
+    pollKey: deviceSession.revision,
+    enabled: onScreen && !deviceSession.transitioning,
+    intervalMs: POLL_INTERVAL_MS,
+    poll: ({ signal }) =>
+      apiRequest("/api/session", {
+        method: "GET",
+        query: { limit: RECENT_EVENT_LIMIT },
+        signal,
+      }),
+    onResult: (page) => {
+      setSession(page.session);
+      setEvents(page.events.slice(-RECENT_EVENT_LIMIT));
+      setStatus((current) => {
+        if (current === "Session unavailable") return "Ready";
+        if (current === "Replaying" && !page.session.replaying) {
+          return "Ready";
+        }
+        return current;
+      });
+    },
+    onError: () => setStatus("Session unavailable"),
+  });
 
   useEffect(() => {
     mountedRef.current = true;
-    const poller = new VisibilityPoller<SessionPage>({
-      intervalMs: POLL_INTERVAL_MS,
-      poll: (signal) =>
-        apiRequest("/api/session", {
-          method: "GET",
-          query: { limit: RECENT_EVENT_LIMIT },
-          signal,
-        }),
-      onResult: (page) => {
-        setSession(page.session);
-        setEvents(page.events.slice(-RECENT_EVENT_LIMIT));
-        setStatus((current) => {
-          if (current === "Session unavailable") return "Ready";
-          if (current === "Replaying" && !page.session.replaying) {
-            return "Ready";
-          }
-          return current;
-        });
-      },
-      onError: () => setStatus("Session unavailable"),
-    });
-    pollerRef.current = poller;
-
     const section = sectionRef.current;
-    let intersectsViewport = false;
     let observer: IntersectionObserver | null = null;
-
-    const updatePolling = () => {
-      poller.setActive(
-        intersectsViewport && document.visibilityState === "visible",
-      );
-    };
-    const onVisibilityChange = () => updatePolling();
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
     if (section && typeof IntersectionObserver !== "undefined") {
       observer = new IntersectionObserver((entries) => {
         const entry = entries.find((candidate) => candidate.target === section);
-        if (!entry) return;
-        intersectsViewport = entry.isIntersecting;
-        updatePolling();
+        if (entry) setOnScreen(entry.isIntersecting);
       });
       observer.observe(section);
     } else {
       // Older embedded browsers cannot report viewport intersection. Keep the
       // tab-visibility guard, but allow the panel to remain usable there.
-      intersectsViewport = true;
-      updatePolling();
+      setOnScreen(true);
     }
 
     return () => {
       mountedRef.current = false;
       actionGenerationRef.current++;
-      document.removeEventListener("visibilitychange", onVisibilityChange);
       observer?.disconnect();
-      poller.dispose();
-      if (pollerRef.current === poller) pollerRef.current = null;
     };
   }, []);
 
@@ -104,7 +93,6 @@ export function SessionPanel() {
     clearEvents = false,
   ) => {
     const generation = ++actionGenerationRef.current;
-    pollerRef.current?.invalidate();
     try {
       const data = await request();
       if (!mountedRef.current || generation !== actionGenerationRef.current) {
@@ -121,10 +109,9 @@ export function SessionPanel() {
       }
     } finally {
       if (generation === actionGenerationRef.current) {
-        // A poll may have been scheduled after the request aborted at mutation
-        // start. Invalidate it again so a pre-mutation page cannot win the race.
-        pollerRef.current?.invalidate();
-        pollerRef.current?.pollNow();
+        // Discard any poll that started before the mutation finished, so a
+        // pre-mutation page cannot win the race, and fetch a fresh one now.
+        refresh();
       }
     }
   };

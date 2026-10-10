@@ -1,4 +1,5 @@
-import { deviceSessionStore } from "./device-session-store";
+import { deviceSessionStore, type DeviceSessionHealthRequest } from "./device-session-store";
+import { bindPollVisibility, createPollController } from "./polling";
 import { parseStreamHealth, type StreamHealth } from "./stream-state";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
@@ -103,9 +104,6 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     let serverTerminalStatus: string | null = null;
     let workerFatalStatus: StreamFatalStatus | null = null;
     let lifecycleTimer: ReturnType<typeof setInterval> | null = null;
-    let healthTimer: ReturnType<typeof setTimeout> | null = null;
-    let healthController: AbortController | null = null;
-    let healthRequestSequence = 0;
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${location.host}/ws?frame-meta=1`;
@@ -280,70 +278,50 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       }));
     };
 
-    function refreshHealthForGeneration() {
-      if (cancelled) return;
-      if (healthTimer !== null) {
-        clearTimeout(healthTimer);
-        healthTimer = null;
-      }
-      if (healthController) {
-        // Its finally block observes the generation mismatch and schedules an
-        // immediate replacement without overlapping requests.
-        healthController.abort();
-        return;
-      }
-      void pollHealth();
-    }
-
-    async function pollHealth() {
-      if (cancelled) return;
-      const requestSequence = ++healthRequestSequence;
-      const sessionRequest = deviceSessionStore.beginHealthRequest();
-      const requestGeneration = currentGeneration;
-      const controller = new AbortController();
-      healthController = controller;
-      const requestTimeout = setTimeout(
-        () => controller.abort(),
-        HEALTH_REQUEST_TIMEOUT_MS,
-      );
-
-      try {
-        const response = await fetch("/health", { signal: controller.signal });
-        const data = parseStreamHealth(await response.json());
-        if (
-          cancelled ||
-          controller.signal.aborted ||
-          requestSequence !== healthRequestSequence ||
-          requestGeneration !== currentGeneration
-        ) {
-          return;
+    type HealthPollResult = {
+      data: StreamHealth;
+      sessionRequest: DeviceSessionHealthRequest;
+    };
+    // Keyed by the stream generation: a new generation restarts the poll so
+    // metadata refreshes at once, and a response for an older generation is
+    // inert. Polling pauses while the tab is hidden and resumes immediately.
+    const healthPoll = createPollController<HealthPollResult, number>({
+      intervalMs: HEALTH_POLL_INTERVAL_MS,
+      task: async ({ signal }) => {
+        const sessionRequest = deviceSessionStore.beginHealthRequest();
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        signal.addEventListener("abort", abort, { once: true });
+        const requestTimeout = setTimeout(abort, HEALTH_REQUEST_TIMEOUT_MS);
+        try {
+          const response = await fetch("/health", { signal: controller.signal });
+          return { data: parseStreamHealth(await response.json()), sessionRequest };
+        } finally {
+          clearTimeout(requestTimeout);
+          signal.removeEventListener("abort", abort);
         }
+      },
+      onResult: ({ data, sessionRequest }, { key: requestGeneration }) => {
+        if (cancelled || requestGeneration !== currentGeneration) return;
         if (!deviceSessionStore.applyHealth(data, sessionRequest)) return;
         applyServerStatus(data);
-      } catch {
-        // The stream lifecycle remains authoritative when metadata is
-        // temporarily unavailable.
-      } finally {
-        clearTimeout(requestTimeout);
-        if (healthController === controller) healthController = null;
-        if (!cancelled && requestSequence === healthRequestSequence) {
-          // If a stream boundary made this response stale, refresh metadata
-          // immediately; otherwise keep the normal low-frequency cadence.
-          const delay =
-            requestGeneration === currentGeneration
-              ? HEALTH_POLL_INTERVAL_MS
-              : 0;
-          healthTimer = setTimeout(() => void pollHealth(), delay);
-        }
-      }
+      },
+      // The stream lifecycle remains authoritative when metadata is
+      // temporarily unavailable.
+      onError: () => {},
+    });
+    const unbindHealthVisibility = bindPollVisibility(healthPoll, document);
+
+    function refreshHealthForGeneration() {
+      if (cancelled) return;
+      healthPoll.restart(currentGeneration);
     }
-    void pollHealth();
+    healthPoll.start(currentGeneration);
 
     return () => {
       cancelled = true;
-      healthRequestSequence++;
-      healthController?.abort();
-      if (healthTimer !== null) clearTimeout(healthTimer);
+      unbindHealthVisibility();
+      healthPoll.stop();
       if (lifecycleTimer !== null) clearInterval(lifecycleTimer);
       worker.removeEventListener("message", onMessage);
       postCommand(worker, { type: "stop", clientEpoch });
