@@ -1,4 +1,36 @@
-import type { DeviceSize } from "./api-contracts";
+// Messages between the UI thread (use-stream.ts) and the stream worker
+// (stream-worker.ts). Both import these types; the worker validates every
+// command with parseWorkerCommand.
+
+export type StreamPhase =
+  | "connecting"
+  | "awaiting-keyframe"
+  | "decoding"
+  | "rendered"
+  | "recovering"
+  | "disconnected"
+  | "stopped";
+
+export type StreamGenerationReason =
+  | "initial"
+  | "connect"
+  | "reconnect"
+  | "video-session"
+  | "decoder-recovery"
+  | "disconnect"
+  | "stop";
+
+export type StreamLifecycleState = {
+  generation: number;
+  phase: StreamPhase;
+  reason: StreamGenerationReason;
+  generationStartedAt: number;
+  socketOpenedAt: number | null;
+  lastPacketAt: number | null;
+  lastRenderedAt: number | null;
+  rendered: boolean;
+  codec: string | null;
+};
 
 export type StreamStats = {
   fps: number;
@@ -7,125 +39,76 @@ export type StreamStats = {
   e2eMs: number | null;
   codec: string | null;
   rendered: boolean;
+  decodeMsP95: number | null;
+  presentMsP95: number | null;
+  decodePendingMs: number;
+  recoveries: number;
+  clockUncertaintyMs: number | null;
+};
+
+/** An event as the worker produces it; postEvent stamps the client epoch. */
+export type StreamWorkerEventPayload =
+  | {
+      type: "control-error";
+      generation: number;
+      error: string;
+      requestId?: string;
+    }
+  | { type: "lifecycle"; generation: number; state: StreamLifecycleState }
+  | { type: "status"; generation: number; status: string }
+  | {
+      type: "session";
+      generation: number;
+      size: { width: number; height: number };
+    }
+  | { type: "rendered"; generation: number; at: number }
+  | { type: "stats"; generation: number; stats: StreamStats }
+  | {
+      type: "control-dropped";
+      generation: number;
+      reason: "socket-not-open" | "send-failed";
+    };
+
+export type StreamWorkerEvent = StreamWorkerEventPayload & {
+  clientEpoch: number;
 };
 
 /** Canvas is generic so this contract does not require DOM or WebWorker types. */
 export type WorkerCommand<Canvas = unknown> =
-  | { type: "init"; canvas: Canvas; url: string }
-  | { type: "connect" }
-  | { type: "send"; text: string }
-  | { type: "stop" };
+  | { type: "init"; clientEpoch: number; canvas: Canvas; url: string }
+  | { type: "connect"; clientEpoch: number }
+  | { type: "send"; clientEpoch: number; text: string }
+  | { type: "stop"; clientEpoch: number };
 
-export type WorkerEvent =
-  | { type: "status"; status: string }
-  | { type: "session"; size: DeviceSize }
-  | { type: "rendered" }
-  | { type: "stats"; stats: StreamStats };
-
-function record(value: unknown, name: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${name} must be an object`);
-  }
-  return value as Record<string, unknown>;
+/** Client epochs are positive integers; the UI starts at 1 for each canvas. */
+function isValidClientEpoch(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-function finite(value: unknown, name: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new TypeError(`${name} must be a finite number`);
-  }
-  return value;
-}
-
-function nullableFinite(value: unknown, name: string): number | null {
-  return value === null ? null : finite(value, name);
-}
-
-function size(value: unknown): DeviceSize {
-  const item = record(value, "worker session size");
-  const width = finite(item.width, "worker session width");
-  const height = finite(item.height, "worker session height");
-  if (width <= 0 || height <= 0) throw new TypeError("worker session dimensions must be positive");
-  return { width, height };
-}
-
-function stats(value: unknown): StreamStats {
-  const item = record(value, "worker stats");
-  const codec = item.codec;
-  if (codec !== null && typeof codec !== "string") {
-    throw new TypeError("worker stats codec must be a string or null");
-  }
-  if (typeof item.rendered !== "boolean") {
-    throw new TypeError("worker stats rendered must be a boolean");
-  }
-  return {
-    fps: finite(item.fps, "worker stats fps"),
-    decodeQueue: finite(item.decodeQueue, "worker stats decodeQueue"),
-    transitMs: nullableFinite(item.transitMs, "worker stats transitMs"),
-    e2eMs: nullableFinite(item.e2eMs, "worker stats e2eMs"),
-    codec,
-    rendered: item.rendered,
-  };
-}
-
-export function parseWorkerCommand<Canvas = unknown>(
+/**
+ * Validates a message posted to the stream worker. Returns null for anything
+ * the worker must ignore: a non-object, an unknown type, a missing or invalid
+ * client epoch, or a malformed payload.
+ */
+export function parseWorkerCommand<Canvas>(
   value: unknown,
-  isCanvas: (value: unknown) => value is Canvas = ((value): value is Canvas =>
-    typeof value === "object" && value !== null),
-): WorkerCommand<Canvas> {
-  const item = record(value, "worker command");
+  isCanvas: (value: unknown) => value is Canvas,
+): WorkerCommand<Canvas> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+  const clientEpoch = item.clientEpoch;
+  if (!isValidClientEpoch(clientEpoch)) return null;
   switch (item.type) {
     case "init":
-      if (!isCanvas(item.canvas)) throw new TypeError("worker init canvas is invalid");
-      if (typeof item.url !== "string" || !item.url) {
-        throw new TypeError("worker init url must be a non-empty string");
-      }
-      return { type: "init", canvas: item.canvas, url: item.url };
+      if (!isCanvas(item.canvas) || typeof item.url !== "string" || !item.url) return null;
+      return { type: "init", clientEpoch, canvas: item.canvas, url: item.url };
     case "connect":
-      return { type: "connect" };
+      return { type: "connect", clientEpoch };
     case "send":
-      if (typeof item.text !== "string") throw new TypeError("worker send text must be a string");
-      return { type: "send", text: item.text };
+      return typeof item.text === "string" ? { type: "send", clientEpoch, text: item.text } : null;
     case "stop":
-      return { type: "stop" };
+      return { type: "stop", clientEpoch };
     default:
-      throw new TypeError("unsupported worker command");
-  }
-}
-
-export function isWorkerCommand<Canvas = unknown>(
-  value: unknown,
-  isCanvas?: (value: unknown) => value is Canvas,
-): value is WorkerCommand<Canvas> {
-  try {
-    parseWorkerCommand(value, isCanvas);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function parseWorkerEvent(value: unknown): WorkerEvent {
-  const item = record(value, "worker event");
-  switch (item.type) {
-    case "status":
-      if (typeof item.status !== "string") throw new TypeError("worker status must be a string");
-      return { type: "status", status: item.status };
-    case "session":
-      return { type: "session", size: size(item.size) };
-    case "rendered":
-      return { type: "rendered" };
-    case "stats":
-      return { type: "stats", stats: stats(item.stats) };
-    default:
-      throw new TypeError("unsupported worker event");
-  }
-}
-
-export function isWorkerEvent(value: unknown): value is WorkerEvent {
-  try {
-    parseWorkerEvent(value);
-    return true;
-  } catch {
-    return false;
+      return null;
   }
 }

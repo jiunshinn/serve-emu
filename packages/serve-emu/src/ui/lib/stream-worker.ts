@@ -7,6 +7,11 @@ import { parseWsServerJson } from "../../shared/websocket-contracts";
 import { buildCodecString, scanAU } from "./h264";
 import { epochNowMs, parseFramePacket } from "../../shared/frame-meta";
 import {
+  parseWorkerCommand,
+  type StreamStats,
+  type StreamWorkerEventPayload,
+} from "../../shared/worker-contracts";
+import {
   StreamSessionResources,
   beginStreamGeneration,
   createStreamLifecycle,
@@ -29,52 +34,6 @@ const KEYFRAME_REQUEST_COOLDOWN_MS = 400;
 const FRAME_QUEUE_SIZE = 3;
 const PENDING_TIMING_LIMIT = 256;
 const STATS_INTERVAL_MS = 1000;
-
-export type StreamStats = {
-  fps: number;
-  decodeQueue: number;
-  transitMs: number | null;
-  e2eMs: number | null;
-  codec: string | null;
-  rendered: boolean;
-  decodeMsP95: number | null;
-  presentMsP95: number | null;
-  decodePendingMs: number;
-  recoveries: number;
-  clockUncertaintyMs: number | null;
-};
-
-type StreamWorkerEventPayload =
-  | {
-      type: "control-error";
-      generation: number;
-      error: string;
-      requestId?: string;
-    }
-  | { type: "lifecycle"; generation: number; state: StreamLifecycleState }
-  | { type: "status"; generation: number; status: string }
-  | {
-      type: "session";
-      generation: number;
-      size: { width: number; height: number };
-    }
-  | { type: "rendered"; generation: number; at: number }
-  | { type: "stats"; generation: number; stats: StreamStats }
-  | {
-      type: "control-dropped";
-      generation: number;
-      reason: "socket-not-open" | "send-failed";
-    };
-
-export type StreamWorkerEvent = StreamWorkerEventPayload & {
-  clientEpoch: number;
-};
-
-type WorkerCommand =
-  | { type: "init"; clientEpoch: number; canvas: OffscreenCanvas; url: string }
-  | { type: "connect"; clientEpoch: number }
-  | { type: "send"; clientEpoch: number; text: string }
-  | { type: "stop"; clientEpoch: number };
 
 // Typed against the worker global's message surface only, to avoid pulling the
 // whole WebWorker lib into the DOM-flavored UI tsconfig.
@@ -140,9 +99,6 @@ let e2eCount = 0;
 
 const postEvent = (event: StreamWorkerEventPayload) =>
   workerPort.postMessage({ ...event, clientEpoch: activeClientEpoch });
-
-const validClientEpoch = (value: number) =>
-  Number.isSafeInteger(value) && value > 0;
 
 const postLifecycle = () => {
   postEvent({
@@ -675,11 +631,14 @@ const postControlDropped = (reason: "socket-not-open" | "send-failed") => {
   });
 };
 
+const isOffscreenCanvas = (value: unknown): value is OffscreenCanvas =>
+  typeof OffscreenCanvas !== "undefined" && value instanceof OffscreenCanvas;
+
 workerPort.addEventListener("message", (e: MessageEvent) => {
-  const msg = e.data as WorkerCommand;
+  const msg = parseWorkerCommand(e.data, isOffscreenCanvas);
+  if (!msg) return;
   switch (msg.type) {
     case "init": {
-      if (!validClientEpoch(msg.clientEpoch)) return;
       activeClientEpoch = msg.clientEpoch;
       if (
         typeof VideoDecoder === "undefined" ||
@@ -702,11 +661,7 @@ workerPort.addEventListener("message", (e: MessageEvent) => {
       break;
     }
     case "connect": {
-      if (
-        !validClientEpoch(msg.clientEpoch) ||
-        msg.clientEpoch < activeClientEpoch
-      )
-        return;
+      if (msg.clientEpoch < activeClientEpoch) return;
       activeClientEpoch = msg.clientEpoch;
       if (initFailureStatus && isStreamFatalStatus(initFailureStatus)) {
         publishInitFailure(initFailureStatus);

@@ -14,11 +14,16 @@ import type {
   StreamFatalStatus,
   StreamLifecycleState,
 } from "./stream-lifecycle";
-import type { StreamStats, StreamWorkerEvent } from "./stream-worker";
+import type { DeviceSize } from "../../shared/api-contracts";
+import type { Gesture } from "../../shared/control-contracts";
+import type { WsMessageOptions } from "../../shared/websocket-contracts";
+import type {
+  StreamStats,
+  StreamWorkerEvent,
+  WorkerCommand,
+} from "../../shared/worker-contracts";
 
-export type DeviceSize = { width: number; height: number };
-
-export type { StreamStats };
+export type { DeviceSize, StreamStats };
 
 export type StreamState = {
   controlError: string | null;
@@ -30,9 +35,22 @@ export type StreamState = {
   stats: StreamStats | null;
 };
 
-export type Sender = (msg: Record<string, unknown>, ack?: boolean) => void;
+/** Sends one control gesture; the hook adds `requestId` and `ack`. */
+export type Sender = (
+  msg: Gesture & Pick<WsMessageOptions, "record">,
+  ack?: boolean,
+) => void;
 
 type ApiInfo = StreamHealth;
+
+/** postMessage, checked against the worker's command contract. */
+function postCommand(
+  worker: Worker,
+  command: WorkerCommand<OffscreenCanvas>,
+  transfer: Transferable[] = [],
+): void {
+  worker.postMessage(command, transfer);
+}
 
 // A canvas can transfer control to an OffscreenCanvas only once, so the worker
 // that received it must be reused if the effect re-runs for the same element.
@@ -61,7 +79,9 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
   const send = useCallback<Sender>((msg, ack = true) => {
     const clientEpoch = clientEpochRef.current;
     if (clientEpoch < 1) return;
-    workerRef.current?.postMessage({
+    const worker = workerRef.current;
+    if (!worker) return;
+    postCommand(worker, {
       type: "send",
       clientEpoch,
       text: JSON.stringify({ ...msg, requestId: `${clientEpoch}:${++requestSequenceRef.current}`, ...(!ack ? { ack: false } : {}) }),
@@ -225,7 +245,8 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     // generation boundary synchronously with the command.
     if (isNewWorker) {
       const offscreen = canvas.transferControlToOffscreen();
-      worker.postMessage(
+      postCommand(
+        worker,
         { type: "init", clientEpoch, canvas: offscreen, url },
         [offscreen],
       );
@@ -237,7 +258,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
         fps: 0,
         stats: null,
       }));
-      worker.postMessage({ type: "connect", clientEpoch });
+      postCommand(worker, { type: "connect", clientEpoch });
     }
 
     lifecycleTimer = setInterval(() => {
@@ -325,7 +346,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       if (healthTimer !== null) clearTimeout(healthTimer);
       if (lifecycleTimer !== null) clearInterval(lifecycleTimer);
       worker.removeEventListener("message", onMessage);
-      worker.postMessage({ type: "stop", clientEpoch });
+      postCommand(worker, { type: "stop", clientEpoch });
       if (clientEpochRef.current === clientEpoch) clientEpochRef.current = 0;
       workerRef.current = null;
     };
