@@ -4,7 +4,7 @@ import {
 } from "node:child_process";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
-import { shellQuote } from "./shell-quote.ts";
+import { packagePids } from "./package-pids.ts";
 
 export const DEFAULT_MAX_LOGCAT_SUBSCRIBERS = 8;
 export const DEFAULT_LOGCAT_BATCH_INTERVAL_MS = 75;
@@ -13,9 +13,6 @@ export const DEFAULT_LOGCAT_QUEUE_BYTES = 256 * 1024;
 export const DEFAULT_LOGCAT_MAX_LINE_BYTES = 16 * 1024;
 export const DEFAULT_LOGCAT_PID_REFRESH_MS = 5_000;
 export const DEFAULT_LOGCAT_TERMINATION_GRACE_MS = 1_000;
-
-const LOGCAT_PID_LOOKUP_TIMEOUT_MS = 2_000;
-const LOGCAT_PID_LOOKUP_MAX_OUTPUT_BYTES = 64 * 1024;
 
 export type { LogcatLine } from "./shared/api-contracts.ts";
 import type { LogcatEventMap, LogcatLine } from "./shared/api-contracts.ts";
@@ -65,6 +62,10 @@ type LogcatChild = ChildProcessByStdio<null, Readable, Readable>;
 
 export type LogcatDependencies = {
   spawn?: (serial: string) => LogcatChild;
+  /**
+   * Resolves the package's running PIDs (empty when it is not running) and
+   * rejects when the lookup failed; a rejection keeps the previous PIDs.
+   */
   resolvePackagePids?: (
     serial: string,
     packageName: string,
@@ -101,84 +102,17 @@ function positiveInteger(value: number, name: string): number {
   return value;
 }
 
+// Short-lived, so it goes through the bounded executor (unlike the
+// long-running logcat stream). A failed lookup rejects, which keeps the
+// subscriber's previous PIDs.
 async function resolvePackagePids(
   serial: string,
   packageName: string,
   signal: AbortSignal,
 ): Promise<Set<string>> {
-  if (!/^[A-Za-z0-9_.:-]+$/.test(packageName) || signal.aborted) {
-    return new Set();
-  }
-  return new Promise((resolve) => {
-    let child!: LogcatChild;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let outputBytes = 0;
-    let failed = false;
-    let killRequested = false;
-    const stdoutChunks: Buffer[] = [];
-
-    const kill = () => {
-      failed = true;
-      if (killRequested) return;
-      killRequested = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {}
-    };
-    const onAbort = () => kill();
-    const collect = (target: "stdout" | "stderr", value: Buffer | string) => {
-      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-      if (chunk.byteLength > LOGCAT_PID_LOOKUP_MAX_OUTPUT_BYTES - outputBytes) {
-        kill();
-        return;
-      }
-      outputBytes += chunk.byteLength;
-      if (target === "stdout") stdoutChunks.push(chunk);
-    };
-    const finish = (status: number | null) => {
-      if (timer) clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-      if (failed || status !== 0) {
-        resolve(new Set());
-        return;
-      }
-      resolve(
-        new Set(
-          Buffer.concat(stdoutChunks)
-            .toString("utf8")
-            .trim()
-            .split(/\s+/)
-            .filter(Boolean),
-        ),
-      );
-    };
-
-    try {
-      child = spawn(
-        "adb",
-        ["-s", serial, "shell", "pidof", shellQuote(packageName)],
-        { stdio: ["ignore", "pipe", "pipe"] },
-      );
-    } catch {
-      resolve(new Set());
-      return;
-    }
-    signal.addEventListener("abort", onAbort, { once: true });
-    timer = setTimeout(kill, LOGCAT_PID_LOOKUP_TIMEOUT_MS);
-    child.stdout.on("data", (chunk: Buffer | string) => {
-      collect("stdout", chunk);
-    });
-    child.stderr.on("data", (chunk: Buffer | string) => {
-      collect("stderr", chunk);
-    });
-    child.once("error", () => {
-      failed = true;
-    });
-    child.stdout.once("error", kill);
-    child.stderr.once("error", kill);
-    child.once("close", (status) => finish(status));
-    if (signal.aborted) onAbort();
-  });
+  return new Set(
+    await packagePids(serial, packageName, { signal, lane: "background" }),
+  );
 }
 
 function spawnLogcat(serial: string): LogcatChild {

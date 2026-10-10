@@ -45,7 +45,7 @@ describe("getForegroundApp", () => {
             application-label-en:'Example App'
             pkgFlags=[ HAS_CODE DEBUGGABLE ]
           `);
-        case "pidof com.example.app":
+        case "pidof 'com.example.app'":
           return textResult("123 456\n");
         default:
           throw new Error(`unexpected command: ${shellCommand(args)}`);
@@ -89,7 +89,7 @@ describe("getForegroundApp", () => {
           pkgFlags=[ HAS_CODE ]
         `);
       }
-      if (command === "pidof com.alternate") return textResult("not-a-pid\n");
+      if (command === "pidof 'com.alternate'") return textResult("not-a-pid\n");
       throw new Error(`unexpected command: ${command}`);
     }) as typeof execText;
 

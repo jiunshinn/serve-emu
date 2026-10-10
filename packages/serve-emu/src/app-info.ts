@@ -1,5 +1,6 @@
 import { adbCommandFailure } from "./command-failure.ts";
 import { execText } from "./exec.ts";
+import { packagePids } from "./package-pids.ts";
 import type { ForegroundApp } from "./shared/api-contracts.ts";
 
 export type { ForegroundApp } from "./shared/api-contracts.ts";
@@ -75,10 +76,8 @@ async function packagePid(
   runExec: typeof execText,
 ): Promise<number | null> {
   try {
-    const out = (await adbShell(serial, ["pidof", packageName], 2_000, runExec)).trim();
-    const first = out.split(/\s+/)[0];
-    const pid = first ? Number(first) : NaN;
-    return Number.isFinite(pid) ? pid : null;
+    const [first] = await packagePids(serial, packageName, {}, runExec);
+    return first ? Number(first) : null;
   } catch {
     return null;
   }
