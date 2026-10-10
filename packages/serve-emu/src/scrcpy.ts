@@ -479,22 +479,34 @@ type DeviceJarPaths = {
   working: string;
 };
 
+/** True when `sha256sum <cache>` printed exactly the local jar's digest. */
+function cacheMatches(probe: AdbCommandResult, fingerprint: string): boolean {
+  if (probe.status !== 0) return false;
+  const digest = probe.stdout.trim().split(/\s+/, 1)[0] ?? "";
+  return digest.toLowerCase() === fingerprint.toLowerCase();
+}
+
 async function prepareDeviceServerJar(
   runtime: ScrcpyRuntime,
   timeouts: ScrcpyTimeouts,
   serial: string,
   localJar: string,
+  fingerprint: string,
   paths: DeviceJarPaths,
   signal: AbortSignal,
 ): Promise<void> {
+  // Reuse the cache only if its bytes are exactly the local jar. A file under
+  // the cache name can still be empty or truncated: a hard emulator stop
+  // after the rename can lose data that was never flushed (#121). A device
+  // without sha256sum simply re-pushes.
   const probe = await runAdbRaw(
     runtime,
     serial,
-    ["shell", "test", "-f", paths.cache],
+    ["shell", "sha256sum", paths.cache],
     timeouts.copyMs,
     signal,
   );
-  if (probe.status !== 0) {
+  if (!cacheMatches(probe, fingerprint)) {
     await runAdbChecked(
       runtime,
       serial,
@@ -502,10 +514,25 @@ async function prepareDeviceServerJar(
       timeouts.pushMs,
       signal,
     );
+    // Flush the pushed bytes before the rename publishes them under the
+    // cache name. Best effort: a slow or failed sync must not fail a start
+    // whose push succeeded, and the sha256 check repairs a bad cache entry on
+    // the next start. An abort still stops startup.
+    try {
+      await runAdbChecked(
+        runtime,
+        serial,
+        ["shell", "sync"],
+        timeouts.copyMs,
+        signal,
+      );
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
     await runAdbChecked(
       runtime,
       serial,
-      ["shell", "mv", paths.temporary, paths.cache],
+      ["shell", "mv", "-f", paths.temporary, paths.cache],
       timeouts.copyMs,
       signal,
     );
@@ -1055,6 +1082,7 @@ export async function startScrcpy(
       timeouts,
       serial,
       jar,
+      fingerprint,
       jarPaths,
       startupController.signal,
     );

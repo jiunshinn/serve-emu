@@ -35,6 +35,17 @@ blindly discard the first byte: `parseVideoPreamble()` accepts the video preambl
 at offset 0 or 1 and validates its codec and dimensions. The control socket is
 drained for any device-to-host events that this package does not consume.
 
+Before starting the server, the host prepares the jar on the device. The cache
+is content-addressed,
+`/data/local/tmp/serve-emu-scrcpy-server-v<version>.jar-<first 24 hex of its SHA-256>`,
+and is reused only when `sha256sum` on the device prints exactly the local
+jar's digest. Otherwise (a missing, empty, or truncated file, or a device
+without `sha256sum`) the host pushes the jar to a temporary path, runs `sync`,
+and `mv -f`s it over the cache name, so a hard stop cannot leave a
+complete-looking empty cache. Each session copies the cache to its own working
+path and removes that copy when it ends. A damaged cache therefore repairs
+itself on the next start; deleting it by hand is never required.
+
 ## Video preamble
 
 Both supported layouts begin with a 64-byte UTF-8 device name, padded with NUL

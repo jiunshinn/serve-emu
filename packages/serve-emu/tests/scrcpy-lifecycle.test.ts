@@ -173,6 +173,12 @@ type ConnectCall = {
   abortedAtCall: boolean;
 };
 
+// What the fake serverFingerprint reports for the local jar.
+const JAR_FINGERPRINT = "a".repeat(64);
+// sha256 of an empty file.
+const EMPTY_SHA256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 type HarnessOptions = {
   /**
    * The video bytes arrive while the control socket connects, on a socket
@@ -180,6 +186,10 @@ type HarnessOptions = {
    */
   videoDataDuringControlConnect?: boolean;
   cacheInitially?: boolean;
+  /** The device cache's sha256sum; null when the file is missing. */
+  cacheDigest?: string | null;
+  /** The device has no sha256sum binary. */
+  sha256Missing?: boolean;
   deferProbe?: boolean;
   deferSocketPoll?: boolean;
   /** Socket-poll results returned, in order, before the listing has the socket. */
@@ -194,6 +204,7 @@ type HarnessOptions = {
   childIgnoresKill?: boolean;
   /** Result of `adb push`; "hang" never settles until aborted. */
   pushResult?: AdbCommandResult | "hang";
+  syncResult?: AdbCommandResult;
 };
 
 function createHarness(options: HarnessOptions = {}) {
@@ -216,7 +227,12 @@ function createHarness(options: HarnessOptions = {}) {
     sleepCalls: [] as { ms: number; signal: AbortSignal }[],
     activeForwards: new Map<number, string>(),
     events: [] as string[],
-    cachePresent: options.cacheInitially ?? false,
+    cacheDigest:
+      options.cacheDigest !== undefined
+        ? options.cacheDigest
+        : options.cacheInitially
+          ? JAR_FINGERPRINT
+          : null,
     pushCount: 0,
     fixedAttempt: 0,
     removeWasDeferred: false,
@@ -240,13 +256,19 @@ function createHarness(options: HarnessOptions = {}) {
     state.adbCalls.push(call);
     state.events.push(`adb:${args.join(" ")}`);
 
-    if (args[0] === "shell" && args[1] === "test" && args[2] === "-f") {
+    if (args[0] === "shell" && args[1] === "sha256sum") {
       if (options.deferProbe) {
         probeReached.resolve(call);
         return waitForDeferred(probeDeferred, commandOptions.signal);
       }
-      return state.cachePresent ? ok() : failed("cache miss");
+      if (options.sha256Missing) {
+        return { ...failed("/system/bin/sh: sha256sum: inaccessible or not found"), status: 127 };
+      }
+      return state.cacheDigest === null
+        ? failed(`sha256sum: ${args[2]}: No such file or directory`)
+        : ok(`${state.cacheDigest}  ${args[2]}\n`);
     }
+    if (args[0] === "shell" && args[1] === "sync") return options.syncResult ?? ok();
     if (args[0] === "push") {
       state.pushCount++;
       if (options.pushResult === "hang") {
@@ -255,7 +277,7 @@ function createHarness(options: HarnessOptions = {}) {
       return options.pushResult ?? ok("pushed");
     }
     if (args[0] === "shell" && args[1] === "mv") {
-      state.cachePresent = true;
+      state.cacheDigest = JAR_FINGERPRINT;
       return ok();
     }
     if (args[0] === "shell" && args[1] === "cp") return ok();
@@ -321,7 +343,7 @@ function createHarness(options: HarnessOptions = {}) {
 
   const deps: ScrcpyDependencies = {
     ensureServer: async () => "/fake/scrcpy-server.jar",
-    serverFingerprint: async () => "a".repeat(64),
+    serverFingerprint: async () => JAR_FINGERPRINT,
     runAdb,
     spawnAdb: (serial, args) => {
       const child = new FakeChild();
@@ -477,9 +499,7 @@ describe("scrcpy async lifecycle", () => {
     expect(
       harness.state.adbCalls.filter(
         (call) =>
-          call.args[0] === "shell" &&
-          call.args[1] === "test" &&
-          call.args[2] === "-f",
+          call.args[0] === "shell" && call.args[1] === "sha256sum",
       ),
     ).toHaveLength(2);
     await second.close();
@@ -824,5 +844,100 @@ describe("scrcpy async lifecycle", () => {
     );
     expect(source).not.toMatch(/import\s*\{[^}]*\bspawnSync\b/s);
     expect(source).not.toMatch(/\bspawnSync\s*\(/);
+  });
+});
+
+describe("device server jar cache", () => {
+  const CACHE = `/data/local/tmp/serve-emu-scrcpy-server-v${SCRCPY_VERSION}.jar-${JAR_FINGERPRINT.slice(0, 24)}`;
+
+  /** The jar-related adb commands, in order. */
+  function jarCommands(harness: ReturnType<typeof createHarness>): string[] {
+    return harness.state.adbCalls
+      .map((call) => call.args)
+      .filter(
+        (args) =>
+          args[0] === "push" ||
+          (args[0] === "shell" && ["sha256sum", "sync", "mv", "cp"].includes(args[1]!)),
+      )
+      .map((args) => args.join(" ").replace(/\.0123456\d\.tmp\b/, ".tmp"));
+  }
+
+  test("reuses a cache whose sha256 matches the local jar without pushing", async () => {
+    const harness = createHarness({ cacheInitially: true });
+    const session = await startWith(harness);
+    await session.close();
+
+    expect(harness.state.pushCount).toBe(0);
+    expect(jarCommands(harness)).toEqual([
+      `shell sha256sum ${CACHE}`,
+      `shell cp ${CACHE} /data/local/tmp/serve-emu-scrcpy-01234560.jar`,
+    ]);
+  });
+
+  test("replaces an empty or corrupt cache, flushing before the rename", async () => {
+    for (const digest of [EMPTY_SHA256, "b".repeat(64)]) {
+      const harness = createHarness({ cacheDigest: digest });
+      const session = await startWith(harness);
+      await session.close();
+
+      expect(harness.state.pushCount).toBe(1);
+      expect(jarCommands(harness)).toEqual([
+        `shell sha256sum ${CACHE}`,
+        `push /fake/scrcpy-server.jar ${CACHE}.tmp`,
+        "shell sync",
+        `shell mv -f ${CACHE}.tmp ${CACHE}`,
+        `shell cp ${CACHE} /data/local/tmp/serve-emu-scrcpy-01234560.jar`,
+      ]);
+      expect(harness.state.cacheDigest).toBe(JAR_FINGERPRINT);
+
+      // The repaired cache is reused by the next start.
+      await (await startWith(harness)).close();
+      expect(harness.state.pushCount).toBe(1);
+    }
+  });
+
+  test("a failed sync does not fail a start whose push succeeded", async () => {
+    const harness = createHarness({
+      cacheDigest: EMPTY_SHA256,
+      syncResult: failed("sync: I/O error"),
+    });
+    await (await startWith(harness)).close();
+    expect(harness.state.pushCount).toBe(1);
+    expect(jarCommands(harness)).toContain(`shell mv -f ${CACHE}.tmp ${CACHE}`);
+    expect(harness.state.cacheDigest).toBe(JAR_FINGERPRINT);
+  });
+
+  test("re-pushes on every start when the device has no sha256sum", async () => {
+    const harness = createHarness({ sha256Missing: true });
+    await (await startWith(harness)).close();
+    await (await startWith(harness)).close();
+    expect(harness.state.pushCount).toBe(2);
+  });
+
+  test("a cache probe that times out fails startup without pushing", async () => {
+    const harness = createHarness({ deferProbe: true });
+    harness.deps.timeouts!.copyMs = 20;
+    const startup = startWith(harness);
+    const probe = await harness.probeReached.promise;
+
+    await expect(startup).rejects.toThrow(
+      `shell sha256sum ${CACHE} timed out after 20ms`,
+    );
+    expect(probe.signal.aborted).toBe(true);
+    expect(harness.state.pushCount).toBe(0);
+    expect(harness.state.spawnCalls).toHaveLength(0);
+  });
+
+  test("aborting startup during the cache probe stops before pushing", async () => {
+    const harness = createHarness({ deferProbe: true });
+    const controller = new AbortController();
+    const startup = startWith(harness, { signal: controller.signal });
+    const probe = await harness.probeReached.promise;
+
+    controller.abort(new Error("cancelled during the cache probe"));
+    await expect(startup).rejects.toThrow("cancelled during the cache probe");
+    expect(probe.signal.aborted).toBe(true);
+    expect(harness.state.pushCount).toBe(0);
+    expect(harness.state.spawnCalls).toHaveLength(0);
   });
 });
