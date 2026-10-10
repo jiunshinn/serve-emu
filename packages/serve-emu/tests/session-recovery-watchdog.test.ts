@@ -325,7 +325,8 @@ describe("SessionRecoveryWatchdog", () => {
 
     waiting.awaitingKeyFrameSinceMs = null;
     watchdog.markAwaiting(waiting);
-    expect(waiting.awaitingKeyFrameSinceMs).toBe(50);
+    // markAwaiting repairs the field; read it back without the null narrowing.
+    expect(waiting.awaitingKeyFrameSinceMs as number | null).toBe(50);
     expect(waiting.lastKeyFrameRequestMs).toBe(20);
   });
 

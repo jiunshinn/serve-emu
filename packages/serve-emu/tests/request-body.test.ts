@@ -41,7 +41,7 @@ function requestWithChunks(
 async function expectBodyError(
   promise: Promise<unknown>,
   code: HttpBodyError["code"],
-  status: number,
+  status: HttpBodyError["status"],
 ): Promise<HttpBodyError> {
   let error: unknown;
   try {

@@ -462,7 +462,7 @@ describe("UploadManager", () => {
   test("close is reentrant, idempotent, and awaits every active cleanup", async () => {
     const manager = new UploadManager({ maxActive: 1, maxQueued: 1 });
     const cleanup = deferred<void>();
-    let nestedClose: Promise<void> | null = null;
+    let nestedClose = null as Promise<void> | null;
     const active = manager.run({ context: context(1) }, ({ signal }) =>
       new Promise<string>((resolve) => {
         signal.addEventListener(

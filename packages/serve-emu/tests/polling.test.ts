@@ -110,7 +110,7 @@ describe("createPollController", () => {
 
   test("unmount-style stop aborts in-flight work and suppresses its late result", async () => {
     const pending = deferred<string>();
-    let signal: AbortSignal | null = null;
+    let signal = null as AbortSignal | null;
     const results: string[] = [];
     const controller = createPollController({
       intervalMs: 100,
@@ -135,7 +135,7 @@ describe("createPollController", () => {
     const newRequest = deferred<string>();
     const signals: AbortSignal[] = [];
     const results: Array<[string, string]> = [];
-    const controller = createPollController({
+    const controller = createPollController<string, string>({
       intervalMs: null,
       task: (context) => {
         signals.push(context.signal);

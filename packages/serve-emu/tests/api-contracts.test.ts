@@ -11,9 +11,10 @@ import {
   type ApiPath,
   type ApiRequest,
   type ApiResponse,
+  type RoutePlaybackSnapshot,
 } from "../src/shared/api-contracts.ts";
 
-const routeSnapshot = {
+const routeSnapshot: RoutePlaybackSnapshot = {
   status: "running",
   waypointCount: 2,
   totalMeters: 100,

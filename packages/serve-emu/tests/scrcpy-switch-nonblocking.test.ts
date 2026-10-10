@@ -189,7 +189,7 @@ describe("live device switching", () => {
           {
             serial: "device-1",
             host: "127.0.0.1",
-            port: occupied.port,
+            port: occupied.port!,
           },
           { startScrcpy: async () => initial },
         ),

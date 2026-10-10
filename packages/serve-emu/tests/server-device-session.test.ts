@@ -206,7 +206,7 @@ describe("startServer device session lifecycle", () => {
     const b = fakeScrcpy("B");
     const captured: CapturedServer = { options: null, stopCalls: 0 };
     const routeLocationStarted = deferred<void>();
-    let routeSignal: AbortSignal | null = null;
+    let routeSignal = null as AbortSignal | null;
     const started = await startServer(
       { serial: "A", port: 3300 },
       {
