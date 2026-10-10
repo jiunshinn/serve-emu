@@ -101,6 +101,17 @@ export function createDeviceSessionStore(): DeviceSessionStore {
 
 export const deviceSessionStore = createDeviceSessionStore();
 
+/**
+ * Names the device session once a switch has settled (`serial#generation`),
+ * or null while one is in progress. Panels that stay mounted across switches
+ * compare it to drop the previous device's state.
+ */
+export function settledSessionKey(snapshot: DeviceSessionSnapshot): string | null {
+  return !snapshot.transitioning && snapshot.sessionGeneration !== null
+    ? `${snapshot.serial}#${snapshot.sessionGeneration}`
+    : null;
+}
+
 export function useDeviceSessionSnapshot(): DeviceSessionSnapshot {
   return useSyncExternalStore(
     deviceSessionStore.subscribe,
