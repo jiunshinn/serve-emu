@@ -28,7 +28,6 @@ import {
   listRunningAvds,
   startEmulator,
   stopEmulator,
-  type EmulatorLaunch,
 } from "./emulator.ts";
 import { getExecSnapshot } from "./exec.ts";
 import { parseGesture, type Gesture } from "./input.ts";
@@ -46,6 +45,7 @@ import {
   type ScrcpySession,
 } from "./scrcpy.ts";
 import { createRequestGate } from "./server/auth.ts";
+import { createEmulatorRegistry } from "./server/emulators.ts";
 import { buildHealthSnapshot } from "./server/health.ts";
 import { serveStaticFile } from "./server/static.ts";
 import type { Client, DeviceContext, WsData } from "./server/types.ts";
@@ -181,52 +181,10 @@ export async function startServer(
   const log = dependencies.log ?? ((line: string) => console.log(line));
   const listDevices =
     dependencies.listDevices ?? listAllDevices;
-  const startEmulatorProcess = dependencies.startEmulator ?? startEmulator;
-  const stopEmulatorBySerial = dependencies.stopEmulator ?? stopEmulator;
-  // Emulators started through /api/avds/start belong to this server, like the
-  // CLI's --avd launch belongs to the CLI: they stop when it stops.
-  const launchedEmulators = new Map<string, EmulatorLaunch>();
-  // Launches still booting; on stop they abort and stop their own child, and
-  // stop() waits for that so the process cannot exit first.
-  const bootingEmulators = new Set<Promise<unknown>>();
-  const emulatorShutdown = new AbortController();
-  const launchEmulator: typeof startEmulator = async (opts, runtime) => {
-    const signal = opts.signal
-      ? AbortSignal.any([opts.signal, emulatorShutdown.signal])
-      : emulatorShutdown.signal;
-    const booting = startEmulatorProcess({ ...opts, signal }, runtime);
-    bootingEmulators.add(booting);
-    let launch: EmulatorLaunch;
-    try {
-      launch = await booting;
-    } finally {
-      bootingEmulators.delete(booting);
-    }
-    if (!launch.ownsProcess) return launch;
-    const owned: EmulatorLaunch = {
-      ...launch,
-      stop: async () => {
-        if (launchedEmulators.get(launch.serial) === owned) {
-          launchedEmulators.delete(launch.serial);
-        }
-        await launch.stop();
-      },
-    };
-    launchedEmulators.set(launch.serial, owned);
-    // Once it exits on its own, its port may go to another AVD, which
-    // /api/avds/stop and stop() must not treat as this launch.
-    launch.proc?.once("exit", () => {
-      if (launchedEmulators.get(launch.serial) === owned) {
-        launchedEmulators.delete(launch.serial);
-      }
-    });
-    return owned;
-  };
-  const killEmulator: typeof stopEmulator = async (serial, deps) => {
-    const owned = launchedEmulators.get(serial);
-    if (owned) return owned.stop();
-    return stopEmulatorBySerial(serial, deps);
-  };
+  const emulators = createEmulatorRegistry({
+    startEmulator: dependencies.startEmulator ?? startEmulator,
+    stopEmulator: dependencies.stopEmulator ?? stopEmulator,
+  });
   const listActiveAvds = dependencies.listRunningAvds ?? listRunningAvds;
   const availableAvds = dependencies.listAvds ?? listAvds;
   const loadAccessibility =
@@ -807,11 +765,11 @@ export async function startServer(
     readJsonBody,
     MAX_JSON_BODY_BYTES,
     switchSession,
-    launchEmulator,
+    launchEmulator: emulators.launchEmulator,
     sessions,
     listActiveAvds,
     stopCurrentSession,
-    killEmulator,
+    killEmulator: emulators.killEmulator,
     runForContext,
     logcatStream,
     readAccessibilitySnapshot,
@@ -898,23 +856,10 @@ export async function startServer(
       serial: context.serial,
       generation: context.generation,
     });
-    emulatorShutdown.abort(new Error("server is stopping"));
-    const owned = Array.from(launchedEmulators.values());
-    launchedEmulators.clear();
-    const booting = Array.from(bootingEmulators, (launch) =>
-      launch.catch(() => {}),
-    );
     stopTask = Promise.all([
-      ...booting,
+      emulators.shutdown(),
       sessions.close("server stopping"),
       uploads.close(error),
-      ...owned.map((launch) =>
-        Promise.resolve()
-          .then(() => launch.stop())
-          .catch((err) => {
-            console.error(`[emulator] could not stop ${launch.serial}:`, err);
-          }),
-      ),
     ]).then(() => {});
     return stopTask;
   };

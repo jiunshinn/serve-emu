@@ -14,6 +14,7 @@ const CRITICAL_SOURCE_FILES = {
   "src/server/auth.ts": 95,
   "src/server/backpressure.ts": 95,
   "src/request-body.ts": 95,
+  "src/server/emulators.ts": 95,
   "src/server/health.ts": 95,
   "src/server/static.ts": 95,
   "src/server/video.ts": 95,
