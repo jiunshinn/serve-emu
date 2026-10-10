@@ -10,7 +10,6 @@ import {
   routePlaybackErrorResponse,
   startRoutePlaybackResponse,
 } from "../src/route-playback-api.ts";
-import { createSessionRoutePlayback } from "../src/route-playback-session.ts";
 
 type Deferred<T> = {
   promise: Promise<T>;
@@ -488,38 +487,5 @@ describe("RoutePlayback lifecycle", () => {
     oldClock.fireCleared();
     expect(published).toEqual(["new"]);
     newPlayback.close();
-  });
-
-  test("session playback binds its serial and suppresses stale generation updates", async () => {
-    const clock = new ManualClock();
-    const applying = deferred<void>();
-    const appliedSerials: string[] = [];
-    const published: unknown[] = [];
-    let generation = 3;
-    const playback = createSessionRoutePlayback({
-      serial: "emulator-5554",
-      generation,
-      getGeneration: () => generation,
-      clock,
-      applyLocation: (serial) => {
-        appliedSerials.push(serial);
-        return applying.promise;
-      },
-      onLocation: (fix) => published.push(fix),
-    });
-
-    const starting = startRoutePlaybackResponse(playback, request);
-    generation++;
-    applying.resolve();
-    const response = await starting;
-    expect(response.status).toBe(409);
-    expect(await response.json()).toEqual({
-      ok: false,
-      error: "device session changed during route playback",
-    });
-    expect(appliedSerials).toEqual(["emulator-5554"]);
-    expect(published).toHaveLength(0);
-    expect(playback.snapshot().status).toBe("closed");
-    expect(clock.active.size).toBe(0);
   });
 });

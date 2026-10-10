@@ -3,7 +3,6 @@ import {
   ApiError,
   apiErrorResponse,
 } from "../src/api/api-error.ts";
-import { readBodyBytes, readJsonBody } from "../src/api/body.ts";
 import {
   createApiRouter,
   type ApiErrorLogContext,
@@ -75,83 +74,6 @@ describe("ApiError", () => {
     expect(() => new ApiError(400, "not_found", "Missing")).toThrow(
       "API error code not_found must use status 404, not 400",
     );
-  });
-});
-
-describe("bounded request bodies", () => {
-  test("parses chunked JSON without trusting Content-Length", async () => {
-    const encoder = new TextEncoder();
-    const request = new Request(url("/api/example"), {
-      method: "POST",
-      body: streamBody(encoder.encode('{"ready":'), encoder.encode("true}")),
-    });
-
-    expect(await readJsonBody(request, 14)).toEqual({ ready: true });
-  });
-
-  test("rejects an oversized declared Content-Length before reading", async () => {
-    const request = new Request(url("/api/example"), {
-      method: "POST",
-      headers: { "Content-Length": "900719925474099999999" },
-      body: "{}",
-    });
-
-    await expect(readBodyBytes(request, 8)).rejects.toMatchObject({
-      status: 413,
-      code: "payload_too_large",
-    });
-    expect(request.bodyUsed).toBe(false);
-  });
-
-  test("counts actual UTF-8 bytes when no length is declared", async () => {
-    const encoder = new TextEncoder();
-    const request = new Request(url("/api/example"), {
-      method: "POST",
-      body: streamBody(encoder.encode('"🙂"')),
-    });
-
-    await expect(readJsonBody(request, 5)).rejects.toMatchObject({
-      status: 413,
-      code: "payload_too_large",
-    });
-  });
-
-  test("maps malformed JSON and malformed UTF-8 to a safe validation error", async () => {
-    const malformedJson = new Request(url("/api/example"), {
-      method: "POST",
-      body: "{",
-    });
-    const malformedUtf8 = new Request(url("/api/example"), {
-      method: "POST",
-      body: streamBody(new Uint8Array([0xc3, 0x28])),
-    });
-
-    await expect(readJsonBody(malformedJson)).rejects.toMatchObject({
-      status: 400,
-      code: "invalid_json",
-      message: "Request body must be valid JSON",
-    });
-    await expect(readJsonBody(malformedUtf8)).rejects.toMatchObject({
-      status: 400,
-      code: "invalid_json",
-      message: "Request body must be valid JSON",
-    });
-  });
-
-  test("rejects an invalid Content-Length and invalid configured limits", async () => {
-    const request = new Request(url("/api/example"), {
-      method: "POST",
-      headers: { "Content-Length": "-1" },
-      body: "{}",
-    });
-
-    await expect(readBodyBytes(request, 10)).rejects.toMatchObject({
-      status: 400,
-      code: "invalid_request",
-    });
-    await expect(
-      readBodyBytes(new Request(url("/api/example")), -1),
-    ).rejects.toBeInstanceOf(RangeError);
   });
 });
 

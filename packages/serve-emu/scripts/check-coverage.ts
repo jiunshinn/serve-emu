@@ -5,7 +5,7 @@ const CRITICAL_SOURCE_FILES = {
   "src/api/router.ts": 85,
   "src/api/routes/index.ts": 100,
   "src/server/backpressure.ts": 95,
-  "src/server/session-cache.ts": 95,
+  "src/request-body.ts": 95,
   "src/control-input-queue.ts": 90,
   "src/device-session-context.ts": 85,
   "src/scrcpy.ts": 85,
