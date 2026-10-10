@@ -9,7 +9,7 @@
 - CLI entry point: `packages/serve-emu/src/cli.ts`.
 - HTTP entry point, access-control gate, WebSocket handlers, and `/health`: `packages/serve-emu/src/server.ts`.
 - REST API routes: `packages/serve-emu/src/api/routes/*`, dispatched by `src/api/router.ts`; errors in `src/api/api-error.ts`.
-- API method table and body limits: `packages/serve-emu/src/server/api-boundary.ts`; slow-client frame decisions: `src/server/backpressure.ts`.
+- API routes and their methods: the `ApiRoute` lists in `src/api/routes/*`, collected by `src/api/routes/index.ts`; `src/api/router.ts` answers other methods with 405 and `Allow`. Request body limits (`MAX_*_BYTES`): `src/server.ts`. Slow-client frame decisions: `src/server/backpressure.ts`.
 - Wire contracts shared by server and UI (API responses, control, frame metadata, WebSocket, worker messages): `packages/serve-emu/src/shared`.
 - scrcpy process, adb forward tunnel, socket setup, and frame parsing: `packages/serve-emu/src/scrcpy.ts`.
 - scrcpy control socket message encoding for taps, swipes, keys, text, and video reset: `packages/serve-emu/src/input.ts`.
@@ -78,7 +78,7 @@ second byte-layout description here that can drift from the tested reference.
 ## Server and API Guidance
 
 - Keep HTTP API inputs bounded. Follow existing `MAX_*_BYTES` limits and explicit payload validation patterns.
-- To add an endpoint, add the handler under `src/api/routes/`, register its path and methods in `API_ROUTE_METHODS` (`src/server/api-boundary.ts`), update the route counts asserted in `tests/server-boundaries.test.ts`, add a response parser to `src/shared/api-contracts.ts` for the UI client, and exercise it against a real response in `tests/api-contracts-live.test.ts`. Server payload types (session, route, location, logcat events, `/health`) come from `src/shared`, so a shape change must update the contract.
+- To add an endpoint, add an `ApiRoute` (path, method, handler) to the matching module under `src/api/routes/`, add its wrong-method case to the HTTP-surface table in `tests/server-request-gates.test.ts`, add a response parser to `src/shared/api-contracts.ts` for the UI client, and exercise it against a real response in `tests/api-contracts-live.test.ts`. Server payload types (session, route, location, logcat events, `/health`) come from `src/shared`, so a shape change must update the contract.
 - Gesture API coordinates are normalized unit values from `0` to `1`; convert to screen pixels only in `dispatch`.
 - Preserve session recording behavior. REST and WebSocket actions should record by default unless payloads explicitly set `record: false`.
 - For slow WebSocket clients, keep the backpressure strategy: drop until the next keyframe, request video reset with cooldown, and close clients with excessive buffered bytes.
@@ -104,6 +104,11 @@ bun run check
 `check` also enforces per-file line-coverage floors from
 `scripts/check-coverage.ts` on critical files such as `server.ts`, `scrcpy.ts`,
 and `input.ts`; add tests rather than lowering a floor.
+
+`check` also runs `check:unused:prod` (`knip --production --include files`),
+which fails when a source file is reachable only from tests. Wire a new module
+into the CLI, server, UI, or a worker, or delete it, rather than adding it to
+the `ignore` list in `knip.jsonc`.
 
 For runtime or protocol changes, also test manually with a booted emulator or device:
 

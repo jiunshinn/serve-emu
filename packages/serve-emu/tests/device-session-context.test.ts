@@ -254,6 +254,42 @@ describe("ActiveDeviceSession disposal", () => {
   });
 });
 
+describe("ActiveDeviceSession route playback", () => {
+  test("binds its serial and cannot publish a location after the session ends", async () => {
+    const applying = deferred<void>();
+    const applied: string[] = [];
+    const session = new ActiveDeviceSession({
+      serial: "emulator-5554",
+      generation: 3,
+      scrcpy: fakeScrcpy("emulator-5554"),
+      applyLocation: async (serial) => {
+        applied.push(serial);
+        await applying.promise;
+      },
+    });
+
+    const starting = session.route.start({
+      waypoints: [
+        { latitude: 51.5, longitude: -0.12 },
+        { latitude: 51.51, longitude: -0.11 },
+      ],
+      speedKph: 30,
+      multiplier: 1,
+      intervalMs: 250,
+    });
+    await Promise.resolve();
+    expect(applied).toEqual(["emulator-5554"]);
+
+    // The device switches away while the first fix is still being applied.
+    const disposing = session.dispose("device switched");
+    applying.resolve();
+    await expect(starting).rejects.toThrow("route playback start was cancelled");
+    await disposing;
+    expect(session.lastLocation).toBeNull();
+    expect(session.route.snapshot().status).toBe("closed");
+  });
+});
+
 describe("DeviceSessionManager", () => {
   test("serializes concurrent switches and publishes only complete contexts", async () => {
     const initialDisposeGate = deferred<void>();

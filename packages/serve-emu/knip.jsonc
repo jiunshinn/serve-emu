@@ -1,0 +1,26 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  // Entries and project globs ending in "!" are production code. The CLI
+  // (package.json bin) and the UI (index.html) are found by knip's plugins.
+  // `knip --production` follows only production entries, so a module that
+  // only tests import is reported as unused (see check:unused:prod).
+  "entry": [
+    "src/ui/lib/stream-worker.ts!",
+    "src/ui/lib/route-parser-worker.ts!",
+    "tests/**/*.test.ts"
+  ],
+  "project": [
+    "src/**/*.{ts,tsx}!",
+    "scripts/**/*.ts",
+    "tests/**/*.test.ts"
+  ],
+  // Production code does not load these yet; each has an open issue to wire
+  // it in or delete it. Remove the line when that lands.
+  "ignore": [
+    "src/device-grid.ts", // #108
+    "src/shared/worker-contracts.ts", // #105
+    "src/ui/lib/poller.ts" // #107
+  ],
+  "includeEntryExports": true,
+  "ignoreBinaries": ["adb", "tsc"]
+}
