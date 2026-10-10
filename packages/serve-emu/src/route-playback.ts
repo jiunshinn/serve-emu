@@ -1,39 +1,16 @@
 import type { GeoFix } from "./location.ts";
 
-type RouteWaypoint = GeoFix;
-
-export type RoutePlaybackRequest = {
-  waypoints: RouteWaypoint[];
-  speedKph?: number;
-  multiplier?: number;
-  intervalMs?: number;
-  loop?: boolean;
-};
-
-export type RoutePlaybackStatus =
-  | "idle"
-  | "running"
-  | "paused"
-  | "completed"
-  | "error"
-  | "closed";
-
-export type RoutePlaybackSnapshot = {
-  status: RoutePlaybackStatus;
-  waypointCount: number;
-  totalMeters: number;
-  progressMeters: number;
-  speedKph: number;
-  multiplier: number;
-  intervalMs: number;
-  loop: boolean;
-  startedAt: string | null;
-  updatedAt: string | null;
-  pausedAt: string | null;
-  completedAt: string | null;
-  lastError: string | null;
-  currentLocation: (GeoFix & { appliedAt: string }) | null;
-};
+export type {
+  RoutePlaybackRequest,
+  RoutePlaybackSnapshot,
+  RoutePlaybackStatus,
+} from "./shared/api-contracts.ts";
+import type {
+  RoutePlaybackRequest,
+  RoutePlaybackSnapshot,
+  RoutePlaybackStatus,
+  RouteWaypoint,
+} from "./shared/api-contracts.ts";
 
 export class RoutePlaybackConflictError extends Error {
   constructor(message: string) {

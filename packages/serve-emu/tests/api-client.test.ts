@@ -38,19 +38,31 @@ describe("API client", () => {
   test("accepts existing success responses that do not carry an ok discriminant", async () => {
     const request = createApiClient(async () =>
       jsonResponse({
+        session: {
+          eventCount: 0,
+          retainedBytes: 0,
+          limits: { maxEvents: 2_000, maxBytes: 1_048_576 },
+          droppedEvents: 0,
+          oldestEventId: null,
+          newestEventId: null,
+          oldestEventAt: null,
+          newestEventAt: null,
+          recording: true,
+          replaying: false,
+          replayStartedAt: null,
+          replayCompletedAt: null,
+          lastError: null,
+        },
         events: [],
-        recording: true,
-        replaying: false,
-        replayStartedAt: null,
-        replayCompletedAt: null,
-        lastError: null,
+        nextBefore: null,
+        hasMore: false,
       }),
     );
 
-    const session = await request("/api/session", { method: "GET" });
+    const page = await request("/api/session", { method: "GET" });
 
-    expect(session.recording).toBe(true);
-    expect(session.events).toEqual([]);
+    expect(page.session.recording).toBe(true);
+    expect(page.events).toEqual([]);
   });
 
   test("passes FormData and AbortSignal through without a multipart content-type override", async () => {

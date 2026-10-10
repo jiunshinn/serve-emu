@@ -16,10 +16,8 @@ export const DEFAULT_LOGCAT_TERMINATION_GRACE_MS = 1_000;
 const LOGCAT_PID_LOOKUP_TIMEOUT_MS = 2_000;
 const LOGCAT_PID_LOOKUP_MAX_OUTPUT_BYTES = 64 * 1024;
 
-export type LogcatLine = {
-  line: string;
-  at: string;
-};
+export type { LogcatLine } from "./shared/api-contracts.ts";
+import type { LogcatEventMap, LogcatLine } from "./shared/api-contracts.ts";
 
 export type LogcatSubscriptionOptions = {
   packageName?: string;
@@ -191,7 +189,11 @@ function spawnLogcat(serial: string): LogcatChild {
   );
 }
 
-function encodeEvent(event: string, value: unknown): Uint8Array {
+// Payloads are typed by the shared contract so the UI parser cannot drift.
+function encodeEvent<Event extends keyof LogcatEventMap>(
+  event: Event,
+  value: LogcatEventMap[Event],
+): Uint8Array {
   return new TextEncoder().encode(
     `event: ${event}\ndata: ${JSON.stringify(value)}\n\n`,
   );
@@ -667,10 +669,10 @@ export class LogcatHub {
     }
   }
 
-  #sendControl(
+  #sendControl<Event extends keyof LogcatEventMap>(
     subscriber: Subscriber,
-    event: string,
-    value: unknown,
+    event: Event,
+    value: LogcatEventMap[Event],
   ): void {
     if (!subscriber.active) return;
     try {

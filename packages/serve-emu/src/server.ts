@@ -64,6 +64,10 @@ import {
   terminalTransitionAllowed,
   type SessionStatus,
 } from "./session-status.ts";
+import type {
+  DeviceSelectionResponse,
+  HealthResponse,
+} from "./shared/api-contracts.ts";
 import {
   epochNowMs,
   FRAME_META_HEADER_BYTES,
@@ -451,7 +455,7 @@ export async function startServer(
       pendingResetAgeMs: null,
       resetBackoffMs: RESET_SETTLE_MS,
     };
-    return {
+    const snapshot = {
       ok: context.status === "streaming",
       status: context.status,
       generation: context.generation,
@@ -518,6 +522,9 @@ export async function startServer(
       lastErrorCode: context.lastErrorCode,
       lastErrorMeta: context.lastErrorMeta,
     };
+    // Extra diagnostics are fine; every field the UI contract parses must be here.
+    snapshot satisfies HealthResponse;
+    return snapshot;
   };
 
   const deviceGrid = async (
@@ -1323,7 +1330,9 @@ export async function startServer(
     recovery.start();
   };
 
-  const switchSession = async (serial: string) => {
+  const switchSession = async (
+    serial: string,
+  ): Promise<DeviceSelectionResponse> => {
     // Uploads for the previous generation are cancelled by its context
     // cleanup (see createContext) once the switch commits. Cancelling here,
     // before the candidate is prepared, would strand the still-current

@@ -1,13 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { execText } from "./exec.ts";
 
-export type GeoFix = {
-  latitude: number;
-  longitude: number;
-  altitude?: number;
-  satellites?: number;
-  velocity?: number;
-};
+export type { GeoFix } from "./shared/api-contracts.ts";
+import type { GeoFix } from "./shared/api-contracts.ts";
 
 function finiteNumber(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {

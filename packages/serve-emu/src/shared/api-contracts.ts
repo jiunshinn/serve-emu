@@ -62,12 +62,15 @@ export type DeviceListResponse = ApiSuccess<{
 
 export type DeviceSelectionResponse = ApiSuccess<{
   serial: string;
+  generation: number;
   device: string;
 }>;
 
 export type AvdStartResponse = ApiSuccess<{
   serial: string;
   avd: string;
+  /** Present when the started AVD was also selected. */
+  generation?: number;
   device?: string;
 }>;
 
@@ -168,7 +171,13 @@ export type RoutePlaybackRequest = {
   intervalMs?: number;
   loop?: boolean;
 };
-export type RoutePlaybackStatus = "idle" | "running" | "paused" | "completed" | "error";
+export type RoutePlaybackStatus =
+  | "idle"
+  | "running"
+  | "paused"
+  | "completed"
+  | "error"
+  | "closed";
 export type RoutePlaybackSnapshot = {
   status: RoutePlaybackStatus;
   waypointCount: number;
@@ -205,15 +214,53 @@ export type LocationSessionEvent = {
 };
 export type SessionEvent = GestureSessionEvent | LocationSessionEvent;
 export type RecordedEvent = SessionEvent;
+export type SessionReplayStatus =
+  | "idle"
+  | "running"
+  | "completed"
+  | "cancelled"
+  | "error";
+/** Full recorder state, returned when replay starts or stops. */
 export type SessionSnapshot = {
   events: SessionEvent[];
+  recording: boolean;
+  replaying: boolean;
+  replayStatus: SessionReplayStatus;
+  replayStartedAt: string | null;
+  replayCompletedAt: string | null;
+  replayCancelledAt: string | null;
+  lastError: string | null;
+};
+/** Bounded recorder state without events, used by /health and clear. */
+export type SessionSummary = {
+  eventCount: number;
+  retainedBytes: number;
+  limits: { maxEvents: number; maxBytes: number };
+  droppedEvents: number;
+  oldestEventId: number | null;
+  newestEventId: number | null;
+  oldestEventAt: string | null;
+  newestEventAt: string | null;
   recording: boolean;
   replaying: boolean;
   replayStartedAt: string | null;
   replayCompletedAt: string | null;
   lastError: string | null;
 };
+/** `GET /api/session`: newest-first pages of retained events. */
+export type SessionPage = {
+  session: SessionSummary;
+  events: SessionEvent[];
+  nextBefore: number | null;
+  hasMore: boolean;
+};
+/** `GET /api/session/export`: every retained event, oldest first. */
+export type SessionExport = {
+  session: SessionSummary;
+  events: SessionEvent[];
+};
 export type SessionMutationResponse = ApiSuccess<{ session: SessionSnapshot }>;
+export type SessionClearResponse = ApiSuccess<{ session: SessionSummary }>;
 
 export type AppActionResponse = ApiSuccess<{ output: string }>;
 export type FileImportResponse = ApiSuccess<{
@@ -227,16 +274,23 @@ export type ScreenshotBase64Response = ApiSuccess<{
   data: string;
 }>;
 
+export type LogcatLine = { line: string; at: string };
 export type LogcatEventMap = {
   ready: {
     serial: string;
     package: string | null;
-    pids: string[];
     search: string | null;
+    batchIntervalMs: number;
   };
-  log: { line: string; at: string };
-  error: { line: string; at: string };
-  close: { code: number | null; signal: string | null };
+  logs: {
+    lines: LogcatLine[];
+    dropped: number;
+    totalDropped: number;
+    sourceDropped: number;
+  };
+  error: { error: string; at: string };
+  /** `code`/`signal` when logcat exits; `reason` when the server ends the stream. */
+  close: { code: number | null; signal: string | null } | { reason: string };
 };
 
 export type FrameStatsSummary = {
@@ -276,7 +330,7 @@ export type HealthResponse = {
   lastVideoResetReason: string | null;
   location: AppliedGeoFix | null;
   route: RoutePlaybackSnapshot;
-  session: SessionSnapshot;
+  session: SessionSummary;
   clientsDetail: HealthClient[];
   startedAt: string;
   stoppedAt: string | null;
@@ -285,7 +339,7 @@ export type HealthResponse = {
   lastErrorCode: string | null;
   lastErrorMeta: Record<string, string | number> | null;
   /** Changes whenever the active scrcpy device session changes. */
-  sessionGeneration?: number;
+  generation: number;
 };
 
 export type ApiInfoResponse = {
@@ -370,9 +424,10 @@ export type ApiContractMap = {
   "/api/text": { POST: EndpointContract<TextRequest, EmptyResponse> };
   "/api/key": { POST: EndpointContract<KeyRequest, EmptyResponse> };
   "/api/session": {
-    GET: EndpointContract<undefined, SessionSnapshot>;
-    DELETE: EndpointContract<undefined, SessionMutationResponse>;
+    GET: EndpointContract<undefined, SessionPage>;
+    DELETE: EndpointContract<undefined, SessionClearResponse>;
   };
+  "/api/session/export": { GET: EndpointContract<undefined, SessionExport> };
   "/api/session/replay": {
     POST: EndpointContract<{ multiplier?: number }, SessionMutationResponse>;
   };
@@ -547,18 +602,34 @@ export function parseDeviceListResponse(value: unknown): DeviceListResponse {
   };
 }
 
+function generation(value: unknown, name: string): number {
+  const parsed = number(value, name);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    fail(`${name} must be a non-negative safe integer`);
+  }
+  return parsed;
+}
+
 function parseOkDeviceResponse(value: unknown, kind: "selection" | "avd-start"): DeviceSelectionResponse | AvdStartResponse {
   const root = record(value, `${kind} response`);
   if (root.ok !== true) fail(`${kind} response.ok must be true`);
   const serial = string(root.serial, `${kind} response.serial`);
   if (kind === "selection") {
-    return { ok: true, serial, device: string(root.device, "selection response.device") };
+    return {
+      ok: true,
+      serial,
+      generation: generation(root.generation, "selection response.generation"),
+      device: string(root.device, "selection response.device"),
+    };
   }
   const result: AvdStartResponse = {
     ok: true,
     serial,
     avd: string(root.avd, "avd-start response.avd"),
   };
+  if (root.generation !== undefined) {
+    result.generation = generation(root.generation, "avd-start response.generation");
+  }
   if (root.device !== undefined) result.device = string(root.device, "avd-start response.device");
   return result;
 }
@@ -777,7 +848,7 @@ export function parseRoutePlaybackSnapshot(value: unknown): RoutePlaybackSnapsho
   return {
     status: oneOf(
       root.status,
-      ["idle", "running", "paused", "completed", "error"] as const,
+      ["idle", "running", "paused", "completed", "error", "closed"] as const,
       "route snapshot.status",
     ),
     waypointCount: number(root.waypointCount, "route snapshot.waypointCount"),
@@ -827,16 +898,71 @@ function parseSessionEvent(value: unknown, index: number): SessionEvent {
   return fail(`session.events[${index}].kind is invalid`);
 }
 
+function parseSessionEvents(value: unknown, name: string): SessionEvent[] {
+  if (!Array.isArray(value)) fail(`${name} must be an array`);
+  return value.map(parseSessionEvent);
+}
+
+function nullableNumber(value: unknown, name: string): number | null {
+  return value === null ? null : number(value, name);
+}
+
 export function parseSessionSnapshot(value: unknown): SessionSnapshot {
   const root = record(value, "session snapshot");
-  if (!Array.isArray(root.events)) fail("session snapshot.events must be an array");
   return {
-    events: root.events.map(parseSessionEvent),
+    events: parseSessionEvents(root.events, "session snapshot.events"),
     recording: boolean(root.recording, "session snapshot.recording"),
     replaying: boolean(root.replaying, "session snapshot.replaying"),
+    replayStatus: oneOf(
+      root.replayStatus,
+      ["idle", "running", "completed", "cancelled", "error"] as const,
+      "session snapshot.replayStatus",
+    ),
     replayStartedAt: nullableString(root.replayStartedAt, "session snapshot.replayStartedAt"),
     replayCompletedAt: nullableString(root.replayCompletedAt, "session snapshot.replayCompletedAt"),
+    replayCancelledAt: nullableString(root.replayCancelledAt, "session snapshot.replayCancelledAt"),
     lastError: nullableString(root.lastError, "session snapshot.lastError"),
+  };
+}
+
+export function parseSessionSummary(value: unknown, name = "session summary"): SessionSummary {
+  const root = record(value, name);
+  const limits = record(root.limits, `${name}.limits`);
+  return {
+    eventCount: number(root.eventCount, `${name}.eventCount`),
+    retainedBytes: number(root.retainedBytes, `${name}.retainedBytes`),
+    limits: {
+      maxEvents: number(limits.maxEvents, `${name}.limits.maxEvents`),
+      maxBytes: number(limits.maxBytes, `${name}.limits.maxBytes`),
+    },
+    droppedEvents: number(root.droppedEvents, `${name}.droppedEvents`),
+    oldestEventId: nullableNumber(root.oldestEventId, `${name}.oldestEventId`),
+    newestEventId: nullableNumber(root.newestEventId, `${name}.newestEventId`),
+    oldestEventAt: nullableString(root.oldestEventAt, `${name}.oldestEventAt`),
+    newestEventAt: nullableString(root.newestEventAt, `${name}.newestEventAt`),
+    recording: boolean(root.recording, `${name}.recording`),
+    replaying: boolean(root.replaying, `${name}.replaying`),
+    replayStartedAt: nullableString(root.replayStartedAt, `${name}.replayStartedAt`),
+    replayCompletedAt: nullableString(root.replayCompletedAt, `${name}.replayCompletedAt`),
+    lastError: nullableString(root.lastError, `${name}.lastError`),
+  };
+}
+
+export function parseSessionPage(value: unknown): SessionPage {
+  const root = record(value, "session page");
+  return {
+    session: parseSessionSummary(root.session, "session page.session"),
+    events: parseSessionEvents(root.events, "session page.events"),
+    nextBefore: nullableNumber(root.nextBefore, "session page.nextBefore"),
+    hasMore: boolean(root.hasMore, "session page.hasMore"),
+  };
+}
+
+export function parseSessionExport(value: unknown): SessionExport {
+  const root = record(value, "session export");
+  return {
+    session: parseSessionSummary(root.session, "session export.session"),
+    events: parseSessionEvents(root.events, "session export.events"),
   };
 }
 
@@ -844,6 +970,15 @@ export function parseSessionMutationResponse(value: unknown): SessionMutationRes
   const root = record(value, "session mutation response");
   if (root.ok !== true) fail("session mutation response.ok must be true");
   return { ok: true, session: parseSessionSnapshot(root.session) };
+}
+
+export function parseSessionClearResponse(value: unknown): SessionClearResponse {
+  const root = record(value, "session clear response");
+  if (root.ok !== true) fail("session clear response.ok must be true");
+  return {
+    ok: true,
+    session: parseSessionSummary(root.session, "session clear response.session"),
+  };
 }
 
 export function parseEmptyResponse(value: unknown): EmptyResponse {
@@ -886,24 +1021,41 @@ export function parseLogcatEvent<Event extends keyof LogcatEventMap>(
 ): LogcatEventMap[Event] {
   const item = record(value, `logcat ${event} event`);
   if (event === "ready") {
-    if (!Array.isArray(item.pids)) fail("logcat ready event.pids must be an array");
     return {
       serial: string(item.serial, "logcat ready event.serial"),
       package: nullableString(item.package, "logcat ready event.package"),
-      pids: item.pids.map((pid, index) =>
-        string(pid, `logcat ready event.pids[${index}]`)
-      ),
       search: nullableString(item.search, "logcat ready event.search"),
+      batchIntervalMs: number(item.batchIntervalMs, "logcat ready event.batchIntervalMs"),
     } as LogcatEventMap[Event];
   }
-  if (event === "log" || event === "error") {
+  if (event === "logs") {
+    if (!Array.isArray(item.lines)) fail("logcat logs event.lines must be an array");
     return {
-      line: string(item.line, `logcat ${event} event.line`),
-      at: string(item.at, `logcat ${event} event.at`),
+      lines: item.lines.map((entry, index) => {
+        const line = record(entry, `logcat logs event.lines[${index}]`);
+        return {
+          line: string(line.line, `logcat logs event.lines[${index}].line`),
+          at: string(line.at, `logcat logs event.lines[${index}].at`),
+        };
+      }),
+      dropped: number(item.dropped, "logcat logs event.dropped"),
+      totalDropped: number(item.totalDropped, "logcat logs event.totalDropped"),
+      sourceDropped: number(item.sourceDropped, "logcat logs event.sourceDropped"),
+    } as LogcatEventMap[Event];
+  }
+  if (event === "error") {
+    return {
+      error: string(item.error, "logcat error event.error"),
+      at: string(item.at, "logcat error event.at"),
+    } as LogcatEventMap[Event];
+  }
+  if (item.reason !== undefined) {
+    return {
+      reason: string(item.reason, "logcat close event.reason"),
     } as LogcatEventMap[Event];
   }
   return {
-    code: item.code === null ? null : number(item.code, "logcat close event.code"),
+    code: nullableNumber(item.code, "logcat close event.code"),
     signal: nullableString(item.signal, "logcat close event.signal"),
   } as LogcatEventMap[Event];
 }
@@ -1018,7 +1170,7 @@ export function parseHealthResponse(value: unknown): HealthResponse {
     lastVideoResetReason: nullableString(root.lastVideoResetReason, "health response.lastVideoResetReason"),
     location: root.location === null ? null : parseAppliedGeoFix(root.location, "health response.location"),
     route: parseRoutePlaybackSnapshot(root.route),
-    session: parseSessionSnapshot(root.session),
+    session: parseSessionSummary(root.session, "health response.session"),
     clientsDetail: Array.isArray(root.clientsDetail)
       ? root.clientsDetail.map(parseHealthClient)
       : fail("health response.clientsDetail must be an array"),
@@ -1028,17 +1180,8 @@ export function parseHealthResponse(value: unknown): HealthResponse {
     lastError: nullableString(root.lastError, "health response.lastError"),
     lastErrorCode: nullableString(root.lastErrorCode, "health response.lastErrorCode"),
     lastErrorMeta: parseErrorMeta(root.lastErrorMeta),
+    generation: generation(root.generation, "health response.generation"),
   };
-  if (root.sessionGeneration !== undefined) {
-    const generation = number(
-      root.sessionGeneration,
-      "health response.sessionGeneration",
-    );
-    if (!Number.isSafeInteger(generation) || generation < 0) {
-      fail("health response.sessionGeneration must be a non-negative safe integer");
-    }
-    health.sessionGeneration = generation;
-  }
   return health;
 }
 
@@ -1074,7 +1217,8 @@ export const API_SUCCESS_PARSERS = {
   "/api/swipe": { POST: parseEmptyResponse },
   "/api/text": { POST: parseEmptyResponse },
   "/api/key": { POST: parseEmptyResponse },
-  "/api/session": { GET: parseSessionSnapshot, DELETE: parseSessionMutationResponse },
+  "/api/session": { GET: parseSessionPage, DELETE: parseSessionClearResponse },
+  "/api/session/export": { GET: parseSessionExport },
   "/api/session/replay": { POST: parseSessionMutationResponse },
   "/api/session/replay/stop": { POST: parseSessionMutationResponse },
   "/api/apps/install": { POST: parseAppActionResponse },
