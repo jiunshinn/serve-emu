@@ -81,7 +81,7 @@ export type WorkerCommand<Canvas = unknown> =
   | { type: "stop"; clientEpoch: number };
 
 /** Client epochs are positive integers; the UI starts at 1 for each canvas. */
-export function isValidClientEpoch(value: unknown): value is number {
+function isValidClientEpoch(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 

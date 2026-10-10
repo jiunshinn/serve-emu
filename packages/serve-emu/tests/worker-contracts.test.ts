@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Sender } from "../src/ui/lib/use-stream.ts";
 import {
-  isValidClientEpoch,
   parseWorkerCommand,
   type StreamWorkerEvent,
   type WorkerCommand,
@@ -69,9 +68,11 @@ describe("stream worker commands", () => {
   test("drops a command without a valid client epoch", () => {
     for (const clientEpoch of [undefined, 0, -1, 1.5, "1", Number.MAX_SAFE_INTEGER + 1]) {
       expect(parse({ type: "connect", clientEpoch })).toBeNull();
-      expect(isValidClientEpoch(clientEpoch)).toBe(false);
     }
-    expect(isValidClientEpoch(Number.MAX_SAFE_INTEGER)).toBe(true);
+    expect(parse({ type: "connect", clientEpoch: Number.MAX_SAFE_INTEGER })).toEqual({
+      type: "connect",
+      clientEpoch: Number.MAX_SAFE_INTEGER,
+    });
   });
 
   test("drops malformed commands", () => {
