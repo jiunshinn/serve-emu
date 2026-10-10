@@ -37,6 +37,7 @@ import {
   type ScrcpySession,
 } from "./scrcpy.ts";
 import { createRequestGate } from "./server/auth.ts";
+import { startContentionProbe } from "./server/contention.ts";
 import { createEmulatorRegistry } from "./server/emulators.ts";
 import { buildHealthSnapshot } from "./server/health.ts";
 import { createSessionServices } from "./server/session-services.ts";
@@ -98,6 +99,11 @@ export type ServerOpts = {
    * ones the CLI uses for --avd: the emulator binary, `-gpu`, and the window.
    */
   emulator?: Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window">;
+  /**
+   * Check the device for other scrcpy sessions in the background (#76).
+   * The CLI turns it on; off, `/health` reports `contention: null`.
+   */
+  probeDeviceContention?: boolean;
 };
 
 export const DEFAULT_HOST = "127.0.0.1";
@@ -283,6 +289,13 @@ export async function startServer(
     isStopping: () => stopRequested,
   });
   logReady(sessions.current);
+  // Activation starts a session's video and, for the CLI, its contention probe.
+  const activate = (context: DeviceContext) => {
+    video.activate(context);
+    if (opts.probeDeviceContention) {
+      startContentionProbe(context, { device, clock: recoveryClock });
+    }
+  };
 
   const health = (context = sessions.current) => {
     const now = recoveryClock.now();
@@ -341,7 +354,7 @@ export async function startServer(
         }
         return openContext(targetSerial, generation, signal);
       },
-      video.activate,
+      activate,
     );
     logReady(context);
     return {
@@ -353,7 +366,7 @@ export async function startServer(
   };
 
   try {
-    video.activate(sessions.current);
+    activate(sessions.current);
   } catch (err) {
     stopRequested = true;
     await sessions.close("server startup failed");

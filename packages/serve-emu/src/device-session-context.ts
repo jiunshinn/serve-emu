@@ -10,6 +10,11 @@ import { SessionRecorder } from "./session-recorder.ts";
 import type { SessionStatus } from "./session-status.ts";
 
 const FRAME_STAT_WINDOW = 240;
+// Reset times kept for the recent rate in /health. The watchdog's 500 ms
+// cooldown allows at most 120 resets a minute, so this never drops one
+// that is still inside the window.
+const MAX_RECENT_VIDEO_RESETS = 128;
+const VIDEO_RESET_RATE_WINDOW_MS = 60_000;
 
 export class SessionChangedError extends Error {
   readonly code = "session_changed";
@@ -90,6 +95,14 @@ export class ActiveDeviceSession<
   lastVideoResetMs = 0;
   /** See {@link DisposeDeviceSessionOpts.byClient}. */
   stoppedByClient = false;
+  /** Video resets by reason; reasons are a small fixed set. */
+  readonly videoResetsByReason: Record<string, number> = {};
+  /**
+   * Other scrcpy sessions on this device (another server, a desktop scrcpy),
+   * from the latest background probe; null until the first probe answers.
+   */
+  contention: { otherScrcpySessions: number; checkedAt: string } | null = null;
+  #recentVideoResetMs: number[] = [];
   lastLocation: (GeoFix & { appliedAt: string }) | null = null;
   cachedConfig: Buffer | null = null;
 
@@ -143,6 +156,25 @@ export class ActiveDeviceSession<
         if (!this.signal.aborted) this.lastLocation = fix;
       },
     });
+  }
+
+  /** Records a video reset request accepted for `reason` at `nowMs`. */
+  noteVideoReset(reason: string, nowMs: number): void {
+    this.videoResetRequests++;
+    this.lastVideoResetMs = nowMs;
+    this.lastVideoResetAt = new Date(nowMs).toISOString();
+    this.lastVideoResetReason = reason;
+    this.videoResetsByReason[reason] = (this.videoResetsByReason[reason] ?? 0) + 1;
+    this.#recentVideoResetMs.push(nowMs);
+    if (this.#recentVideoResetMs.length > MAX_RECENT_VIDEO_RESETS) {
+      this.#recentVideoResetMs.shift();
+    }
+  }
+
+  /** Video resets in the {@link VIDEO_RESET_RATE_WINDOW_MS} before `nowMs`. */
+  recentVideoResets(nowMs: number): number {
+    const since = nowMs - VIDEO_RESET_RATE_WINDOW_MS;
+    return this.#recentVideoResetMs.filter((at) => at > since).length;
   }
 
   get signal(): AbortSignal {

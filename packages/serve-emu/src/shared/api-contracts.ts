@@ -312,6 +312,11 @@ export type HealthClient = {
   awaitingKeyFrame: boolean;
 };
 
+export type DeviceContention = {
+  otherScrcpySessions: number;
+  checkedAt: string;
+};
+
 export type HealthResponse = {
   ok: boolean;
   status: SessionStatus;
@@ -329,6 +334,11 @@ export type HealthResponse = {
   videoResetRequests: number;
   lastVideoResetAt: string | null;
   lastVideoResetReason: string | null;
+  /** Accepted video resets by reason, since the session started. */
+  videoResetsByReason: Record<string, number>;
+  videoResetsLastMinute: number;
+  /** Other scrcpy sessions on the device; null until the first probe answers. */
+  contention: DeviceContention | null;
   location: AppliedGeoFix | null;
   route: RoutePlaybackSnapshot;
   session: SessionSummary;
@@ -1171,6 +1181,9 @@ export function parseHealthResponse(value: unknown): HealthResponse {
     videoResetRequests: number(root.videoResetRequests, "health response.videoResetRequests"),
     lastVideoResetAt: nullableString(root.lastVideoResetAt, "health response.lastVideoResetAt"),
     lastVideoResetReason: nullableString(root.lastVideoResetReason, "health response.lastVideoResetReason"),
+    videoResetsByReason: parseCounts(root.videoResetsByReason, "health response.videoResetsByReason"),
+    videoResetsLastMinute: number(root.videoResetsLastMinute, "health response.videoResetsLastMinute"),
+    contention: root.contention === null ? null : parseContention(root.contention),
     location: root.location === null ? null : parseAppliedGeoFix(root.location, "health response.location"),
     route: parseRoutePlaybackSnapshot(root.route),
     session: parseSessionSummary(root.session, "health response.session"),
@@ -1186,6 +1199,22 @@ export function parseHealthResponse(value: unknown): HealthResponse {
     generation: generation(root.generation, "health response.generation"),
   };
   return health;
+}
+
+function parseCounts(value: unknown, name: string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const [key, count] of Object.entries(record(value, name))) {
+    counts[key] = number(count, `${name}.${key}`);
+  }
+  return counts;
+}
+
+function parseContention(value: unknown): DeviceContention {
+  const root = record(value, "health response.contention");
+  return {
+    otherScrcpySessions: number(root.otherScrcpySessions, "health response.contention.otherScrcpySessions"),
+    checkedAt: string(root.checkedAt, "health response.contention.checkedAt"),
+  };
 }
 
 type AnySuccessParser = (value: unknown) => unknown;

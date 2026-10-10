@@ -145,6 +145,7 @@ export function serverOptions(
     maxQueuedUploads: numberOption(values, "max-queued-uploads", DEFAULT_MAX_QUEUED_UPLOADS),
     uploadQueueTimeoutMs: numberOption(values, "upload-queue-timeout-ms", DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS),
     emulator: settings,
+    probeDeviceContention: true,
   };
 }
 

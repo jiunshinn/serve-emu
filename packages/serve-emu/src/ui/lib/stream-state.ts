@@ -10,6 +10,8 @@ export type StreamHealth = {
   status?: "streaming" | "stopped" | "error";
   lastFrameAt?: string | null;
   lastError?: string | null;
+  /** From `contention`; absent until the server's first probe answers. */
+  otherScrcpySessions?: number;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -62,6 +64,15 @@ export function parseStreamHealth(value: unknown): StreamHealth {
   ) {
     throw new Error("health lastError is invalid");
   }
+  // Diagnostics only: a malformed value is ignored rather than failing the poll.
+  const contention = value.contention;
+  const otherScrcpySessions =
+    isRecord(contention) &&
+    typeof contention.otherScrcpySessions === "number" &&
+    Number.isSafeInteger(contention.otherScrcpySessions) &&
+    contention.otherScrcpySessions >= 0
+      ? contention.otherScrcpySessions
+      : undefined;
   return {
     size: parseSize(value.size),
     ...(value.serial === undefined ? {} : { serial: value.serial as string }),
@@ -69,5 +80,6 @@ export function parseStreamHealth(value: unknown): StreamHealth {
     ...(status === undefined ? {} : { status }),
     ...(lastFrameAt === undefined ? {} : { lastFrameAt }),
     ...(lastError === undefined ? {} : { lastError }),
+    ...(otherScrcpySessions === undefined ? {} : { otherScrcpySessions }),
   };
 }

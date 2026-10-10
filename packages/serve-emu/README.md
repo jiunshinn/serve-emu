@@ -332,6 +332,23 @@ found by the next check and retried with growing gaps while `sourceState`
 reports `stalled`. With no stream client connected the server sends no
 checks, so a quiet source reports `idle` without having been checked.
 
+Every encoder restart is counted. `videoResetRequests` and
+`lastVideoResetReason` keep the total and the latest reason.
+`videoResetsByReason` breaks the total down by reason (`client opened`,
+`client requested keyframe`, `client awaiting keyframe`, `client
+backpressure`, `first video frame not received`, `video source stalled`,
+`video source idle`), and `videoResetsLastMinute` shows a reset storm as it
+happens.
+
+`contention.otherScrcpySessions` counts the other scrcpy sessions on the
+device: another `serve-emu`, or a desktop `scrcpy`. Each session encodes the
+screen again, so every stream slows down; two sessions on one emulator
+measured 17–21 fps each instead of 60. A streaming session reads the
+device's `/proc/net/unix` 2 s after it starts and every 10 s after that, with
+one bounded `adb shell` call. `/health` reports the last answer and never
+waits for a probe. `contention` is `null` until the first probe answers. The
+UI shows a warning in the status bar while the count is above zero.
+
 AVD lifecycle helpers:
 
 ```sh

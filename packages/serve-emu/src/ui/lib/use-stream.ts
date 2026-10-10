@@ -34,6 +34,8 @@ export type StreamState = {
   fps: number;
   deviceSize: DeviceSize | null;
   stats: StreamStats | null;
+  /** Other scrcpy sessions streaming this device, per the server's probe. */
+  otherScrcpySessions: number;
 };
 
 /** Sends one control gesture; the hook adds `requestId` and `ack`. */
@@ -71,6 +73,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     fps: 0,
     deviceSize: null,
     stats: null,
+    otherScrcpySessions: 0,
   });
   const workerRef = useRef<Worker | null>(null);
   const clientEpochRef = useRef(0);
@@ -279,6 +282,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       setState((prev) => ({
         ...prev,
         deviceSize: d.size,
+        otherScrcpySessions: d.otherScrcpySessions ?? 0,
         ...(serverTerminalStatus ? { status: serverTerminalStatus } : {}),
       }));
     };

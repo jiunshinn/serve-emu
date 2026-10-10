@@ -88,7 +88,7 @@ export function App() {
 
   return (
     <>
-      <StatusBar controlError={state.controlError} onDismissError={clearControlError} status={state.status} deviceSize={state.deviceSize} fps={state.fps} stats={state.stats} />
+      <StatusBar controlError={state.controlError} onDismissError={clearControlError} status={state.status} deviceSize={state.deviceSize} fps={state.fps} stats={state.stats} otherScrcpySessions={state.otherScrcpySessions} />
       <StreamControlsContext.Provider value={controls}>
         <AppShell />
       </StreamControlsContext.Provider>

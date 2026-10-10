@@ -116,10 +116,7 @@ export function createVideoPipeline(deps: {
       priority: true,
     });
     recovery?.noteResetAdmitted(now);
-    context.lastVideoResetMs = now;
-    context.videoResetRequests++;
-    context.lastVideoResetAt = new Date(now).toISOString();
-    context.lastVideoResetReason = reason;
+    context.noteVideoReset(reason, now);
     return accepted;
   };
 
@@ -145,10 +142,7 @@ export function createVideoPipeline(deps: {
             { coalesceKey: "reset-video", priority: true },
           );
           void accepted.completion.catch(() => {});
-          context.lastVideoResetMs = now;
-          context.videoResetRequests++;
-          context.lastVideoResetAt = new Date(now).toISOString();
-          context.lastVideoResetReason = reason;
+          context.noteVideoReset(reason, now);
           return true;
         } catch {
           return false;
