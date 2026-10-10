@@ -35,7 +35,7 @@ test("getNetworkStatus reads Wi-Fi and mobile settings concurrently", async () =
     };
   }) as typeof execText;
 
-  const status = getNetworkStatus("emulator-5554", runExec);
+  const status = getNetworkStatus("emulator-5554", { execText: runExec });
   await Promise.resolve();
   expect(calls).toEqual(["wifi_on", "mobile_data"]);
 

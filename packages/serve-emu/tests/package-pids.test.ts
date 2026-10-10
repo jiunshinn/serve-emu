@@ -34,9 +34,10 @@ describe("packagePids", () => {
     const exec = fakeExec(result({ stdout: "4321 987\n" }));
     await expect(
       packagePids("emulator-5554", "com.example.app:remote", {
+        execText: exec.run,
         signal: controller.signal,
         lane: "background",
-      }, exec.run),
+      }),
     ).resolves.toEqual(["4321", "987"]);
     expect(exec.calls).toEqual([
       {
@@ -57,18 +58,18 @@ describe("packagePids", () => {
   test("reports a package that is not running as no PIDs", async () => {
     // pidof exits 1 with no output when nothing matches.
     const exec = fakeExec(result({ status: 1 }));
-    await expect(packagePids("device-a", "com.example.app", {}, exec.run)).resolves.toEqual([]);
+    await expect(packagePids("device-a", "com.example.app", { execText: exec.run })).resolves.toEqual([]);
   });
 
   test("ignores non-numeric output", async () => {
     const exec = fakeExec(result({ stdout: "not-a-pid\n" }));
-    await expect(packagePids("device-a", "com.example.app", {}, exec.run)).resolves.toEqual([]);
+    await expect(packagePids("device-a", "com.example.app", { execText: exec.run })).resolves.toEqual([]);
   });
 
   test("returns no PIDs for names pidof should never see, without running adb", async () => {
     const exec = fakeExec(result());
-    await expect(packagePids("device-a", "com.example app", {}, exec.run)).resolves.toEqual([]);
-    await expect(packagePids("device-a", "$(id)", {}, exec.run)).resolves.toEqual([]);
+    await expect(packagePids("device-a", "com.example app", { execText: exec.run })).resolves.toEqual([]);
+    await expect(packagePids("device-a", "$(id)", { execText: exec.run })).resolves.toEqual([]);
     expect(exec.calls).toHaveLength(0);
   });
 
@@ -79,14 +80,14 @@ describe("packagePids", () => {
     ["an output overflow", new ExecError("output-limit", "command output exceeded 65536 bytes")],
   ])("reports %s as a failed lookup, not as no PIDs", async (_name, error) => {
     const exec = fakeExec(result({ status: null, error }));
-    const lookup = packagePids("device-a", "com.example.app", {}, exec.run);
+    const lookup = packagePids("device-a", "com.example.app", { execText: exec.run });
     await expect(lookup).rejects.toBeInstanceOf(PackagePidLookupError);
     await expect(lookup).rejects.toMatchObject({ cause: error });
   });
 
   test("reports an adb failure with stderr as a failed lookup", async () => {
     const exec = fakeExec(result({ status: 1, stderr: "adb: device 'emulator-9999' not found\n" }));
-    await expect(packagePids("emulator-9999", "com.example.app", {}, exec.run)).rejects.toThrow(
+    await expect(packagePids("emulator-9999", "com.example.app", { execText: exec.run })).rejects.toThrow(
       "pidof com.example.app failed: adb: device 'emulator-9999' not found",
     );
   });

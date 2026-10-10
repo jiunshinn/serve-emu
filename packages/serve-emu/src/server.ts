@@ -275,21 +275,21 @@ export async function startServer(
     });
     return owned;
   };
-  const killEmulator: typeof stopEmulator = async (serial, runExec) => {
+  const killEmulator: typeof stopEmulator = async (serial, deps) => {
     const owned = launchedEmulators.get(serial);
     if (owned) return owned.stop();
-    return stopEmulatorBySerial(serial, runExec);
+    return stopEmulatorBySerial(serial, deps);
   };
   const listActiveAvds = dependencies.listRunningAvds ?? listRunningAvds;
   const availableAvds = dependencies.listAvds ?? listAvds;
   const loadAccessibility =
     dependencies.loadAccessibility ??
     ((serial: string, signal: AbortSignal) =>
-      getAccessibilitySnapshot(serial, signal));
+      getAccessibilitySnapshot(serial, { signal }));
   const setLocation =
     dependencies.setLocation ??
     ((serial: string, fix: GeoFix, signal: AbortSignal) =>
-      setEmulatorLocationAsync(serial, fix, signal));
+      setEmulatorLocationAsync(serial, fix, { signal }));
   const device = dependencies.deviceService ?? createDeviceService();
   const createInputQueue =
     dependencies.createInputQueue ??
@@ -948,14 +948,14 @@ export async function startServer(
     uploadEndpoint(context, req, {
       fieldName: "apk",
       maxFileBytes: maxApkUploadBytes,
-      action: (serial, file, signal) => installStagedApk(serial, file, signal),
+      action: (serial, file, signal) => installStagedApk(serial, file, { signal }),
     });
 
   const fileImportEndpoint = (context: DeviceContext, req: Request) =>
     uploadEndpoint(context, req, {
       fieldName: "file",
       maxFileBytes: maxMediaUploadBytes,
-      action: (serial, file, signal) => importStagedMedia(serial, file, signal),
+      action: (serial, file, signal) => importStagedMedia(serial, file, { signal }),
     });
 
   const enqueueVideoReset = (context: DeviceContext, reason: string) => {

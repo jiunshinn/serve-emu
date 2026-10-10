@@ -52,7 +52,7 @@ describe("getForegroundApp", () => {
       }
     }) as typeof execText;
 
-    await expect(getForegroundApp("emulator-5554", runExec)).resolves.toEqual({
+    await expect(getForegroundApp("emulator-5554", { execText: runExec })).resolves.toEqual({
       packageName: "com.example.app",
       activity: "com.example.app.MainActivity",
       pid: 123,
@@ -93,7 +93,7 @@ describe("getForegroundApp", () => {
       throw new Error(`unexpected command: ${command}`);
     }) as typeof execText;
 
-    await expect(getForegroundApp("device-1", runExec)).resolves.toEqual({
+    await expect(getForegroundApp("device-1", { execText: runExec })).resolves.toEqual({
       packageName: "com.alternate",
       activity: "com.alternate.Home",
       pid: null,
@@ -115,7 +115,7 @@ describe("getForegroundApp", () => {
       return textResult("no foreground component\n");
     }) as typeof execText;
 
-    await expect(getForegroundApp("device-1", runExec)).resolves.toEqual({
+    await expect(getForegroundApp("device-1", { execText: runExec })).resolves.toEqual({
       packageName: null,
       activity: null,
       pid: null,
@@ -144,7 +144,7 @@ describe("getForegroundApp", () => {
       });
     }) as typeof execText;
 
-    await expect(getForegroundApp("device-1", runExec)).resolves.toEqual({
+    await expect(getForegroundApp("device-1", { execText: runExec })).resolves.toEqual({
       packageName: "com.example",
       activity: "com.example.KeyboardActivity",
       pid: null,
@@ -176,7 +176,7 @@ describe("getForegroundApp", () => {
         throw new Error(`unexpected command: ${command}`);
       }) as typeof execText;
 
-      expect((await getForegroundApp("device-1", runExec)).packageName).toBe(
+      expect((await getForegroundApp("device-1", { execText: runExec })).packageName).toBe(
         expectedPackage,
       );
     }
@@ -214,7 +214,7 @@ describe("getForegroundApp", () => {
     for (const entry of cases) {
       const runExec = (async () => entry.result) as typeof execText;
       try {
-        await getForegroundApp("device-1", runExec);
+        await getForegroundApp("device-1", { execText: runExec });
         throw new Error("expected getForegroundApp to reject");
       } catch (error) {
         expect(error).toBeInstanceOf(CommandFailureError);

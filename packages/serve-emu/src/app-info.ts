@@ -1,23 +1,23 @@
-import { adbCommandFailure } from "./adb-command.ts";
-import { execText } from "./exec.ts";
+import { adbText, type AdbDeps } from "./adb-command.ts";
 import { packagePids } from "./package-pids.ts";
 import type { ForegroundApp } from "./shared/api-contracts.ts";
 
 export type { ForegroundApp } from "./shared/api-contracts.ts";
 
-async function adbShell(
+function adbShell(
   serial: string,
   args: string[],
-  timeout = 4_000,
-  runExec: typeof execText = execText,
+  timeout: number,
+  deps: AdbDeps,
 ): Promise<string> {
-  const result = await runExec("adb", ["-s", serial, "shell", ...args], { timeout });
-  if (result.status !== 0 || result.error) {
-    // args[0] is the shell command (dumpsys, pidof); later args may be a
-    // client-supplied package name and stay out of the public message.
-    throw adbCommandFailure(`adb shell ${args[0]}`, result);
-  }
-  return result.stdout;
+  // args[0] is the shell command (dumpsys); later args may be a
+  // client-supplied package name and stay out of the public message.
+  return adbText(
+    serial,
+    ["shell", ...args],
+    { operation: `adb shell ${args[0]}`, timeout },
+    deps,
+  );
 }
 
 function firstMatch(text: string, patterns: RegExp[]): RegExpMatchArray | null {
@@ -43,9 +43,9 @@ function parseComponent(value: string): { packageName: string; activity: string 
 
 async function foregroundComponent(
   serial: string,
-  runExec: typeof execText,
+  deps: AdbDeps,
 ): Promise<{ packageName: string; activity: string | null } | null> {
-  const windowDump = await adbShell(serial, ["dumpsys", "window"], 5_000, runExec);
+  const windowDump = await adbShell(serial, ["dumpsys", "window"], 5_000, deps);
   const windowMatch = firstMatch(windowDump, [
     /mCurrentFocus=Window\{[^}]*\s([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+)\}/,
     /mFocusedApp=ActivityRecord\{[^}]*\s([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+)\s/,
@@ -60,7 +60,7 @@ async function foregroundComponent(
     serial,
     ["dumpsys", "activity", "activities"],
     5_000,
-    runExec,
+    deps,
   );
   const activityMatch = firstMatch(activityDump, [
     /topResumedActivity=ActivityRecord\{[^}]*\s([A-Za-z0-9_.]+\/[A-Za-z0-9_.$]+)\s/,
@@ -73,10 +73,10 @@ async function foregroundComponent(
 async function packagePid(
   serial: string,
   packageName: string,
-  runExec: typeof execText,
+  deps: AdbDeps,
 ): Promise<number | null> {
   try {
-    const [first] = await packagePids(serial, packageName, {}, runExec);
+    const [first] = await packagePids(serial, packageName, deps);
     return first ? Number(first) : null;
   } catch {
     return null;
@@ -86,14 +86,14 @@ async function packagePid(
 async function packageDetails(
   serial: string,
   packageName: string,
-  runExec: typeof execText,
+  deps: AdbDeps,
 ) {
   try {
     const dump = await adbShell(
       serial,
       ["dumpsys", "package", packageName],
       5_000,
-      runExec,
+      deps,
     );
     const versionName = dump.match(/versionName=([^\s]+)/)?.[1] ?? null;
     const versionCode = dump.match(/versionCode=(\d+)/)?.[1] ?? null;
@@ -110,9 +110,9 @@ async function packageDetails(
 
 export async function getForegroundApp(
   serial: string,
-  runExec: typeof execText = execText,
+  deps: AdbDeps = {},
 ): Promise<ForegroundApp> {
-  const component = await foregroundComponent(serial, runExec);
+  const component = await foregroundComponent(serial, deps);
   if (!component) {
     return {
       packageName: null,
@@ -125,8 +125,8 @@ export async function getForegroundApp(
     };
   }
   const [details, pid] = await Promise.all([
-    packageDetails(serial, component.packageName, runExec),
-    packagePid(serial, component.packageName, runExec),
+    packageDetails(serial, component.packageName, deps),
+    packagePid(serial, component.packageName, deps),
   ]);
   return {
     packageName: component.packageName,

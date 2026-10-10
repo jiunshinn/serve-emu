@@ -49,7 +49,8 @@ describe("staged app management uploads", () => {
     };
 
     expect(
-      await installApk("device-a", upload(), controller.signal, {
+      await installApk("device-a", upload(), {
+        signal: controller.signal,
         execText: run,
       }),
     ).toEqual({ ok: true, output: "Success" });
@@ -75,7 +76,7 @@ describe("staged app management uploads", () => {
   test("rejects a non-APK filename before invoking adb", async () => {
     let invoked = false;
     await expect(
-      installApk("device-a", upload({ filename: "sample.zip" }), undefined, {
+      installApk("device-a", upload({ filename: "sample.zip" }), {
         execText: async () => {
           invoked = true;
           return result();
@@ -96,7 +97,7 @@ describe("staged app management uploads", () => {
       mediaType: "image/jpeg",
     });
 
-    const imported = await importMediaFile("old-device", file, undefined, {
+    const imported = await importMediaFile("old-device", file, {
       execText: run,
       uploadId: () => "fixed",
     });
@@ -141,9 +142,7 @@ describe("staged app management uploads", () => {
     try {
       await importMediaFile(
         "old-device",
-        upload({ filename: "clip.mp4", mediaType: "video/mp4" }),
-        undefined,
-        { execText: run, uploadId: () => "failed" },
+        upload({ filename: "clip.mp4", mediaType: "video/mp4" }), { execText: run, uploadId: () => "failed" },
       );
     } catch (cause) {
       error = cause;
@@ -165,9 +164,7 @@ describe("staged app management uploads", () => {
       const calls: ExecCall[] = [];
       await importMediaFile(
         "device-a",
-        upload({ filename, mediaType: "application/octet-stream" }),
-        undefined,
-        {
+        upload({ filename, mediaType: "application/octet-stream" }), {
           uploadId: () => "safe",
           execText: async (cmd, args, opts) => {
             calls.push({ cmd, args, opts });
@@ -192,9 +189,7 @@ describe("staged app management uploads", () => {
     let calls = 0;
     const importing = importMediaFile(
       "device-a",
-      upload({ filename: "large.bin" }),
-      undefined,
-      {
+      upload({ filename: "large.bin" }), {
         uploadId: () => "cleanup",
         execText: async () => {
           calls++;
@@ -232,7 +227,8 @@ describe("staged app management uploads", () => {
     controller.abort(cancelled);
     let invoked = false;
     await expect(
-      installApk("device-a", upload(), controller.signal, {
+      installApk("device-a", upload(), {
+        signal: controller.signal,
         execText: async () => {
           invoked = true;
           return result();
@@ -241,7 +237,7 @@ describe("staged app management uploads", () => {
     ).rejects.toBe(cancelled);
     expect(invoked).toBe(false);
 
-    const timeout = installApk("device-a", upload(), undefined, {
+    const timeout = installApk("device-a", upload(), {
       execText: async () =>
         result({
           status: null,

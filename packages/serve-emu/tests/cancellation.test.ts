@@ -53,14 +53,12 @@ describe("generation cancellation", () => {
     await expect(
       setEmulatorLocationAsync(
         "emulator-5554",
-        { latitude: 51.5, longitude: -0.1 },
-        controller.signal,
-        record("execText") as never,
+        { latitude: 51.5, longitude: -0.1 }, { signal: controller.signal, execText: record("execText") as never },
       ),
     ).rejects.toBe(reason);
     expect(commands).toEqual([]);
     await expect(
-      getAccessibilitySnapshot("not-a-device", controller.signal),
+      getAccessibilitySnapshot("not-a-device", { signal: controller.signal }),
     ).rejects.toBe(reason);
   });
 });

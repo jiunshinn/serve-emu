@@ -16,7 +16,7 @@ export type ApiDependencies = {
     operation: (captured: DeviceContext) => Promise<T>,
   ) => Promise<T>;
   listDevices: (
-    runExec?: typeof import("../exec.ts").execText,
+    deps?: import("../adb-command.ts").AdbDeps,
   ) => Promise<import("../shared/api-contracts.ts").Device[]>;
   /** Bound to the request, so failures are logged with its method and path. */
   errorResponse: (err: unknown, fallback?: ApiErrorFallback) => Response;
@@ -51,7 +51,7 @@ export type ApiDependencies = {
   stopCurrentSession: (context: DeviceContext, reason: string) => Promise<void>;
   killEmulator: (
     serial: string,
-    runExec?: typeof import("../exec.ts").execText,
+    deps?: import("../adb-command.ts").AdbDeps,
   ) => Promise<void>;
   runForContext: <T>(
     context: DeviceContext,

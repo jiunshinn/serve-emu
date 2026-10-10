@@ -111,8 +111,7 @@ describe("emulator discovery", () => {
         { serial: "emulator-5554", state: "device" },
         { serial: "physical-1", state: "device" },
         { serial: "emulator-5556", state: "offline" },
-      ],
-      runExec,
+      ], { execText: runExec },
     );
 
     expect(running).toEqual([

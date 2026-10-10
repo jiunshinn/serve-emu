@@ -3,12 +3,14 @@ import {
   adbCommandFailure,
   adbOperation,
   adbSucceeded,
+  runAdb,
+  throwIfAdbAborted,
+  type AdbDeps,
 } from "./adb-command.ts";
 import {
   CommandFailureError,
   type CommandFailureCode,
 } from "./command-failure.ts";
-import { execText } from "./exec.ts";
 import { shellQuote } from "./shell-quote.ts";
 import type {
   AppActionResponse,
@@ -27,8 +29,7 @@ export type LocalUploadFile = {
 
 export type AppManagementErrorCode = Exclude<CommandFailureCode, "emulator-failed">;
 
-export type AppManagementDependencies = {
-  execText?: typeof execText;
+export type AppManagementDependencies = AdbDeps & {
   uploadId?: () => string;
 };
 
@@ -69,25 +70,17 @@ function output(stdout: string, stderr: string): string {
 async function adb(
   serial: string,
   args: string[],
-  timeout = 30_000,
-  signal?: AbortSignal,
-  runExec: typeof execText = execText,
+  timeout: number,
+  deps: AdbDeps,
 ): Promise<AppActionResult> {
-  if (signal?.aborted) {
-    throw signal.reason instanceof Error
-      ? signal.reason
-      : new DOMException("The operation was aborted", "AbortError");
-  }
-  const result = await runExec("adb", ["-s", serial, ...args], {
+  throwIfAdbAborted(deps.signal, "The operation was aborted");
+  const result = await runAdb(serial, args, {
     timeout,
-    signal,
+    signal: deps.signal,
     lane: "background",
+    execText: deps.execText,
   });
-  if (signal?.aborted) {
-    throw signal.reason instanceof Error
-      ? signal.reason
-      : new DOMException("The operation was aborted", "AbortError");
-  }
+  throwIfAdbAborted(deps.signal, "The operation was aborted");
   const text = output(result.stdout, result.stderr);
   if (!adbSucceeded(result)) {
     const failure = adbCommandFailure(adbOperation(args), result);
@@ -125,19 +118,12 @@ export function permissionName(value: unknown): string {
 export async function installApk(
   serial: string,
   file: LocalUploadFile,
-  signal?: AbortSignal,
   dependencies: AppManagementDependencies = {},
 ): Promise<AppActionResult> {
   if (!file.filename.toLowerCase().endsWith(".apk")) {
     throw new Error("APK file must end with .apk");
   }
-  return adb(
-    serial,
-    ["install", "-r", file.path],
-    120_000,
-    signal,
-    dependencies.execText,
-  );
+  return adb(serial, ["install", "-r", file.path], 120_000, dependencies);
 }
 
 function safeFileName(name: string, fallback: string): string {
@@ -157,7 +143,6 @@ function mediaKind(file: LocalUploadFile): FileImportResult["kind"] {
 export async function importMediaFile(
   serial: string,
   file: LocalUploadFile,
-  signal?: AbortSignal,
   dependencies: AppManagementDependencies = {},
 ): Promise<FileImportResult> {
   const uploadId =
@@ -168,7 +153,6 @@ export async function importMediaFile(
     kind === "image" ? "/sdcard/Pictures" : kind === "video" ? "/sdcard/Movies" : "/sdcard/Download";
   const remotePath = `${remoteDir}/${filename}`;
   const partialPath = `${remoteDir}/.serve-emu-${uploadId}-${filename}.part`;
-  const runExec = dependencies.execText;
   let committed = false;
   let operationFailure: unknown;
   try {
@@ -176,22 +160,14 @@ export async function importMediaFile(
       serial,
       ["shell", "mkdir", "-p", shellQuote(remoteDir)],
       30_000,
-      signal,
-      runExec,
+      dependencies,
     );
-    await adb(
-      serial,
-      ["push", file.path, partialPath],
-      120_000,
-      signal,
-      runExec,
-    );
+    await adb(serial, ["push", file.path, partialPath], 120_000, dependencies);
     await adb(
       serial,
       ["shell", "mv", "-f", shellQuote(partialPath), shellQuote(remotePath)],
       30_000,
-      signal,
-      runExec,
+      dependencies,
     );
     committed = true;
     await adb(serial, [
@@ -202,7 +178,7 @@ export async function importMediaFile(
       "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
       "-d",
       shellQuote(`file://${remotePath}`),
-    ], 30_000, signal, runExec);
+    ], 30_000, dependencies);
     return {
       ok: true,
       output: `Imported ${file.filename} to ${remotePath}`,
@@ -215,12 +191,13 @@ export async function importMediaFile(
   } finally {
     if (!committed) {
       try {
+        // Without the call's signal: an aborted import still removes its
+        // partial file.
         await adb(
           serial,
           ["shell", "rm", "-f", shellQuote(partialPath)],
           5_000,
-          undefined,
-          runExec,
+          { ...dependencies, signal: undefined },
         );
       } catch (cleanupError) {
         throw new AppManagementError(
@@ -253,8 +230,7 @@ export function launchApp(
       serial,
       ["shell", "am", "start", "-n", shellQuote(component)],
       30_000,
-      undefined,
-      dependencies.execText,
+      dependencies,
     );
   }
   return adb(
@@ -269,8 +245,7 @@ export function launchApp(
       "1",
     ],
     30_000,
-    undefined,
-    dependencies.execText,
+    dependencies,
   );
 }
 
@@ -283,8 +258,7 @@ export function clearAppData(
     serial,
     ["shell", "pm", "clear", shellQuote(packageName(packageNameValue))],
     30_000,
-    undefined,
-    dependencies.execText,
+    dependencies,
   );
 }
 
@@ -297,8 +271,7 @@ export function forceStopApp(
     serial,
     ["shell", "am", "force-stop", shellQuote(packageName(packageNameValue))],
     30_000,
-    undefined,
-    dependencies.execText,
+    dependencies,
   );
 }
 
@@ -318,7 +291,6 @@ export function grantPermission(
       shellQuote(permissionName(permissionValue)),
     ],
     30_000,
-    undefined,
-    dependencies.execText,
+    dependencies,
   );
 }

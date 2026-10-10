@@ -10,7 +10,9 @@ import {
 } from "./command-failure.ts";
 import {
   ExecError,
+  execBuffer,
   execText,
+  type ExecLane,
   type ExecOpts,
   type ExecResult,
 } from "./exec.ts";
@@ -33,6 +35,76 @@ export function runAdb(
   { execText: run = execText, ...opts }: RunAdbOptions = {},
 ): Promise<ExecResult<string>> {
   return run("adb", serial === null ? [...args] : ["-s", serial, ...args], opts);
+}
+
+/**
+ * The one way modules that run adb take their dependencies: a trailing object
+ * with the executors (tests substitute fakes) and the call's cancellation
+ * signal, usually the request's or the device session's.
+ */
+export type AdbDeps = {
+  execText?: typeof execText;
+  execBuffer?: typeof execBuffer;
+  signal?: AbortSignal;
+};
+
+/** A short-lived adb command's bounds and its name in errors. */
+export type AdbCommand = {
+  /** Names the command in errors; must not contain user input. */
+  operation: string;
+  timeout: number;
+  maxBuffer?: number;
+  lane?: ExecLane;
+};
+
+/**
+ * Runs a short-lived adb command and returns its stdout. A failure throws
+ * {@link adbCommandFailure}, classified and named by `command.operation`.
+ */
+export async function adbText(
+  serial: string | null,
+  args: readonly string[],
+  command: AdbCommand,
+  deps: AdbDeps = {},
+): Promise<string> {
+  const result = await runAdb(serial, args, {
+    timeout: command.timeout,
+    maxBuffer: command.maxBuffer,
+    lane: command.lane,
+    signal: deps.signal,
+    execText: deps.execText,
+  });
+  if (!adbSucceeded(result)) throw adbCommandFailure(command.operation, result);
+  return result.stdout;
+}
+
+/** {@link adbText} for binary output, such as `exec-out screencap -p`. */
+export async function adbBuffer(
+  serial: string,
+  args: readonly string[],
+  command: AdbCommand,
+  deps: AdbDeps = {},
+): Promise<Buffer> {
+  const run = deps.execBuffer ?? execBuffer;
+  const result = await run("adb", ["-s", serial, ...args], {
+    timeout: command.timeout,
+    maxBuffer: command.maxBuffer,
+    lane: command.lane,
+    signal: deps.signal,
+  });
+  if (!adbSucceeded(result)) throw adbCommandFailure(command.operation, result);
+  return result.stdout;
+}
+
+/**
+ * Throws the signal's reason when the call was cancelled, or an AbortError
+ * with `message` when the reason is not an Error.
+ */
+export function throwIfAdbAborted(signal: AbortSignal | undefined, message: string): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error
+    ? signal.reason
+    : new DOMException(message, "AbortError");
 }
 
 export type AdbChild = ChildProcessByStdio<null, Readable, Readable>;

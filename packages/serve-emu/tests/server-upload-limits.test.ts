@@ -468,7 +468,7 @@ describe("server request and upload limits", () => {
           await cleanupGate.promise;
           events.push("cleanup-done");
         }),
-      installApk: async (serial, _file, signal) => {
+      installApk: async (serial, _file, { signal } = {}) => {
         actionSerial = serial;
         adbStarted = true;
         return await new Promise((_resolve, reject) => {
@@ -547,7 +547,7 @@ describe("server request and upload limits", () => {
         stagedFile("aborted.apk", async () => {
           cleanupCalls++;
         }),
-      installApk: async (_serial, _file, signal) => {
+      installApk: async (_serial, _file, { signal } = {}) => {
         actionStarted = true;
         return await new Promise((_resolve, reject) => {
           const abort = () => reject(signal?.reason);
@@ -580,7 +580,7 @@ describe("server request and upload limits", () => {
         stagedFile("cleanup-failure.apk", async () => {
           throw new Error("temporary directory is still present");
         }),
-      installApk: async (_serial, _file, signal) => {
+      installApk: async (_serial, _file, { signal } = {}) => {
         actionStarted = true;
         return await new Promise((_resolve, reject) => {
           const abort = () => reject(signal?.reason);
@@ -609,7 +609,7 @@ describe("server request and upload limits", () => {
     let actionStarted = false;
     const harness = await createHarness({}, {
       stageMultipartUpload: async () => stagedFile("cleanup-failure.jpg"),
-      importMediaFile: async (_serial, _file, signal) => {
+      importMediaFile: async (_serial, _file, { signal } = {}) => {
         actionStarted = true;
         await new Promise<void>((resolve) => {
           if (signal?.aborted) resolve();
@@ -712,7 +712,7 @@ describe("server request and upload limits", () => {
           cleanupStarted = true;
           await cleanupGate.promise;
         }),
-      installApk: async (_serial, _file, signal) => {
+      installApk: async (_serial, _file, { signal } = {}) => {
         actionStarted = true;
         return await new Promise((_resolve, reject) => {
           const abort = () => reject(signal?.reason);

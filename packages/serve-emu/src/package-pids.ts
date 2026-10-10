@@ -1,4 +1,5 @@
-import { execText, type ExecOpts } from "./exec.ts";
+import { runAdb, type AdbDeps } from "./adb-command.ts";
+import type { ExecLane } from "./exec.ts";
 import { shellQuote } from "./shell-quote.ts";
 
 export const PACKAGE_PID_LOOKUP_TIMEOUT_MS = 2_000;
@@ -25,19 +26,16 @@ export class PackagePidLookupError extends Error {
 export async function packagePids(
   serial: string,
   packageName: string,
-  options: Pick<ExecOpts, "signal" | "lane"> = {},
-  runExec: typeof execText = execText,
+  deps: AdbDeps & { lane?: ExecLane } = {},
 ): Promise<string[]> {
   if (!PROCESS_NAME_RE.test(packageName)) return [];
-  const result = await runExec(
-    "adb",
-    ["-s", serial, "shell", "pidof", shellQuote(packageName)],
-    {
-      timeout: PACKAGE_PID_LOOKUP_TIMEOUT_MS,
-      maxBuffer: PACKAGE_PID_LOOKUP_MAX_OUTPUT_BYTES,
-      ...options,
-    },
-  );
+  const result = await runAdb(serial, ["shell", "pidof", shellQuote(packageName)], {
+    timeout: PACKAGE_PID_LOOKUP_TIMEOUT_MS,
+    maxBuffer: PACKAGE_PID_LOOKUP_MAX_OUTPUT_BYTES,
+    lane: deps.lane,
+    signal: deps.signal,
+    execText: deps.execText,
+  });
   if (result.error) {
     throw new PackagePidLookupError(`pidof ${packageName} failed: ${result.error.message}`, {
       cause: result.error,

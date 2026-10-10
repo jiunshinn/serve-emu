@@ -29,8 +29,7 @@ describe("setEmulatorLocationAsync", () => {
         altitude: 15,
         satellites: 8,
         velocity: 1.25,
-      },
-      runExec,
+      }, { execText: runExec },
     );
 
     expect(calls).toEqual([
@@ -69,8 +68,7 @@ describe("setEmulatorLocationAsync", () => {
     await expect(
       setEmulatorLocationAsync(
         "emulator-5554",
-        { latitude: 0, longitude: 0 },
-        timedOut,
+        { latitude: 0, longitude: 0 }, { execText: timedOut },
       ),
     ).rejects.toThrow("adb emu geo fix timed out");
 
@@ -85,8 +83,7 @@ describe("setEmulatorLocationAsync", () => {
     await expect(
       setEmulatorLocationAsync(
         "emulator-5554",
-        { latitude: 0, longitude: 0 },
-        rejected,
+        { latitude: 0, longitude: 0 }, { execText: rejected },
       ),
     ).rejects.toThrow("adb emu geo fix failed: KO: bad coordinates");
   });

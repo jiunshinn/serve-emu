@@ -3,7 +3,12 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { listAllDevices } from "./adb.ts";
-import { adbCommandFailure } from "./adb-command.ts";
+import {
+  adbCommandFailure,
+  adbSucceeded,
+  runAdb,
+  type AdbDeps,
+} from "./adb-command.ts";
 import { CommandFailureError } from "./command-failure.ts";
 import type { Device } from "./shared/api-contracts.ts";
 import { execText, type ExecResult } from "./exec.ts";
@@ -350,7 +355,7 @@ async function assertPortFree(
     return;
   }
   const owner = used.has(port)
-    ? await runningAvdName(`emulator-${port}`, dependencies.execText)
+    ? await runningAvdName(`emulator-${port}`, dependencies)
     : null;
   throw new Error(
     `--emulator-port ${port} is already in use by emulator-${port}` +
@@ -368,9 +373,13 @@ function validateEmulatorPort(port: number): void {
 function adb(
   serial: string,
   args: string[],
-  runExec: typeof execText = execText,
+  deps: AdbDeps,
 ): Promise<ExecResult<string>> {
-  return runExec("adb", ["-s", serial, ...args], { timeout: 5_000 });
+  return runAdb(serial, args, {
+    timeout: 5_000,
+    signal: deps.signal,
+    execText: deps.execText,
+  });
 }
 
 function parseEmuAvdName(stdout: string): string | null {
@@ -384,10 +393,10 @@ function parseEmuAvdName(stdout: string): string | null {
 
 async function runningAvdName(
   serial: string,
-  runExec: typeof execText = execText,
+  deps: AdbDeps = {},
 ): Promise<string | null> {
-  const fromConsole = await adb(serial, ["emu", "avd", "name"], runExec);
-  if (execSucceeded(fromConsole)) {
+  const fromConsole = await adb(serial, ["emu", "avd", "name"], deps);
+  if (adbSucceeded(fromConsole)) {
     const name = parseEmuAvdName(fromConsole.stdout);
     if (name) return name;
   }
@@ -395,9 +404,9 @@ async function runningAvdName(
   const fromProp = await adb(
     serial,
     ["shell", "getprop", "ro.boot.qemu.avd_name"],
-    runExec,
+    deps,
   );
-  if (execSucceeded(fromProp)) {
+  if (adbSucceeded(fromProp)) {
     const name = fromProp.stdout.trim();
     if (name) return name;
   }
@@ -407,14 +416,14 @@ async function runningAvdName(
 
 export async function resolveRunningAvds(
   devices: readonly Device[],
-  runExec: typeof execText = execText,
+  deps: AdbDeps = {},
 ): Promise<RunningAvd[]> {
   const emulators = devices.filter((device) =>
     /^emulator-\d+$/.test(device.serial),
   );
   const named = await Promise.all(
     emulators.map(async (device) => {
-      const avd = await runningAvdName(device.serial, runExec);
+      const avd = await runningAvdName(device.serial, deps);
       return avd ? { serial: device.serial, avd, state: device.state } : null;
     }),
   );
@@ -426,7 +435,7 @@ export async function listRunningAvds(
   dependencies: Pick<EmulatorRuntimeDependencies, "execText" | "listAllDevices"> = {},
 ): Promise<RunningAvd[]> {
   const snapshot = devices ?? (await (dependencies.listAllDevices ?? listAllDevices)());
-  return resolveRunningAvds(snapshot, dependencies.execText);
+  return resolveRunningAvds(snapshot, dependencies);
 }
 
 async function findRunningAvd(
@@ -440,12 +449,10 @@ async function findRunningAvd(
 
 export async function stopEmulator(
   serial: string,
-  runExec: typeof execText = execText,
+  deps: AdbDeps = {},
 ): Promise<void> {
-  const r = await adb(serial, ["emu", "kill"], runExec);
-  if (!execSucceeded(r)) {
-    throw adbCommandFailure("adb emu kill", r);
-  }
+  const r = await adb(serial, ["emu", "kill"], deps);
+  if (!adbSucceeded(r)) throw adbCommandFailure("adb emu kill", r);
 }
 
 async function waitForEmulatorExit(
@@ -487,7 +494,6 @@ async function waitForBoot(
 ): Promise<void> {
   const now = dependencies.now ?? Date.now;
   const pause = dependencies.sleep ?? sleep;
-  const runExec = dependencies.execText ?? execText;
   const startedAt = now();
   let nameUnreadable = false;
   while (now() - startedAt < timeoutMs) {
@@ -499,19 +505,19 @@ async function waitForBoot(
       );
     }
 
-    const state = await adb(serial, ["get-state"], runExec);
-    if (execSucceeded(state) && state.stdout.trim() === "device") {
+    const state = await adb(serial, ["get-state"], dependencies);
+    if (adbSucceeded(state) && state.stdout.trim() === "device") {
       const boot = await adb(
         serial,
         ["shell", "getprop", "sys.boot_completed"],
-        runExec,
+        dependencies,
       );
-      if (execSucceeded(boot) && boot.stdout.trim() === "1") {
+      if (adbSucceeded(boot) && boot.stdout.trim() === "1") {
         // Another emulator that was already booted on this port also answers
         // here; only the requested AVD counts as ours. An unreadable name
         // (an adb timeout while the device settles) is not a verdict either
         // way, so keep polling until the boot timeout.
-        const running = await runningAvdName(serial, runExec);
+        const running = await runningAvdName(serial, dependencies);
         if (running === avd) return;
         if (running !== null) throw new EmulatorIdentityError(serial, avd, running);
         nameUnreadable = true;
@@ -570,7 +576,7 @@ export async function startEmulator(
         stop: async () => {},
       };
     }
-    await stopEmulator(running.serial, runExec);
+    await stopEmulator(running.serial, dependencies);
     await waitForEmulatorExit(running.serial, 30_000, dependencies, opts.signal);
   }
 
@@ -595,7 +601,6 @@ async function launchOnPort(
   opts: StartEmulatorOpts,
   dependencies: EmulatorRuntimeDependencies,
 ): Promise<EmulatorLaunch> {
-  const runExec = dependencies.execText ?? execText;
   const args = [emulatorAvdArg(name), "-port", String(port)];
   if (opts.gpu) args.push("-gpu", opts.gpu);
   args.push(...camera);
@@ -628,7 +633,7 @@ async function launchOnPort(
       // An emulator that already exited freed its port, maybe to another AVD
       // that `emu kill` would reach; there is nothing left to stop.
       if (hasExited(proc)) return;
-      if (confirmed) await adb(serial, ["emu", "kill"], runExec).catch(() => {});
+      if (confirmed) await adb(serial, ["emu", "kill"], dependencies).catch(() => {});
       signalChild(proc, "SIGTERM");
       if (await exited(proc, STOP_GRACE_MS, dependencies)) return;
       signalChild(proc, "SIGKILL");

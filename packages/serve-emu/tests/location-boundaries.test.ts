@@ -67,7 +67,7 @@ describe("asynchronous emulator location failures", () => {
     }) as typeof execText;
 
     await expect(
-      setEmulatorLocationAsync("device-123", { latitude: 0, longitude: 0 }, runExec),
+      setEmulatorLocationAsync("device-123", { latitude: 0, longitude: 0 }, { execText: runExec }),
     ).rejects.toThrow("Android Emulator serials only");
     expect(calls).toBe(0);
   });
@@ -86,8 +86,7 @@ describe("asynchronous emulator location failures", () => {
     try {
       await setEmulatorLocationAsync(
         "emulator-5554",
-        { latitude: 1, longitude: 2 },
-        runExec,
+        { latitude: 1, longitude: 2 }, { execText: runExec },
       );
       throw new Error("expected location update to fail");
     } catch (error) {
@@ -114,9 +113,7 @@ describe("asynchronous emulator location failures", () => {
     await expect(
       setEmulatorLocationAsync(
         "emulator-5554",
-        { latitude: 1, longitude: 2 },
-        controller.signal,
-        runExec,
+        { latitude: 1, longitude: 2 }, { signal: controller.signal, execText: runExec },
       ),
     ).rejects.toThrow("location update aborted");
   });
