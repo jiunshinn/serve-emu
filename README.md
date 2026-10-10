@@ -157,6 +157,8 @@ How clients authenticate:
 - **Browser (bundled UI):** open the printed `?token=` URL once. The server exchanges the token for a `HttpOnly; SameSite=Strict` session cookie and redirects to a clean URL, so the secret is not kept in local storage or the address bar. Same-origin API, SSE, and WebSocket calls then carry the cookie automatically.
 - **Agents / CLI (`curl`, HTTP clients):** send `Authorization: Bearer <token>`, or append `?token=<token>` to the URL.
 
+Browsers decode the stream only in a [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts): `localhost`, `127.0.0.1`, or HTTPS. Over plain HTTP on a LAN address or another host name, the controls and API work but the video shows `WebCodecs unsupported`; put a TLS-terminating proxy in front, or use an SSH tunnel to a local port.
+
 Requests without a valid token get `401`; WebSocket upgrades and state-changing requests from a mismatched `Origin`, and cross-site subresource requests, get `403` before any work is done. With a token, any host name is served: a rebound page has neither the secret nor the host-scoped cookie.
 
 **Unauthenticated LAN exposure.** `--host 0.0.0.0 --unsafe-no-auth` binds to all interfaces with no authentication. Anyone who can reach the port can control the device. Only use this on a trusted, isolated network; the CLI prints a warning at startup.
