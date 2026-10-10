@@ -259,6 +259,15 @@ not produce frames become `stream stalled`. Late events from older generations
 are ignored. Input sent while the video WebSocket is disconnected is dropped
 instead of being replayed against a later device session.
 
+Each display refresh draws one decoded frame. While the player keeps up (at
+most two frames waiting, the older decoded less than 1.5 refresh intervals
+ago), it draws the older one and keeps the next for the following refresh,
+so two frames that finish decoding close together are both shown. A deeper
+queue or an older frame means the player fell behind, after a stall or a
+burst; it then jumps to the newest frame and drops the rest, so latency
+recovers at once. The status bar's tooltip counts the frames dropped this
+way as `skipped`.
+
 ## HTTP API
 
 All examples assume the default port:

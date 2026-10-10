@@ -56,6 +56,61 @@ export function admitDuringRecovery(input: {
   return { action: "decode", endsDrop: false };
 }
 
+/** The display interval assumed until vsync callbacks have been observed. */
+const DEFAULT_VSYNC_MS = 1000 / 60;
+const VSYNC_WINDOW = 32;
+
+/**
+ * Estimates the display's frame interval from animation-frame timestamps.
+ * Callbacks are requested only when a frame is waiting, so a gap can span
+ * several vsyncs; the shortest recent gap is the interval itself.
+ */
+export class VsyncEstimator {
+  #last: number | null = null;
+  #gaps: number[] = [];
+
+  observe(timestampMs: number): void {
+    if (!Number.isFinite(timestampMs)) return;
+    if (this.#last !== null) {
+      const gap = timestampMs - this.#last;
+      // 4–50 ms covers 240 Hz through 20 Hz; anything else is a pause.
+      if (gap >= 4 && gap <= 50) {
+        this.#gaps.push(gap);
+        if (this.#gaps.length > VSYNC_WINDOW) this.#gaps.shift();
+      }
+    }
+    this.#last = timestampMs;
+  }
+
+  get intervalMs(): number {
+    return this.#gaps.length ? Math.min(...this.#gaps) : DEFAULT_VSYNC_MS;
+  }
+}
+
+/**
+ * Adaptive pacing (#75): which decoded frame a vsync shows.
+ *
+ * Two frames that finish decoding within one display interval would cost
+ * the older one under newest-only pacing (about 6% of a steady 60 fps
+ * stream on a 60 Hz display). While the player keeps up (no more than two
+ * frames queued, and the oldest decoded under 1.5 intervals ago), it shows
+ * the oldest and keeps the next for the following vsync, which adds at most
+ * one interval of latency. A deeper queue or an older frame means the
+ * player fell behind, after a stall or a burst: it skips to the newest, as
+ * before, so latency recovers at once.
+ */
+export function presentOldestFrame(input: {
+  queued: number;
+  oldestAgeMs: number | null;
+  vsyncMs: number;
+}): boolean {
+  return (
+    input.queued === 2 &&
+    input.oldestAgeMs !== null &&
+    input.oldestAgeMs < 1.5 * input.vsyncMs
+  );
+}
+
 export class StreamPerformance {
   #pending = new Map<number, number>();
   #decode = new Samples();
