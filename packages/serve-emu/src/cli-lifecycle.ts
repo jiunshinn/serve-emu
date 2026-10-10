@@ -2,6 +2,12 @@ import type { EmulatorLaunch } from "./emulator.ts";
 
 type StoppableServer = { stop(): Promise<void> };
 
+export type EmulatorExit = {
+  serial: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+};
+
 /**
  * What the CLI cleans up on SIGINT/SIGTERM or a failed start, including work
  * still in flight when the signal arrives: an `--avd` emulator that is still
@@ -22,6 +28,32 @@ export class CliLifecycle<Server extends StoppableServer> {
   trackEmulator(boot: Promise<EmulatorLaunch>): Promise<EmulatorLaunch> {
     this.#emulatorBoot = boot;
     return boot;
+  }
+
+  /**
+   * Calls `onExit` if the emulator this process launched exits on its own
+   * while `deviceSerial()` still names it: the server has nothing left to
+   * stream (#73). An exit during `stop()`, after the server moved to another
+   * device, or after a client stopped that device on purpose is ignored. A
+   * launch that attached to a running emulator has no child to watch.
+   */
+  watchEmulator(
+    launch: EmulatorLaunch,
+    deviceSerial: () => string | null,
+    onExit: (exit: EmulatorExit) => void,
+  ): void {
+    const proc = launch.ownsProcess ? launch.proc : null;
+    if (!proc) return;
+    const exited = (code: number | null, signal: NodeJS.Signals | null) => {
+      if (this.signal.aborted || deviceSerial() !== launch.serial) return;
+      onExit({ serial: launch.serial, code, signal });
+    };
+    // It may already have exited while the server was starting.
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      exited(proc.exitCode, proc.signalCode);
+    } else {
+      proc.once("exit", exited);
+    }
   }
 
   trackServer(startup: Promise<Server>): Promise<Server> {

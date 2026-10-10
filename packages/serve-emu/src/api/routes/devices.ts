@@ -197,7 +197,9 @@ export function deviceRoutes(): ApiRoute<ApiDependencies>[] {
           if (!/^emulator-\d+$/.test(serial))
             throw new Error(`${serial} is not an emulator`);
           if (serial === requestContext.serial) {
-            await sessions.stop(requestContext, "current emulator stopped");
+            await sessions.stop(requestContext, "current emulator stopped", {
+              byClient: true,
+            });
           }
           await killEmulator(serial);
           sessions.assertPublished(requestContext);

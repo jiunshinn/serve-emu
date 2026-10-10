@@ -46,6 +46,8 @@ type ActiveDeviceSessionOpts<TClient extends SessionClient> = {
 export type DisposeDeviceSessionOpts = {
   status?: Exclude<SessionStatus, "streaming">;
   clientCode?: number;
+  /** A client stopped this device on purpose (POST /api/avds/stop). */
+  byClient?: boolean;
 };
 
 /**
@@ -86,6 +88,8 @@ export class ActiveDeviceSession<
   lastVideoResetAt: string | null = null;
   lastVideoResetReason: string | null = null;
   lastVideoResetMs = 0;
+  /** See {@link DisposeDeviceSessionOpts.byClient}. */
+  stoppedByClient = false;
   lastLocation: (GeoFix & { appliedAt: string }) | null = null;
   cachedConfig: Buffer | null = null;
 
@@ -220,6 +224,9 @@ export class ActiveDeviceSession<
 
   /** Idempotent; every owner receives the exact same cleanup promise. */
   dispose(reason: string, opts: DisposeDeviceSessionOpts = {}): Promise<void> {
+    // Recorded even on a session that already ended: the client still chose
+    // to stop the device, so the CLI keeps serving when its emulator exits.
+    if (opts.byClient) this.stoppedByClient = true;
     if (this.#disposeTask) return this.#disposeTask;
 
     let finishDispose!: () => void;
