@@ -3,6 +3,7 @@ import {
   DEFAULT_SESSION_PAGE_LIMIT,
   MAX_SESSION_PAGE_LIMIT,
   parseSessionPageQuery,
+  shouldRecordPayload,
 } from "../src/session-api.ts";
 
 function query(value: string): URLSearchParams {
@@ -38,5 +39,14 @@ describe("parseSessionPageQuery", () => {
         parseSessionPageQuery(query(`before=${value}`)),
       ).toThrow();
     }
+  });
+
+  test("records unless the payload opts out with record:false", () => {
+    expect(shouldRecordPayload({ x: 0.5 })).toBe(true);
+    expect(shouldRecordPayload({ record: true })).toBe(true);
+    expect(shouldRecordPayload({ record: false })).toBe(false);
+    expect(shouldRecordPayload(null)).toBe(true);
+    expect(shouldRecordPayload([])).toBe(true);
+    expect(shouldRecordPayload("text")).toBe(true);
   });
 });

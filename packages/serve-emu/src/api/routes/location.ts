@@ -2,6 +2,7 @@ import { SessionChangedError } from "../../device-session-context.ts";
 import { parseGeoFix } from "../../location.ts";
 import { routePlaybackErrorResponse } from "../../route-playback-api.ts";
 import { parseRoutePlaybackRequest } from "../../route-playback.ts";
+import { shouldRecordPayload } from "../../session-api.ts";
 import type { ApiDependencies } from "../dependencies.ts";
 import type { ApiRoute } from "../router.ts";
 
@@ -32,13 +33,16 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
           errorResponse,
         } = deps;
         try {
-          const fix = parseGeoFix(
-            await readJsonBody(req, MAX_JSON_BODY_BYTES, requestContext),
+          const payload = await readJsonBody(
+            req,
+            MAX_JSON_BODY_BYTES,
+            requestContext,
           );
           const location = await applyLocation(
             requestContext,
-            fix,
+            parseGeoFix(payload),
             "rest:location",
+            shouldRecordPayload(payload),
           );
           return Response.json({ ok: true, location });
         } catch (err) {
@@ -92,12 +96,17 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
       method: "DELETE",
       path: "/api/route",
       handler: async ({ deps }) => {
-        const { requestContext, sessions } = deps;
-        sessions.assertCurrent(requestContext);
-        return Response.json({
-          ok: true,
-          route: requestContext.route.stop(),
-        });
+        const { requestContext, sessions, errorResponse } = deps;
+        try {
+          // A stale session is a 409 like the other route mutations, not a 500.
+          sessions.assertCurrent(requestContext);
+          return Response.json({
+            ok: true,
+            route: requestContext.route.stop(),
+          });
+        } catch (err) {
+          return errorResponse(err);
+        }
       },
     },
     {

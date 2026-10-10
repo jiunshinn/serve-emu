@@ -243,4 +243,49 @@ describe("production API routing", () => {
       errorLog.mockRestore();
     }
   });
+
+  test("POST /api/location honors record:false like every other action", async () => {
+    const h = await createHarness({}, { setLocation: async () => {} });
+    const post = (body: Record<string, unknown>) =>
+      response(
+        h.request("/api/location", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    expect((await post({ latitude: 37.5, longitude: 127, record: false })).status).toBe(200);
+    const unrecorded = await (await response(h.request("/api/session"))).json();
+    expect(unrecorded.session.eventCount).toBe(0);
+
+    expect((await post({ latitude: 37.6, longitude: 127.1 })).status).toBe(200);
+    const recorded = await (await response(h.request("/api/session"))).json();
+    expect(recorded.session.eventCount).toBe(1);
+    expect(recorded.events[0]).toMatchObject({
+      kind: "location",
+      location: { latitude: 37.6, longitude: 127.1 },
+    });
+  });
+
+  test("route mutations on an ended session return 409, not 500", async () => {
+    const h = await createHarness();
+    h.session.endFrames();
+    for (let turn = 0; turn < 20 && h.started.session !== null; turn++) {
+      await Promise.resolve();
+    }
+    expect(h.started.session).toBeNull();
+
+    const remove = await response(h.request("/api/route", { method: "DELETE" }));
+    expect(remove.status).toBe(409);
+    expect(await remove.json()).toMatchObject({ ok: false, code: "session_changed" });
+
+    const control = await response(
+      h.request("/api/route/control", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      }),
+    );
+    expect(control.status).toBe(409);
+  });
 });
