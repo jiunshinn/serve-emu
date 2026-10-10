@@ -459,15 +459,16 @@ describe("server HTTP and WebSocket boundaries", () => {
     // must not see (or remove) this fixture, and it must never reach the
     // published dist/ui.
     const base = await mkdtemp(join(tmpdir(), "serve-emu-ui-"));
-    const uiDir = join(base, "ui");
-    await mkdir(uiDir);
-    // A file next to the UI directory that traversal must never reach.
-    await writeFile(join(base, "secret.txt"), "outside the UI\n", "utf8");
-    const harness = await createHarness({}, { uiDir });
-    const fixtureName = "__server-request-gates-fixture__.txt";
-    await writeFile(join(uiDir, fixtureName), "static fixture\n", "utf8");
-    await writeFile(join(uiDir, "index.html"), "<!doctype html>fixture ui", "utf8");
     try {
+      const uiDir = join(base, "ui");
+      await mkdir(uiDir);
+      // A file next to the UI directory that traversal must never reach.
+      await writeFile(join(base, "secret.txt"), "outside the UI\n", "utf8");
+      const harness = await createHarness({}, { uiDir });
+      const fixtureName = "__server-request-gates-fixture__.txt";
+      await writeFile(join(uiDir, fixtureName), "static fixture\n", "utf8");
+      await writeFile(join(uiDir, "index.html"), "<!doctype html>fixture ui", "utf8");
+
       const index = await response(harness.request("/"));
       expect(index.status).toBe(200);
       expect(await index.text()).toBe("<!doctype html>fixture ui");
@@ -482,6 +483,10 @@ describe("server HTTP and WebSocket boundaries", () => {
       expect(missing.status).toBe(404);
       expect(await missing.text()).toBe("not found");
 
+      // URL parsing already folds `/../` and `/%2e%2e/` into `/secret.txt`,
+      // so those only prove the file stays outside the UI directory. The
+      // encoded-slash form reaches the handler as-is and guards against a
+      // future change that decodes the path before the `..` check.
       for (const traversal of ["/%2e%2e%2fsecret.txt", "/../secret.txt", "/%2e%2e/secret.txt"]) {
         const escaped = await response(harness.request(traversal));
         expect(escaped.status, traversal).toBe(404);
