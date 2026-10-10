@@ -9,8 +9,7 @@ describe("setEmulatorLocationAsync", () => {
     await expect(
       setEmulatorLocationAsync(
         "emulator-5554",
-        { latitude: 51.5, longitude: -0.12 },
-        controller.signal,
+        { latitude: 51.5, longitude: -0.12 }, { signal: controller.signal },
       ),
     ).rejects.toMatchObject({ name: "AbortError" });
   });
@@ -20,9 +19,7 @@ describe("setEmulatorLocationAsync", () => {
     let observedSignal: AbortSignal | undefined;
     const update = setEmulatorLocationAsync(
       "emulator-5554",
-      { latitude: 51.5, longitude: -0.12 },
-      controller.signal,
-      (async (_cmd, _args, opts) => {
+      { latitude: 51.5, longitude: -0.12 }, { signal: controller.signal, execText: (async (_cmd, _args, opts) => {
         observedSignal = opts?.signal;
         await new Promise<void>((resolve) =>
           opts?.signal?.addEventListener("abort", () => resolve(), {
@@ -39,7 +36,7 @@ describe("setEmulatorLocationAsync", () => {
             cause: opts?.signal?.reason,
           }),
         };
-      }) as typeof import("../src/exec.ts").execText,
+      }) as typeof import("../src/exec.ts").execText },
     );
 
     expect(observedSignal).toBe(controller.signal);

@@ -164,7 +164,7 @@ describe("emulator resolution and listing", () => {
       { serial: "physical-1", state: "device" },
       { serial: "emulator-5554", state: "offline" },
     ];
-    await expect(resolveRunningAvds(devices, runExec)).resolves.toEqual([]);
+    await expect(resolveRunningAvds(devices, { execText: runExec })).resolves.toEqual([]);
     await expect(
       listRunningAvds(undefined, {
         execText: runExec,
@@ -769,11 +769,11 @@ describe("emulator lifecycle", () => {
 
   test("reports stop failures", async () => {
     const successful = (async () => result("")) as typeof execText;
-    await expect(stopEmulator("emulator-5554", successful)).resolves.toBeUndefined();
+    await expect(stopEmulator("emulator-5554", { execText: successful })).resolves.toBeUndefined();
 
     const failed = (async () =>
       result("", { status: 1, stderr: "console unavailable" })) as typeof execText;
-    await expect(stopEmulator("emulator-5554", failed)).rejects.toThrow(
+    await expect(stopEmulator("emulator-5554", { execText: failed })).rejects.toThrow(
       "adb emu kill failed: console unavailable",
     );
   });

@@ -5,13 +5,15 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { SCRCPY_VERSION, ensureScrcpyServer } from "../scripts/fetch-scrcpy.ts";
 import {
+  adbCommandFailure,
+  adbOperation,
   isConnectionClosed,
   isDeviceUnavailable,
   runAdb,
   spawnAdb,
   terminateChild,
 } from "./adb-command.ts";
-import { adbOperation, CommandFailureError } from "./command-failure.ts";
+import { CommandFailureError } from "./command-failure.ts";
 
 // Canonical scrcpy wire layouts and upgrade checklist: ../docs/protocol.md
 const DEVICE_JAR_CACHE_PATH =
@@ -284,17 +286,10 @@ function commandFailure(
   args: string[],
   result: AdbCommandResult,
 ): CommandFailureError {
-  const detail =
-    result.stderr?.trim() ||
-    result.stdout?.trim() ||
-    result.error?.message ||
-    (result.timedOut ? "timed out" : `status ${result.status}`);
-  const timedOut = result.timedOut === true;
-  return new CommandFailureError(
-    timedOut ? "adb-timeout" : "adb-failed",
-    `${adbOperation(args)} ${timedOut ? "timed out" : "failed"}`,
-    `adb -s ${serial} ${args.join(" ")}: ${detail}`,
-    { cause: result.error ?? undefined },
+  return adbCommandFailure(
+    adbOperation(args),
+    result,
+    `adb -s ${serial} ${args.join(" ")}`,
   );
 }
 
@@ -380,6 +375,10 @@ async function forwardAbstractSocket(
     }
   }
 
+  // A lost device fails every fixed port the same way: report it at once.
+  if (isDeviceUnavailable(dynamic)) {
+    throw commandFailure(serial, dynamicArgs, dynamic);
+  }
   let lastError =
     dynamic.stderr?.trim() ||
     dynamic.error?.message ||
@@ -401,6 +400,9 @@ async function forwardAbstractSocket(
       signal,
     );
     if (fixed.status === 0) return port;
+    if (isDeviceUnavailable(fixed)) {
+      throw commandFailure(serial, fixedArgs, fixed);
+    }
     lastError = fixed.stderr?.trim() || fixed.error?.message || lastError;
   }
   throw new CommandFailureError(

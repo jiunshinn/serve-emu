@@ -156,6 +156,8 @@ describe("LogcatHub", () => {
     expect(children[0]!.killSignals).toEqual(["SIGTERM"]);
 
     clock.runTimeouts();
+    // terminateChild escalates on the microtask after its grace timer fires.
+    await flushMicrotasks();
     expect(children[0]!.killSignals).toEqual(["SIGTERM", "SIGKILL"]);
     expect(hub.snapshot()).toMatchObject({
       childCount: 1,
@@ -360,6 +362,8 @@ describe("LogcatHub", () => {
     expect((await readEvent(reader)).event).toBe("close");
     expect((await reader.read()).done).toBe(true);
     children[0]!.close(null, "SIGTERM");
+    // The grace timer is cleared on the microtask after the child closes.
+    await flushMicrotasks();
     expect(clock.timeouts.size).toBe(0);
     expect(hub.snapshot().childCount).toBe(0);
 

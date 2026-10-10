@@ -16,7 +16,7 @@ import {
   grantPermission,
   launchApp,
 } from "./app-management.ts";
-import { execBuffer, execText, type ExecOpts } from "./exec.ts";
+import type { AdbDeps } from "./adb-command.ts";
 import type {
   AppActionResponse,
   FontScaleStatus,
@@ -50,42 +50,29 @@ export type DeviceService = {
   grantPermission(serial: string, packageName: string, permission: string, signal: AbortSignal): Promise<AppActionResponse>;
 };
 
-export type DeviceServiceRunners = {
-  execText?: typeof execText;
-  execBuffer?: typeof execBuffer;
-};
-
-/** An exec runner that adds `signal` to every command it runs. */
-function withSignal<Run extends typeof execText | typeof execBuffer>(
-  run: Run,
-  signal: AbortSignal,
-): Run {
-  return ((cmd: string, args: string[], opts: ExecOpts = {}) =>
-    run(cmd, args, { ...opts, signal })) as Run;
-}
+export type DeviceServiceRunners = Pick<AdbDeps, "execText" | "execBuffer">;
 
 export function createDeviceService(runners: DeviceServiceRunners = {}): DeviceService {
-  const text = runners.execText ?? execText;
-  const buffer = runners.execBuffer ?? execBuffer;
-  const textFor = (signal: AbortSignal) => withSignal(text, signal);
+  // Every command a call runs is cancelled by that call's signal.
+  const deps = (signal: AbortSignal): AdbDeps => ({ ...runners, signal });
   return {
-    screenshot: (serial, signal) => screencapPng(serial, withSignal(buffer, signal)),
-    foregroundApp: (serial, signal) => getForegroundApp(serial, textFor(signal)),
-    orientation: (serial, signal) => getUserRotation(serial, textFor(signal)),
-    setOrientation: (serial, mode, signal) => setUserRotation(serial, mode, textFor(signal)),
-    nightMode: (serial, signal) => getNightMode(serial, textFor(signal)),
-    setNightMode: (serial, mode, signal) => setNightMode(serial, mode, textFor(signal)),
-    fontScale: (serial, signal) => getFontScale(serial, textFor(signal)),
-    setFontScale: (serial, scale, signal) => setFontScale(serial, scale, textFor(signal)),
-    network: (serial, signal) => getNetworkStatus(serial, textFor(signal)),
-    setNetwork: (serial, enabled, signal) => setNetworkEnabled(serial, enabled, textFor(signal)),
+    screenshot: (serial, signal) => screencapPng(serial, deps(signal)),
+    foregroundApp: (serial, signal) => getForegroundApp(serial, deps(signal)),
+    orientation: (serial, signal) => getUserRotation(serial, deps(signal)),
+    setOrientation: (serial, mode, signal) => setUserRotation(serial, mode, deps(signal)),
+    nightMode: (serial, signal) => getNightMode(serial, deps(signal)),
+    setNightMode: (serial, mode, signal) => setNightMode(serial, mode, deps(signal)),
+    fontScale: (serial, signal) => getFontScale(serial, deps(signal)),
+    setFontScale: (serial, scale, signal) => setFontScale(serial, scale, deps(signal)),
+    network: (serial, signal) => getNetworkStatus(serial, deps(signal)),
+    setNetwork: (serial, enabled, signal) => setNetworkEnabled(serial, enabled, deps(signal)),
     launchApp: (serial, packageName, activity, signal) =>
-      launchApp(serial, packageName, activity, { execText: textFor(signal) }),
+      launchApp(serial, packageName, activity, deps(signal)),
     clearAppData: (serial, packageName, signal) =>
-      clearAppData(serial, packageName, { execText: textFor(signal) }),
+      clearAppData(serial, packageName, deps(signal)),
     forceStopApp: (serial, packageName, signal) =>
-      forceStopApp(serial, packageName, { execText: textFor(signal) }),
+      forceStopApp(serial, packageName, deps(signal)),
     grantPermission: (serial, packageName, permission, signal) =>
-      grantPermission(serial, packageName, permission, { execText: textFor(signal) }),
+      grantPermission(serial, packageName, permission, deps(signal)),
   };
 }

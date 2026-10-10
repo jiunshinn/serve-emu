@@ -607,8 +607,16 @@ describe("scrcpy async lifecycle", () => {
   ])("socket discovery fails fast when %s", async (_, socketPollResults) => {
     const harness = createHarness({ socketPollResults });
 
-    await expect(startWith(harness)).rejects.toThrow(
-      /^adb shell cat failed: adb -s device-test-serial shell cat \/proc\/net\/unix: (?:adb: device offline|error: closed)$/,
+    const error = await startWith(harness).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(error).toMatchObject({
+      code: "adb-device-unavailable",
+      publicMessage: "adb shell cat failed: the device is unavailable",
+    });
+    expect((error as Error).message).toMatch(
+      /^adb shell cat failed: the device is unavailable: adb -s device-test-serial shell cat \/proc\/net\/unix: (?:adb: device offline|error: closed)$/,
     );
     expect(harness.state.socketPollAttempt).toBe(socketPollResults.length);
     expect(harness.state.activeForwards.size).toBe(0);
@@ -676,7 +684,7 @@ describe("scrcpy async lifecycle", () => {
   test("a failed adb step names only its subcommand in the public message", async () => {
     const harness = createHarness({
       pushResult: failed(
-        "adb: error: failed to copy '/fake/scrcpy-server.jar': device offline",
+        "adb: error: failed to copy '/fake/scrcpy-server.jar': No space left on device",
       ),
     });
 
@@ -695,7 +703,7 @@ describe("scrcpy async lifecycle", () => {
       `adb push failed: adb -s ${SERIAL} push /fake/scrcpy-server.jar ` +
         "/data/local/tmp/serve-emu-scrcpy-server-v" +
         `${SCRCPY_VERSION}.jar-${"a".repeat(24)}.01234560.tmp: ` +
-        "adb: error: failed to copy '/fake/scrcpy-server.jar': device offline",
+        "adb: error: failed to copy '/fake/scrcpy-server.jar': No space left on device",
     );
     expect(harness.state.spawnCalls).toHaveLength(0);
   });
@@ -723,6 +731,32 @@ describe("scrcpy async lifecycle", () => {
       `adb -s ${SERIAL} push /fake/scrcpy-server.jar`,
     );
     expect((error as Error).message).toEndWith("timed out after 20ms");
+  });
+
+  test.each<[string, HarnessOptions, number]>([
+    ["the dynamic forward", { dynamicResult: failed("adb: device offline") }, 0],
+    [
+      "a fixed-port forward",
+      {
+        dynamicResult: failed("dynamic forwards unsupported"),
+        fixedResults: [failed("adb: error: device 'emulator-5554' not found")],
+      },
+      1,
+    ],
+  ])("a lost device during %s fails at once as unavailable", async (_, options, fixedAttempts) => {
+    const harness = createHarness(options);
+
+    const error = await startWith(harness).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-device-unavailable",
+      publicMessage: "adb forward failed: the device is unavailable",
+    });
+    expect(harness.state.fixedAttempt).toBe(fixedAttempts);
+    expect(harness.state.spawnCalls).toHaveLength(0);
   });
 
   test("fixed-port fallback always uses --no-rebind", async () => {

@@ -102,11 +102,16 @@ export function toApiError(
   }
   // adb or emulator failures, also as the cause of a route location update:
   // only the operation's public message, never the command's output. A timed
-  // out adb command is a 504; every other command failure is a 502.
+  // out adb command is a 504, a device adb cannot reach is a 503, and every
+  // other command failure is a 502.
   const failure = commandFailureOf(err);
   if (failure) {
     return api(
-      failure.code === "adb-timeout" ? "downstream_timeout" : "downstream_failure",
+      failure.code === "adb-timeout"
+        ? "downstream_timeout"
+        : failure.code === "adb-device-unavailable"
+          ? "service_unavailable"
+          : "downstream_failure",
       failure.publicMessage,
       err,
       failure.code,

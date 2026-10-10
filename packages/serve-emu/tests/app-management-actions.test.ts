@@ -304,9 +304,8 @@ describe("app management install and import boundaries", () => {
 
     const installing = installApk(
       "device-a",
-      upload({ filename: "Release.APK" }),
-      controller.signal,
-      {
+      upload({ filename: "Release.APK" }), {
+        signal: controller.signal,
         execText: async () => {
           calls++;
           controller.abort(reason);
@@ -327,9 +326,8 @@ describe("app management install and import boundaries", () => {
     try {
       await installApk(
         "device-a",
-        upload(),
-        controller.signal,
-        {
+        upload(), {
+          signal: controller.signal,
           execText: async () => {
             invoked = true;
             return result();
@@ -357,9 +355,7 @@ describe("app management install and import boundaries", () => {
       const calls: ExecCall[] = [];
       const imported = await importMediaFile(
         "device-a",
-        upload({ filename, mediaType }),
-        undefined,
-        {
+        upload({ filename, mediaType }), {
           uploadId: () => "media-kind",
           execText: recordingExec(calls),
         },
@@ -384,9 +380,7 @@ describe("app management install and import boundaries", () => {
 
     await importMediaFile(
       "device-a",
-      upload({ filename: "photo.png", mediaType: "image/png" }),
-      undefined,
-      { execText: recordingExec(calls) },
+      upload({ filename: "photo.png", mediaType: "image/png" }), { execText: recordingExec(calls) },
     );
 
     expect(calls[1]?.args.at(-1)).toMatch(
@@ -405,9 +399,7 @@ describe("app management install and import boundaries", () => {
 
     const importing = importMediaFile(
       "device-a",
-      upload({ filename: "photo.jpg", mediaType: "image/jpeg" }),
-      undefined,
-      { uploadId: () => "committed", execText: run },
+      upload({ filename: "photo.jpg", mediaType: "image/jpeg" }), { uploadId: () => "committed", execText: run },
     );
 
     await expect(importing).rejects.toMatchObject({
@@ -437,9 +429,7 @@ describe("app management install and import boundaries", () => {
 
     const importing = importMediaFile(
       "device-a",
-      upload({ filename: "clip.mp4", mediaType: "video/mp4" }),
-      controller.signal,
-      { uploadId: () => "cancelled", execText: run },
+      upload({ filename: "clip.mp4", mediaType: "video/mp4" }), { signal: controller.signal, uploadId: () => "cancelled", execText: run },
     );
 
     await expect(importing).rejects.toBe(reason);

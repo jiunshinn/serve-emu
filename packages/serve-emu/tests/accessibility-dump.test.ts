@@ -47,7 +47,7 @@ const noSleep = async () => {};
 describe("accessibility dumps", () => {
   test("dumps, reads, and removes the file before returning nodes", async () => {
     const adb = fakeAdb((step) => result({ stdout: step === "cat" ? XML : "" }));
-    const snapshot = await getAccessibilitySnapshot("device-a", undefined, {
+    const snapshot = await getAccessibilitySnapshot("device-a", {
       execText: adb.run,
       sleep: noSleep,
     });
@@ -80,7 +80,8 @@ describe("accessibility dumps", () => {
         }
         return result();
       });
-      const loading = getAccessibilitySnapshot("device-a", controller.signal, {
+      const loading = getAccessibilitySnapshot("device-a", {
+        signal: controller.signal,
         execText: adb.run,
         sleep: noSleep,
       });
@@ -106,7 +107,7 @@ describe("accessibility dumps", () => {
       }
       return result({ stdout: step === "cat" ? XML : "" });
     });
-    const snapshot = await getAccessibilitySnapshot("device-a", undefined, {
+    const snapshot = await getAccessibilitySnapshot("device-a", {
       execText: adb.run,
       sleep: async (ms) => {
         sleeps.push(ms);
@@ -128,7 +129,7 @@ describe("accessibility dumps", () => {
         ? result({ status: 1, stderr: "cat: No such file or directory" })
         : result({ stdout: XML });
     });
-    const snapshot = await getAccessibilitySnapshot("device-a", undefined, {
+    const snapshot = await getAccessibilitySnapshot("device-a", {
       execText: adb.run,
       sleep: noSleep,
     });
@@ -142,7 +143,7 @@ describe("accessibility dumps", () => {
       step === "dump" ? result({ status: 1, stderr: "ERROR: null root node" }) : result(),
     );
     await expect(
-      getAccessibilitySnapshot("device-a", undefined, {
+      getAccessibilitySnapshot("device-a", {
         execText: adb.run,
         sleep: async (ms) => {
           sleeps.push(ms);
@@ -160,7 +161,7 @@ describe("accessibility dumps", () => {
     const adb = fakeAdb((step) =>
       step === "dump" ? result({ status: 1, stderr: "ERROR: could not get idle state" }) : result(),
     );
-    const loading = getAccessibilitySnapshot("device-a", controller.signal, { execText: adb.run });
+    const loading = getAccessibilitySnapshot("device-a", { signal: controller.signal, execText: adb.run });
     // The default sleep is abortable: abort while it waits 150 ms.
     await Bun.sleep(20);
     const abortedAt = performance.now();
@@ -174,7 +175,7 @@ describe("accessibility dumps", () => {
     const adb = fakeAdb((step) =>
       step === "rm" ? Promise.reject(new Error("queue-full")) : result({ stdout: step === "cat" ? XML : "" }),
     );
-    const snapshot = await getAccessibilitySnapshot("device-a", undefined, {
+    const snapshot = await getAccessibilitySnapshot("device-a", {
       execText: adb.run,
       sleep: noSleep,
     });
@@ -186,7 +187,7 @@ describe("accessibility dumps", () => {
     controller.abort(new Error("gone"));
     const adb = fakeAdb(() => result());
     await expect(
-      getAccessibilitySnapshot("device-a", controller.signal, { execText: adb.run }),
+      getAccessibilitySnapshot("device-a", { signal: controller.signal, execText: adb.run }),
     ).rejects.toThrow("gone");
     expect(adb.calls).toHaveLength(0);
   });

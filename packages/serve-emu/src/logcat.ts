@@ -1,7 +1,7 @@
 import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
-import { spawnAdb } from "./adb-command.ts";
+import { spawnAdb, terminateChild } from "./adb-command.ts";
 import { ApiError, apiErrorResponse } from "./api/api-error.ts";
 import { packagePids } from "./package-pids.ts";
 
@@ -243,7 +243,6 @@ export class LogcatHub {
   #nextSubscriberId = 1;
   #child: LogcatChild | null = null;
   #terminatingChild: LogcatChild | null = null;
-  #terminationTimer: unknown | null = null;
   #lineBuffer = "";
   #discardingLongLine = false;
   #activePidLookups = 0;
@@ -467,10 +466,6 @@ export class LogcatHub {
     child.once("close", (code, signal) => {
       if (this.#terminatingChild === child) {
         this.#terminatingChild = null;
-        if (this.#terminationTimer !== null) {
-          this.#clock.clearTimeout(this.#terminationTimer);
-          this.#terminationTimer = null;
-        }
         if (!this.#closed && this.#subscribers.size > 0) {
           this.#startReplacementChild();
         }
@@ -715,22 +710,19 @@ export class LogcatHub {
     this.#discardingLongLine = false;
     this.#decoder.end();
     this.#decoder = new StringDecoder("utf8");
-    this.#terminationTimer = this.#clock.setTimeout(() => {
-      this.#terminationTimer = null;
-      if (this.#terminatingChild !== child) return;
-      this.#totals.forcedKills++;
-      try {
-        child.kill("SIGKILL");
-      } catch (error) {
-        this.#lastError =
-          error instanceof Error ? error.message : String(error);
-      }
-    }, this.#terminationGraceMs);
-    try {
-      child.kill("SIGTERM");
-    } catch (error) {
-      this.#lastError =
-        error instanceof Error ? error.message : String(error);
-    }
+    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    void terminateChild(child, {
+      exited: closed,
+      graceMs: this.#terminationGraceMs,
+      label: "logcat",
+      onEscalate: () => {
+        this.#totals.forcedKills++;
+      },
+      setTimer: (callback, ms) => this.#clock.setTimeout(callback, ms),
+      clearTimer: (timer) => this.#clock.clearTimeout(timer),
+    }).catch((error: unknown) => {
+      this.#lastError = error instanceof Error ? error.message : String(error);
+    });
   }
+
 }
