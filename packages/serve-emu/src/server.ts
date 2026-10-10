@@ -842,11 +842,11 @@ export async function startServer(
   const enqueueClientGesture = (
     ws: ServerWebSocket<WsData>,
     gesture: Gesture,
-    record: boolean,
+    recordRequested: boolean,
   ) => {
     const client = ws.data.handle;
     if (gesture.type !== "touch")
-      return enqueueGesture(ws.data.context, gesture, "ws", record);
+      return enqueueGesture(ws.data.context, gesture, "ws", recordRequested);
     if (!client) throw new Error("WebSocket client is not open");
     const sourceId = gesture.pointerId ?? 0;
     const previous = client.touches.get(sourceId);
@@ -863,13 +863,13 @@ export async function startServer(
       ...gesture,
       pointerId: previous?.gesture.pointerId ?? nextTouchId++,
     };
+    // Recording is decided once per pointer, at its down: the pointer's moves,
+    // its up, and a disconnect release all follow that decision, so a session
+    // never holds a down without its up (or an up without its down).
+    const record = previous ? previous.record : recordRequested;
     const accepted = enqueueGesture(ws.data.context, mapped, "ws", record);
     if (gesture.action === "up") client.touches.delete(sourceId);
-    else
-      client.touches.set(sourceId, {
-        gesture: mapped,
-        record: record || previous?.record === true,
-      });
+    else client.touches.set(sourceId, { gesture: mapped, record });
     return accepted;
   };
 
@@ -1651,12 +1651,13 @@ export async function startServer(
             ...(requestId === undefined ? {} : { requestId }),
           });
         try {
-          if (context.status !== "streaming") {
-            throw new Error(`session is ${context.status}`);
-          }
           const payload = JSON.parse(raw);
           acknowledge = wantsAck(payload);
           requestId = parseWsRequestId(payload?.requestId);
+          // Checked after the request id is known so the error reply carries it.
+          if (context.status !== "streaming") {
+            throw new Error(`session is ${context.status}`);
+          }
           const msg = parseWsClientMessage(payload);
           if (msg.type === "clock-sync") {
             reply({ type: "clock-sync", clientTsMs: msg.clientTsMs, serverTsMs: epochNowMs() });

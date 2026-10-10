@@ -660,3 +660,62 @@ test("WebSocket disconnect releases only its own pointers even when the queue is
     await harness.started.stop();
   }
 });
+
+describe("WebSocket touch recording follows the pointer's down", () => {
+  type Step = { action: "down" | "move" | "up" | "disconnect"; record?: boolean };
+  const cases: Array<[string, Step[], string[]]> = [
+    ["recorded down, unrecorded up", [{ action: "down" }, { action: "up", record: false }], ["down", "up"]],
+    [
+      "recorded down, unrecorded move and up",
+      [{ action: "down" }, { action: "move", record: false }, { action: "up", record: false }],
+      ["down", "move", "up"],
+    ],
+    ["unrecorded down, recorded up", [{ action: "down", record: false }, { action: "up" }], []],
+    [
+      "unrecorded down, recorded move and up",
+      [{ action: "down", record: false }, { action: "move" }, { action: "up" }],
+      [],
+    ],
+    ["recorded down, then disconnect", [{ action: "down" }, { action: "disconnect" }], ["down", "up"]],
+    [
+      "unrecorded down, recorded move, then disconnect",
+      [{ action: "down", record: false }, { action: "move" }, { action: "disconnect" }],
+      [],
+    ],
+  ];
+
+  test.each(cases)("%s", async (_name, steps, recorded) => {
+    const harness = await createHarness();
+    const queue = harness.queues.get("device-a")!;
+    try {
+      const ws = await harness.openWebSocket();
+      await waitFor(() => queue.snapshot().depth === 0);
+      for (const step of steps) {
+        if (step.action === "disconnect") {
+          harness.handlers.websocket.close(ws);
+        } else {
+          harness.handlers.websocket.message(
+            ws,
+            JSON.stringify({
+              type: "touch",
+              action: step.action,
+              x: 0.5,
+              y: 0.5,
+              pointerId: 7,
+              ack: false,
+              ...(step.record === undefined ? {} : { record: step.record }),
+            }),
+          );
+        }
+        await waitFor(() => queue.snapshot().depth === 0);
+      }
+      const session = await json(await harness.request("/api/session"));
+      const touches = session.events
+        .filter((e: any) => e.kind === "gesture" && e.gesture.type === "touch")
+        .map((e: any) => e.gesture.action);
+      expect(touches).toEqual(recorded);
+    } finally {
+      await harness.started.stop();
+    }
+  });
+});

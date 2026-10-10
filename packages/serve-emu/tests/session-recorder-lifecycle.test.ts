@@ -486,3 +486,82 @@ describe("replay timeline", () => {
     });
   }
 });
+
+describe("SessionRecorder replay keeps touch pointers balanced", () => {
+  const touch = (action: "down" | "move" | "up", pointerId: number, x = 0.5) =>
+    ({ type: "touch", action, x, y: 0.5, pointerId }) as const;
+  const replayed = (dispatched: Array<{ type: string; action?: string; pointerId?: number }>) =>
+    dispatched.map((g) => (g.type === "touch" ? `${g.action}:${g.pointerId}` : g.type));
+
+  test("skips moves and ups whose down was not replayed and releases a trailing down", async () => {
+    const recorder = new SessionRecorder(immediateClock(() => 0));
+    // Pointer 1's down was evicted (or never recorded): its move and up remain.
+    recorder.recordGesture(touch("move", 1), "ws");
+    recorder.recordGesture(touch("up", 1), "ws");
+    recorder.recordGesture(touch("down", 2), "ws");
+    recorder.recordGesture(touch("up", 2), "ws");
+    recorder.recordGesture({ type: "home" }, "ws");
+    // Pointer 3's up was never recorded.
+    recorder.recordGesture(touch("down", 3, 0.1), "ws");
+    recorder.recordGesture(touch("move", 3, 0.7), "ws");
+
+    const dispatched: Array<{ type: string; action?: string; pointerId?: number; x?: number }> = [];
+    const run = recorder.startReplay({
+      dispatchGesture: (gesture) => {
+        dispatched.push({ ...gesture });
+      },
+      setLocation: () => {},
+    });
+    expect((await run.completion).replayStatus).toBe("completed");
+    expect(replayed(dispatched)).toEqual(["down:2", "up:2", "home", "down:3", "move:3", "up:3"]);
+    // The release lifts the pointer where it last was.
+    expect(dispatched.at(-1)).toMatchObject({ x: 0.7 });
+  });
+
+  test("a cancelled replay releases the pointer it was holding before it reports cancelled", async () => {
+    // The delay before the down resolves at once; the one before the up waits.
+    const holding = pendingClock(() => 0);
+    let delays = 0;
+    const recorder = new SessionRecorder({
+      now: () => 0,
+      delay: (ms, signal) => (++delays === 1 ? Promise.resolve() : holding.clock.delay(ms, signal)),
+    });
+    recorder.recordGesture(touch("down", 4), "ws");
+    recorder.recordGesture(touch("up", 4), "ws");
+
+    const dispatched: string[] = [];
+    let releaseSignal: AbortSignal | undefined;
+    const run = recorder.startReplay({
+      dispatchGesture: (gesture, signal) => {
+        if (gesture.type !== "touch") return;
+        dispatched.push(`${gesture.action}:${gesture.pointerId}`);
+        if (gesture.action === "up") releaseSignal = signal;
+      },
+      setLocation: () => {},
+    });
+    await holding.started;
+    expect(dispatched).toEqual(["down:4"]);
+
+    const cancelled = await recorder.cancelAndWait();
+    expect(cancelled.replayStatus).toBe("cancelled");
+    expect(dispatched).toEqual(["down:4", "up:4"]);
+    // The release is not tied to the aborted replay signal.
+    expect(releaseSignal?.aborted).toBe(false);
+    await run.completion;
+  });
+
+  test("a release that the session refuses does not turn completion into an error", async () => {
+    const recorder = new SessionRecorder(immediateClock(() => 0));
+    recorder.recordGesture(touch("down", 5), "ws");
+    const run = recorder.startReplay({
+      dispatchGesture: (gesture) => {
+        if (gesture.type === "touch" && gesture.action === "up") {
+          throw new Error("device session changed during session replay");
+        }
+      },
+      setLocation: () => {},
+    });
+    expect(await run.completion).toMatchObject({ replayStatus: "completed", lastError: null });
+  });
+});
+
