@@ -119,7 +119,7 @@ serve-emu --webcam-list
 | `--max-queued-uploads` | `4` | Maximum uploads waiting for an active slot; further requests receive `429` |
 | `--upload-queue-timeout-ms` | `5000` | Maximum time an upload may wait for a slot before receiving `503` |
 | `--avd` | none | Launch this Android Virtual Device before streaming; if `serve-emu` started it, `serve-emu` exits when it exits while it is still the streamed device |
-| `--gpu` | `host` | Emulator GPU mode for emulators `serve-emu` launches (`--avd` and `/api/avds/start`). `host` renders on the real GPU for smooth ~60fps; see [Smooth Emulator Playback](#smooth-emulator-playback) |
+| `--gpu` | `host` (`swiftshader_indirect` on Linux without a display) | Emulator GPU mode for emulators `serve-emu` launches (`--avd` and `/api/avds/start`). `host` renders on the real GPU for smooth ~60fps; see [Smooth Emulator Playback](#smooth-emulator-playback) |
 | `--restart-avd` | false | Stop a running matching AVD before launching it |
 | `--camera-back` | AVD setting | Experimental. Back camera for `--avd` launches, such as `webcam0` for a host webcam; see [Camera](#camera) |
 | `--camera-front` | AVD setting | Experimental. Front camera for `--avd` launches; same modes as `--camera-back` except `virtualscene` |
@@ -179,9 +179,10 @@ emulators launch headless, because the emulator aborts there when it tries
 to open a window. A forwarded or stale `DISPLAY` (`ssh -X`, an old tmux
 session) still counts as a display; pass `--no-emulator-window` there. The
 setting, like `--gpu` and `--emulator`, applies to `--avd` and to emulators
-started from the UI or `/api/avds/start`, so those launches also get
-`-gpu host` unless `--gpu` says otherwise. It has no effect on an AVD that is
-already running.
+started from the UI or `/api/avds/start`. Without a display the GPU default
+is `swiftshader_indirect` instead of `host`, because the host GPU renders
+through the display and the emulator cannot start without it; an explicit
+`--gpu` still wins. It has no effect on an AVD that is already running.
 
 ```sh
 # no emulator window, even on a desktop
@@ -192,13 +193,13 @@ serve-emu --avd Pixel_8 --no-emulator-window
 
 The single biggest factor for stutter-free emulator streaming is the **emulator GPU mode**, not the bit rate or the transport. Many AVDs default to `auto`, which on some hosts (notably Apple Silicon) falls back to a **software Vulkan compositor** (`llvmpipe`/`lavapipe`). That caps the guest at a janky ~20fps with dropped frames, so the stream stutters no matter how high you set `--max-fps` or `--bit-rate`.
 
-`serve-emu` launches emulators (`--avd` and `/api/avds/start`) with **`-gpu host`** by default, which renders on the real GPU (Metal/Vulkan) for smooth ~60fps playback (measured: guest jank dropped from 10–19% to 0%). Override with `--gpu <mode>` when needed:
+`serve-emu` launches emulators (`--avd` and `/api/avds/start`) with **`-gpu host`** by default wherever a display exists, which renders on the real GPU (Metal/Vulkan) for smooth ~60fps playback (measured: guest jank dropped from 10–19% to 0%). On Linux without a display it uses `-gpu swiftshader_indirect`, since the host GPU cannot start its renderer there (see [Emulator Window](#emulator-window)). Override with `--gpu <mode>` when needed:
 
 ```sh
 # default — real GPU, smooth
 serve-emu --avd Pixel_8
 
-# headless host without a usable GPU
+# a desktop host without a usable GPU
 serve-emu --avd Pixel_8 --gpu swiftshader_indirect
 ```
 

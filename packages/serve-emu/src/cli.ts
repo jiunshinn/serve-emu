@@ -27,6 +27,7 @@ import {
   DEFAULT_MAX_QUEUED_UPLOADS,
   DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS,
   startServer,
+  type ServerOpts,
 } from "./server.ts";
 import { getUpdateNotice } from "./update-check.ts";
 import packageJson from "../package.json";
@@ -58,7 +59,8 @@ export function parseCliArgs(argv: string[]) {
       "restart-avd": { type: "boolean" },
       emulator: { type: "string" },
       "emulator-port": { type: "string" },
-      gpu: { type: "string", default: "host" },
+      // No default: unset means emulatorLaunchSettings() picks one.
+      gpu: { type: "string" },
       // No default: unset means emulatorWindowDefault().
       "emulator-window": { type: "boolean" },
       "camera-back": { type: "string" },
@@ -83,19 +85,66 @@ export function parseCliArgs(argv: string[]) {
 
 export type CliValues = ReturnType<typeof parseCliArgs>;
 
+type EmulatorLaunchSettings = Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window">;
+
 /**
  * The emulator binary, `-gpu`, and window for every emulator this process
  * launches: the --avd emulator and those started through /api/avds/start.
+ * A display decides both defaults: the host GPU renders through it, so
+ * without one the emulator cannot start its renderer and never boots.
  */
 export function emulatorLaunchSettings(
   values: CliValues,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-): Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window"> {
+): EmulatorLaunchSettings {
+  const display = emulatorWindowDefault(platform, env);
   return {
     emulatorPath: values.emulator,
-    gpu: values.gpu,
-    window: values["emulator-window"] ?? emulatorWindowDefault(platform, env),
+    gpu: values.gpu ?? (display ? "host" : "swiftshader_indirect"),
+    window: values["emulator-window"] ?? display,
+  };
+}
+
+/** The --avd launch: the shared emulator settings plus the flags only --avd takes. */
+export function avdLaunchOptions(
+  avd: string,
+  values: CliValues,
+  settings: EmulatorLaunchSettings,
+  signal: AbortSignal,
+): StartEmulatorOpts {
+  return {
+    ...settings,
+    avd,
+    port: values["emulator-port"] ? Number(values["emulator-port"]) : undefined,
+    restartAvd: values["restart-avd"],
+    cameraBack: values["camera-back"],
+    cameraFront: values["camera-front"],
+    signal,
+  };
+}
+
+/** startServer's options: the CLI flags plus the device and access policy. */
+export function serverOptions(
+  values: CliValues,
+  settings: EmulatorLaunchSettings,
+  startup: Pick<ServerOpts, "serial" | "host" | "token" | "signal">,
+): ServerOpts {
+  return {
+    ...startup,
+    port: Number(values.port),
+    allowedHosts: values["allowed-host"],
+    maxFps: numberOption(values, "max-fps", SCRCPY_DEFAULTS.maxFps),
+    bitRate: numberOption(values, "bit-rate", SCRCPY_DEFAULTS.bitRate),
+    maxSize: numberOption(values, "max-size", SCRCPY_DEFAULTS.maxSize),
+    keyFrameInterval: numberOption(values, "key-frame-interval", SCRCPY_DEFAULTS.keyFrameInterval),
+    repeatFrameMs: numberOption(values, "repeat-frame-ms", SCRCPY_DEFAULTS.repeatFrameMs),
+    maxApkUploadBytes: numberOption(values, "max-apk-upload-bytes", DEFAULT_MAX_APK_UPLOAD_BYTES),
+    maxMediaUploadBytes: numberOption(values, "max-media-upload-bytes", DEFAULT_MAX_MEDIA_UPLOAD_BYTES),
+    maxActiveUploads: numberOption(values, "max-active-uploads", DEFAULT_MAX_ACTIVE_UPLOADS),
+    maxQueuedUploads: numberOption(values, "max-queued-uploads", DEFAULT_MAX_QUEUED_UPLOADS),
+    uploadQueueTimeoutMs: numberOption(values, "upload-queue-timeout-ms", DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS),
+    emulator: settings,
   };
 }
 
@@ -175,10 +224,11 @@ Options:
                          If serve-emu started the emulator, serve-emu exits
                          when it exits while it is still the streamed device
                          (not for an AVD that was already running).
-      --gpu <mode>       GPU mode for emulators serve-emu launches (default: host).
-                         host uses the real GPU for smooth ~60fps; the AVD's
-                         own auto often falls back to a software compositor that
-                         stutters. Use swiftshader_indirect on headless hosts.
+      --gpu <mode>       GPU mode for emulators serve-emu launches (default:
+                         host, or swiftshader_indirect on Linux without a
+                         display). host uses the real GPU for smooth ~60fps;
+                         the AVD's own auto often falls back to a software
+                         compositor that stutters.
       --restart-avd      Stop a running matching AVD before launching it
       --camera-back <mode>
                          Experimental. Back camera for --avd launches. webcam<N>
@@ -281,15 +331,7 @@ async function main(values: CliValues) {
   try {
     serial = values.avd
       ? (emulatorLaunch = await lifecycle.trackEmulator(
-          startEmulator({
-            ...emulatorSettings,
-            avd: values.avd,
-            port: values["emulator-port"] ? Number(values["emulator-port"]) : undefined,
-            restartAvd: values["restart-avd"],
-            cameraBack: values["camera-back"],
-            cameraFront: values["camera-front"],
-            signal: lifecycle.signal,
-          }),
+          startEmulator(avdLaunchOptions(values.avd, values, emulatorSettings, lifecycle.signal)),
         )).serial
       : await pickDevice(values.serial);
   } catch (err) {
@@ -300,38 +342,14 @@ async function main(values: CliValues) {
     }
     throw err;
   }
-  const port = Number(values.port);
-  const maxFps = numberOption(values, "max-fps", SCRCPY_DEFAULTS.maxFps);
-  const bitRate = numberOption(values, "bit-rate", SCRCPY_DEFAULTS.bitRate);
-  const maxSize = numberOption(values, "max-size", SCRCPY_DEFAULTS.maxSize);
-  const keyFrameInterval = numberOption(values, "key-frame-interval", SCRCPY_DEFAULTS.keyFrameInterval);
-  const repeatFrameMs = numberOption(values, "repeat-frame-ms", SCRCPY_DEFAULTS.repeatFrameMs);
-  const maxApkUploadBytes = numberOption(values, "max-apk-upload-bytes", DEFAULT_MAX_APK_UPLOAD_BYTES);
-  const maxMediaUploadBytes = numberOption(values, "max-media-upload-bytes", DEFAULT_MAX_MEDIA_UPLOAD_BYTES);
-  const maxActiveUploads = numberOption(values, "max-active-uploads", DEFAULT_MAX_ACTIVE_UPLOADS);
-  const maxQueuedUploads = numberOption(values, "max-queued-uploads", DEFAULT_MAX_QUEUED_UPLOADS);
-  const uploadQueueTimeoutMs = numberOption(values, "upload-queue-timeout-ms", DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS);
-
-
-  const startupTask = lifecycle.trackServer(startServer({
+  const options = serverOptions(values, emulatorSettings, {
     serial,
-    port,
     host,
     token,
-    allowedHosts: values["allowed-host"],
     signal: lifecycle.signal,
-    maxFps,
-    bitRate,
-    maxSize,
-    keyFrameInterval,
-    repeatFrameMs,
-    maxApkUploadBytes,
-    maxMediaUploadBytes,
-    maxActiveUploads,
-    maxQueuedUploads,
-    uploadQueueTimeoutMs,
-    emulator: emulatorSettings,
-  }));
+  });
+  const port = options.port;
+  const startupTask = lifecycle.trackServer(startServer(options));
   let activeServer: ActiveServer;
   try {
     activeServer = await startupTask;

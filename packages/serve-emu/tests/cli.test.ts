@@ -18,7 +18,9 @@ describe("cli", () => {
   });
 
   test("parses flags with their defaults", () => {
-    expect(parseCliArgs([])).toMatchObject({ port: "3300", gpu: "host" });
+    expect(parseCliArgs([])).toMatchObject({ port: "3300" });
+    // Unset, so emulatorLaunchSettings can pick one for the display.
+    expect(parseCliArgs([]).gpu).toBeUndefined();
     expect(parseCliArgs(["-s", "emulator-5556", "--host", "0.0.0.0"])).toMatchObject({
       serial: "emulator-5556",
       host: "0.0.0.0",

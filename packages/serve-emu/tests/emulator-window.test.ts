@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import type { ChildProcess, spawn } from "node:child_process";
-import { emulatorLaunchSettings, parseCliArgs } from "../src/cli.ts";
+import {
+  avdLaunchOptions,
+  emulatorLaunchSettings,
+  parseCliArgs,
+  serverOptions,
+} from "../src/cli.ts";
 import {
   emulatorWindowDefault,
   startEmulator,
@@ -96,12 +101,30 @@ describe("emulator window (#74)", () => {
   });
 
   test("one set of emulator settings for --avd and the server", () => {
+    // Without a display the host GPU cannot start its renderer, so the
+    // default falls back to software rendering as well as no window.
     expect(emulatorLaunchSettings(parseCliArgs([]), "linux", {})).toEqual({
       emulatorPath: undefined,
-      gpu: "host",
+      gpu: "swiftshader_indirect",
       window: false,
     });
-    expect(emulatorLaunchSettings(parseCliArgs([]), "darwin", {})).toMatchObject({ window: true });
+    expect(emulatorLaunchSettings(parseCliArgs([]), "linux", { DISPLAY: ":0" })).toEqual({
+      emulatorPath: undefined,
+      gpu: "host",
+      window: true,
+    });
+    expect(emulatorLaunchSettings(parseCliArgs([]), "darwin", {})).toMatchObject({
+      gpu: "host",
+      window: true,
+    });
+    // An explicit --gpu wins, and hiding the window keeps the host GPU where
+    // a display exists.
+    expect(
+      emulatorLaunchSettings(parseCliArgs(["--gpu", "host"]), "linux", {}),
+    ).toMatchObject({ gpu: "host", window: false });
+    expect(
+      emulatorLaunchSettings(parseCliArgs(["--no-emulator-window"]), "darwin", {}),
+    ).toMatchObject({ gpu: "host", window: false });
     expect(
       emulatorLaunchSettings(
         parseCliArgs(["--emulator", "/sdk/emulator/emulator", "--gpu", "swiftshader_indirect", "--emulator-window"]),
@@ -114,12 +137,48 @@ describe("emulator window (#74)", () => {
     ).toMatchObject({ window: false });
   });
 
+  test("the --avd launch and the server both get the emulator settings", () => {
+    const values = parseCliArgs([
+      "--avd",
+      "Pixel_8",
+      "--emulator-port",
+      "5560",
+      "--restart-avd",
+      "--camera-back",
+      "webcam0",
+      "--max-fps",
+      "30",
+    ]);
+    const settings = emulatorLaunchSettings(values, "linux", {});
+    const signal = new AbortController().signal;
+    expect(avdLaunchOptions("Pixel_8", values, settings, signal)).toEqual({
+      emulatorPath: undefined,
+      gpu: "swiftshader_indirect",
+      window: false,
+      avd: "Pixel_8",
+      port: 5560,
+      restartAvd: true,
+      cameraBack: "webcam0",
+      cameraFront: undefined,
+      signal,
+    });
+    expect(
+      serverOptions(values, settings, { serial: "emulator-5560", host: "127.0.0.1", token: undefined, signal }),
+    ).toMatchObject({
+      serial: "emulator-5560",
+      port: 3300,
+      maxFps: 30,
+      signal,
+      emulator: { gpu: "swiftshader_indirect", window: false },
+    });
+  });
+
   test("/api/avds/start and the AVD list use the CLI's emulator settings", async () => {
     const launches: StartEmulatorOpts[] = [];
     const listedWith: Array<string | undefined> = [];
     const harness = await createHarness(
       {
-        serial: "emulator-5554",
+        serials: ["emulator-5554"],
         emulator: {
           emulatorPath: "/sdk/emulator/emulator",
           gpu: "swiftshader_indirect",
