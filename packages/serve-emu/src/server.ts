@@ -2,15 +2,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertValidToken } from "./access-policy.ts";
 import {
-  findAccessibilityNode,
   getAccessibilitySnapshot,
-  parseAccessibilitySelector,
   type AccessibilitySnapshot,
 } from "./accessibility.ts";
 import { listAllDevices } from "./adb.ts";
 import { loadDeviceGrid } from "./device-grid.ts";
 import { createApiRouter } from "./api/router.ts";
-import type { ApplyLocationOptions } from "./api/dependencies.ts";
+import type {
+  ApiDependencies,
+  ApplyLocationOptions,
+} from "./api/dependencies.ts";
 import { createDeviceService, type DeviceService } from "./device-service.ts";
 import { apiErrorResponse } from "./api/api-error.ts";
 import { toApiError, type ApiErrorFallback } from "./api/error-mapping.ts";
@@ -30,15 +31,11 @@ import {
   stopEmulator,
 } from "./emulator.ts";
 import { getExecSnapshot } from "./exec.ts";
-import { parseGesture, type Gesture } from "./input.ts";
+import type { Gesture } from "./input.ts";
 import { JsonResponseTracker } from "./json-response.ts";
 import { setEmulatorLocationAsync, type GeoFix } from "./location.ts";
-import {
-  MultipartUploadError,
-  stageMultipartUpload,
-} from "./multipart-upload.ts";
+import { stageMultipartUpload } from "./multipart-upload.ts";
 import { readJsonLimited } from "./request-body.ts";
-import { shouldRecordPayload } from "./session-api.ts";
 import {
   closeScrcpySession,
   startScrcpy,
@@ -54,6 +51,10 @@ import {
   RESET_SETTLE_MS,
   SOURCE_STALL_RESET_MS,
 } from "./server/video.ts";
+import {
+  createUploadEndpoints,
+  resolveUploadLimits,
+} from "./server/uploads.ts";
 import { createWebSocketEndpoint } from "./server/ws.ts";
 import {
   SYSTEM_RECOVERY_WATCHDOG_CLOCK,
@@ -62,10 +63,8 @@ import {
 import type { DeviceSelectionResponse } from "./shared/api-contracts.ts";
 import type { DeviceGridResponse } from "./shared/api-contracts.ts";
 import {
-  MAX_UPLOAD_QUEUE_TIMEOUT_MS,
   UploadManager,
   UploadManagerError,
-  type UploadContext,
   type UploadManagerOptions,
 } from "./upload-manager.ts";
 
@@ -102,15 +101,15 @@ export type ServerOpts = {
 };
 
 export const DEFAULT_HOST = "127.0.0.1";
-export const DEFAULT_MAX_APK_UPLOAD_BYTES = 512 * 1024 * 1024;
-export const DEFAULT_MAX_MEDIA_UPLOAD_BYTES = 1024 * 1024 * 1024;
-export const DEFAULT_MAX_ACTIVE_UPLOADS = 2;
-export const DEFAULT_MAX_QUEUED_UPLOADS = 4;
-export const DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS = 5_000;
-const MULTIPART_BODY_OVERHEAD_BYTES = 1024 * 1024;
+export {
+  DEFAULT_MAX_ACTIVE_UPLOADS,
+  DEFAULT_MAX_APK_UPLOAD_BYTES,
+  DEFAULT_MAX_MEDIA_UPLOAD_BYTES,
+  DEFAULT_MAX_QUEUED_UPLOADS,
+  DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS,
+} from "./server/uploads.ts";
 
 const MAX_JSON_BODY_BYTES = 8 * 1024;
-const MAX_LOGCAT_QUERY_BYTES = 200;
 
 export type ServerDependencies = {
   openScrcpy?: (serial: string, signal?: AbortSignal) => Promise<ScrcpySession>;
@@ -142,21 +141,6 @@ export type ServerDependencies = {
   /** Directory the bundled UI is served from; tests point it at a temp dir. */
   uiDir?: string;
 };
-
-function serverLimit(
-  value: number | undefined,
-  fallback: number,
-  name: string,
-  allowZero = false,
-): number {
-  const resolved = value ?? fallback;
-  if (!Number.isSafeInteger(resolved) || resolved < (allowZero ? 0 : 1)) {
-    throw new Error(
-      `${name} must be ${allowZero ? "a non-negative" : "a positive"} safe integer`,
-    );
-  }
-  return resolved;
-}
 
 export async function startServer(
   opts: ServerOpts,
@@ -202,59 +186,14 @@ export async function startServer(
       new ControlInputQueue({ socket: session.controlSocket }));
   const recoveryClock =
     dependencies.recoveryClock ?? SYSTEM_RECOVERY_WATCHDOG_CLOCK;
-  const stageUpload = dependencies.stageMultipartUpload ?? stageMultipartUpload;
-  const installStagedApk = dependencies.installApk ?? installApk;
-  const importStagedMedia = dependencies.importMediaFile ?? importMediaFile;
-  const maxApkUploadBytes = serverLimit(
-    opts.maxApkUploadBytes,
-    DEFAULT_MAX_APK_UPLOAD_BYTES,
-    "maxApkUploadBytes",
-  );
-  const maxMediaUploadBytes = serverLimit(
-    opts.maxMediaUploadBytes,
-    DEFAULT_MAX_MEDIA_UPLOAD_BYTES,
-    "maxMediaUploadBytes",
-  );
-  const maxActiveUploads = serverLimit(
-    opts.maxActiveUploads,
-    DEFAULT_MAX_ACTIVE_UPLOADS,
-    "maxActiveUploads",
-  );
-  const maxQueuedUploads = serverLimit(
-    opts.maxQueuedUploads,
-    DEFAULT_MAX_QUEUED_UPLOADS,
-    "maxQueuedUploads",
-    true,
-  );
-  const uploadQueueTimeoutMs = serverLimit(
-    opts.uploadQueueTimeoutMs,
-    DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS,
-    "uploadQueueTimeoutMs",
-    true,
-  );
-  if (uploadQueueTimeoutMs > MAX_UPLOAD_QUEUE_TIMEOUT_MS) {
-    throw new Error(
-      `uploadQueueTimeoutMs must be at most ${MAX_UPLOAD_QUEUE_TIMEOUT_MS}`,
-    );
-  }
-  const maxUploadFileBytes = Math.max(maxApkUploadBytes, maxMediaUploadBytes);
-  if (
-    maxUploadFileBytes >
-    Number.MAX_SAFE_INTEGER - MULTIPART_BODY_OVERHEAD_BYTES * 2
-  ) {
-    throw new Error("upload byte limit is too large");
-  }
-  const maxRequestBodySize = Math.max(
-    maxUploadFileBytes + MULTIPART_BODY_OVERHEAD_BYTES * 2,
-    MAX_ROUTE_BODY_BYTES,
-  );
+  const limits = resolveUploadLimits(opts);
   const uploads = (
     dependencies.createUploadManager ??
     ((options: UploadManagerOptions) => new UploadManager(options))
   )({
-    maxActive: maxActiveUploads,
-    maxQueued: maxQueuedUploads,
-    queueTimeoutMs: uploadQueueTimeoutMs,
+    maxActive: limits.maxActiveUploads,
+    maxQueued: limits.maxQueuedUploads,
+    queueTimeoutMs: limits.uploadQueueTimeoutMs,
   });
 
   const uiDir = dependencies.uiDir ?? UI_DIR;
@@ -404,8 +343,6 @@ export async function startServer(
     return result;
   };
 
-  const shouldRecord = shouldRecordPayload;
-
   const readAccessibilitySnapshot = async (
     context: DeviceContext,
     cacheMs = 2_500,
@@ -452,256 +389,15 @@ export async function startServer(
     return context.lastLocation;
   };
 
-  const logcatStream = (context: DeviceContext, req: Request, url: URL) => {
-    const packageName = (url.searchParams.get("package") ?? "")
-      .trim()
-      .slice(0, MAX_LOGCAT_QUERY_BYTES);
-    const search = (url.searchParams.get("search") ?? "")
-      .trim()
-      .slice(0, MAX_LOGCAT_QUERY_BYTES)
-      .toLowerCase();
-    return context.logcat.subscribe({ packageName, search }, req.signal);
-  };
-
-  const gestureEndpoint = async (
-    context: DeviceContext,
-    req: Request,
-    type: Gesture["type"],
-    source: string,
-  ) => {
-    try {
-      const payload = await readJsonBody(req, MAX_JSON_BODY_BYTES, context);
-      const gesture = parseGesture(
-        typeof payload === "object" &&
-          payload !== null &&
-          !Array.isArray(payload)
-          ? { ...payload, type }
-          : payload,
-      );
-      const accepted = enqueueGesture(
-        context,
-        gesture,
-        source,
-        shouldRecord(payload),
-      );
-      try {
-        const result = await accepted.completion;
-        return Response.json({ ok: true, status: result.status });
-      } catch (err) {
-        return errorResponse(err, req);
-      }
-    } catch (err) {
-      return errorResponse(err, req);
-    }
-  };
-
-  const keyEndpoint = async (context: DeviceContext, req: Request) => {
-    try {
-      const payload = await readJsonBody(req, MAX_JSON_BODY_BYTES, context);
-      if (
-        typeof payload !== "object" ||
-        payload === null ||
-        Array.isArray(payload)
-      ) {
-        throw new Error("key payload must be an object");
-      }
-      const key = (payload as Record<string, unknown>).key;
-      const gesture =
-        key === "back" || key === "home" || key === "recents" || key === "power"
-          ? parseGesture({ type: key })
-          : parseGesture({ ...payload, type: "key" });
-      const accepted = enqueueGesture(
-        context,
-        gesture,
-        "rest:key",
-        shouldRecord(payload),
-      );
-      try {
-        const result = await accepted.completion;
-        return Response.json({ ok: true, status: result.status });
-      } catch (err) {
-        return errorResponse(err, req);
-      }
-    } catch (err) {
-      return errorResponse(err, req);
-    }
-  };
-
-  const accessibilityTapEndpoint = async (
-    context: DeviceContext,
-    req: Request,
-  ) => {
-    try {
-      const payload = await readJsonBody(req, MAX_JSON_BODY_BYTES, context);
-      if (
-        typeof payload !== "object" ||
-        payload === null ||
-        Array.isArray(payload)
-      ) {
-        throw new Error("accessibility tap payload must be an object");
-      }
-      const body = payload as Record<string, unknown>;
-      const selector = parseAccessibilitySelector(body.selector ?? body);
-      const snapshot = await readAccessibilitySnapshot(context, 1_000);
-      const node = findAccessibilityNode(snapshot.nodes, selector);
-      const centerX = (node.bounds.left + node.bounds.right) / 2;
-      const centerY = (node.bounds.top + node.bounds.bottom) / 2;
-      const accessibilityWidth = Math.max(
-        ...snapshot.nodes.map((n) => n.bounds.right),
-        context.screen.width,
-      );
-      const accessibilityHeight = Math.max(
-        ...snapshot.nodes.map((n) => n.bounds.bottom),
-        context.screen.height,
-      );
-      const x = centerX / accessibilityWidth;
-      const y = centerY / accessibilityHeight;
-      if (
-        !Number.isFinite(x) ||
-        !Number.isFinite(y) ||
-        x < 0 ||
-        x > 1 ||
-        y < 0 ||
-        y > 1
-      ) {
-        throw new Error(
-          "matched accessibility node is outside the current stream bounds",
-        );
-      }
-      const accepted = enqueueGesture(
-        context,
-        {
-          type: "tap",
-          x,
-          y,
-        },
-        "accessibility:tap",
-        shouldRecord(payload),
-      );
-      try {
-        const result = await accepted.completion;
-        return Response.json({
-          ok: true,
-          status: result.status,
-          node,
-          capturedAt: snapshot.capturedAt,
-        });
-      } catch (err) {
-        return errorResponse(err, req);
-      }
-    } catch (err) {
-      return errorResponse(err, req);
-    }
-  };
-
-  const appJsonEndpoint = async (
-    context: DeviceContext,
-    req: Request,
-    action: (
-      payload: Record<string, unknown>,
-      signal: AbortSignal,
-    ) => unknown | Promise<unknown>,
-  ) => {
-    try {
-      const payload = await readJsonBody(req, MAX_JSON_BODY_BYTES, context);
-      if (
-        typeof payload !== "object" ||
-        payload === null ||
-        Array.isArray(payload)
-      ) {
-        throw new Error("payload must be an object");
-      }
-      const result = await runForContext(
-        context,
-        (_captured, signal) =>
-          Promise.resolve(action(payload as Record<string, unknown>, signal)),
-        req.signal,
-      );
-      return Response.json(result);
-    } catch (err) {
-      return errorResponse(err, req);
-    }
-  };
-
-  const uploadEndpoint = async (
-    context: DeviceContext,
-    req: Request,
-    options: {
-      fieldName: "apk" | "file";
-      maxFileBytes: number;
-      action: (
-        serial: string,
-        file: Awaited<ReturnType<typeof stageUpload>>,
-        signal: AbortSignal,
-      ) => Promise<unknown>;
-    },
-  ) => {
-    try {
-      const uploadContext: UploadContext = {
-        serial: context.serial,
-        generation: context.generation,
-      };
-      const result = await uploads.run(
-        {
-          context: uploadContext,
-          requestSignal: req.signal,
-          sessionSignal: context.signal,
-        },
-        async ({ context: acceptedContext, signal }) => {
-          const staged = await stageUpload(req, {
-            fieldName: options.fieldName,
-            maxFileBytes: options.maxFileBytes,
-            maxBodyBytes: options.maxFileBytes + MULTIPART_BODY_OVERHEAD_BYTES,
-            signal,
-          });
-          try {
-            sessions.assertCurrent(context);
-            if (
-              acceptedContext.serial !== context.serial ||
-              acceptedContext.generation !== context.generation
-            ) {
-              throw new UploadManagerError(
-                "device-session-changed",
-                "device session changed during upload",
-                acceptedContext,
-              );
-            }
-            return await options.action(context.serial, staged, signal);
-          } finally {
-            try {
-              await staged.cleanup();
-            } catch (error) {
-              throw new MultipartUploadError(
-                "upload-cleanup-failed",
-                "failed to clean up multipart upload",
-                { cause: error },
-              );
-            }
-          }
-        },
-      );
-      return Response.json(result);
-    } catch (error) {
-      if (req.body && !req.body.locked) {
-        await req.body.cancel(error).catch(() => {});
-      }
-      return errorResponse(error, req);
-    }
-  };
-
-  const installEndpoint = (context: DeviceContext, req: Request) =>
-    uploadEndpoint(context, req, {
-      fieldName: "apk",
-      maxFileBytes: maxApkUploadBytes,
-      action: (serial, file, signal) => installStagedApk(serial, file, { signal }),
-    });
-
-  const fileImportEndpoint = (context: DeviceContext, req: Request) =>
-    uploadEndpoint(context, req, {
-      fieldName: "file",
-      maxFileBytes: maxMediaUploadBytes,
-      action: (serial, file, signal) => importStagedMedia(serial, file, { signal }),
-    });
+  const uploadEndpoints = createUploadEndpoints({
+    uploads,
+    sessions,
+    maxApkUploadBytes: limits.maxApkUploadBytes,
+    maxMediaUploadBytes: limits.maxMediaUploadBytes,
+    stageUpload: dependencies.stageMultipartUpload ?? stageMultipartUpload,
+    installApk: dependencies.installApk ?? installApk,
+    importMediaFile: dependencies.importMediaFile ?? importMediaFile,
+  });
 
   const switchSession = async (
     serial: string,
@@ -746,9 +442,6 @@ export async function startServer(
     };
   };
 
-  const stopCurrentSession = (context: DeviceContext, reason: string) =>
-    sessions.stop(context, reason);
-
   try {
     video.activate(sessions.current);
   } catch (err) {
@@ -758,32 +451,28 @@ export async function startServer(
   }
 
   const apiRouter = createApiRouter(createApiRoutes());
-  const apiServices = {
-    runForPublishedContext,
-    listDevices,
-    deviceGrid,
+  const apiServices: Omit<
+    ApiDependencies,
+    "requestContext" | "srv" | "errorResponse"
+  > = {
+    sessions,
     readJsonBody,
     MAX_JSON_BODY_BYTES,
+    MAX_ROUTE_BODY_BYTES,
+    runForPublishedContext,
+    runForContext,
+    device,
+    listDevices,
+    deviceGrid,
     switchSession,
     launchEmulator: emulators.launchEmulator,
-    sessions,
     listActiveAvds,
-    stopCurrentSession,
     killEmulator: emulators.killEmulator,
-    runForContext,
-    logcatStream,
     readAccessibilitySnapshot,
-    accessibilityTapEndpoint,
-    gestureEndpoint,
-    keyEndpoint,
-    responseMetrics,
     enqueueGesture,
-    device,
-    installEndpoint,
-    fileImportEndpoint,
-    appJsonEndpoint,
     applyLocation,
-    MAX_ROUTE_BODY_BYTES,
+    uploads: uploadEndpoints,
+    responseMetrics,
   };
 
   const ws = createWebSocketEndpoint({
@@ -797,7 +486,7 @@ export async function startServer(
   const serverOptions: Parameters<typeof Bun.serve<WsData>>[0] = {
     port: opts.port,
     hostname: host,
-    maxRequestBodySize,
+    maxRequestBodySize: limits.maxRequestBodySize,
     async fetch(req, srv) {
       const requestContext = sessions.current;
       const url = new URL(req.url);
