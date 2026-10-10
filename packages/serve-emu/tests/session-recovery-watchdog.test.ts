@@ -100,6 +100,28 @@ describe("SessionRecoveryWatchdog", () => {
     expect(watchdog.snapshot().sourceFrameAgeMs).toBe(0);
   });
 
+  test("never abandons a waiting client when key frames never come (#127)", () => {
+    // An encoder that ignores the periodic interval: only delta frames, for
+    // ten minutes. The client must keep getting resets at the rate limit.
+    const waiting = client();
+    const { clock, clients, resets, watchdog } = harness();
+    clients.push(waiting);
+    watchdog.markAwaiting(waiting);
+    watchdog.requestVideoReset("client opened");
+
+    for (let step = 0; step < 1_200; step++) {
+      clock.advance(500);
+      watchdog.recordFrame();
+      watchdog.tick();
+    }
+
+    expect(resets).toHaveLength(1 + 600_000 / 2_500);
+    const gaps = resets.slice(1).map((reset, index) => reset.nowMs - resets[index]!.nowMs);
+    expect(new Set(gaps)).toEqual(new Set([2_500]));
+    expect(resets.at(-1)).toEqual({ reason: "client awaiting keyframe", nowMs: 600_000 });
+    expect(watchdog.snapshot().awaitingClients).toBe(1);
+  });
+
   test("one admitted reset covers all waiting clients and rate-limits retries", () => {
     const first = client();
     const second = client();

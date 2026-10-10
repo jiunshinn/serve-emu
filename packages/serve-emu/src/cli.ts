@@ -119,15 +119,16 @@ Options:
                          sustains 60fps only below ~1 megapixel, so this
                          defaults to ${SCRCPY_DEFAULTS.maxSize}.
       --key-frame-interval <sec>
-                         Ask the encoder for regular keyframes; 0 disables this
-                         codec option (default: ${SCRCPY_DEFAULTS.keyFrameInterval}). Late joiners get keyframes
-                         on demand via reset-video, so a long interval avoids
-                         periodic keyframe bursts.
+                         Advisory keyframe interval; 0 omits this codec option
+                         (default: ${SCRCPY_DEFAULTS.keyFrameInterval}). The emulator's encoder counts it
+                         in frames at a nominal 60fps, so keyframes arrive later
+                         at lower frame rates. Clients get keyframes on demand
+                         via reset-video and never wait for a periodic one.
       --repeat-frame-ms <ms>
                          Re-encode the previous frame after this many ms with no
-                         screen change, so static screens keep producing frames
-                         (16 ≈ steady 60fps at the cost of extra CPU/bandwidth;
-                         0 keeps the encoder default of one repeat per 100ms)
+                         screen change (0 keeps the encoder default of 100ms).
+                         Android repeats a frame at most 10 times, so a static
+                         screen still stops sending frames.
       --max-apk-upload-bytes <n>    Maximum streamed APK bytes (default: ${DEFAULT_MAX_APK_UPLOAD_BYTES})
       --max-media-upload-bytes <n>  Maximum streamed media bytes (default: ${DEFAULT_MAX_MEDIA_UPLOAD_BYTES})
       --max-active-uploads <n>      Concurrent uploads (default: ${DEFAULT_MAX_ACTIVE_UPLOADS})
