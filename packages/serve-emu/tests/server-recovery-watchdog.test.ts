@@ -369,7 +369,7 @@ async function pushFrame(
 }
 
 describe("server recovery watchdog", () => {
-  test("an idle screen backs off stall resets, /health says idle, and input restores the base (#165)", async () => {
+  test("an idle screen backs off stall resets, /health says idle, and a tap does not reset it (#165)", async () => {
     const harness = await createHarness();
     const session = harness.sessions.get("A")!;
     try {
@@ -394,10 +394,24 @@ describe("server recovery watchdog", () => {
         keyFrameRecovery: { stallResetAfterMs: 5_000 },
       });
 
-      // Input means frames should follow, so stalls count from the base again.
+      // An action that changes nothing on screen sends no frame. It must not
+      // reset the backoff or trigger a check of its own.
+      const beforeTap = session.fakeControlSocket.writes.length;
       expect((await harness.post("/api/tap", { x: 0.5, y: 0.5 })).status).toBe(200);
+      // The tap's touch down and up.
+      await waitFor(() => session.fakeControlSocket.writes.length === beforeTap + 2);
       health = await harness.health();
-      expect(health.keyFrameRecovery.stallResetAfterMs).toBe(2_500);
+      expect(health.keyFrameRecovery.stallResetAfterMs).toBe(5_000);
+      harness.clock.advance(3_000);
+      harness.clock.fireActive();
+      health = await harness.health();
+      // The next restart is the idle check due 5 s after the last frame, not
+      // a "stalled" check of the tap's.
+      expect(health).toMatchObject({
+        videoResetRequests: 3,
+        lastVideoResetReason: "video source idle",
+        keyFrameRecovery: { stallResetAfterMs: 10_000 },
+      });
     } finally {
       harness.started.stop();
     }

@@ -116,7 +116,6 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
   #resetsWithoutFrame = 0;
   #idleStallResets = 0;
   #runFrames = 0;
-  #lastInputMs: number | null = null;
   #unansweredResetSinceMs: number | null = null;
 
   constructor(options: SessionRecoveryWatchdogOptions<TClient>) {
@@ -179,16 +178,6 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
     // stall is measured from the base threshold again. Occasional small
     // changes on an idle screen (a clock tick) keep the backoff.
     if (this.#runFrames > this.#resetBurstFrames) this.#idleStallResets = 0;
-  }
-
-  /**
-   * Input reached the device, so a changing screen will send frames. Stalls
-   * are measured from the input, at the base threshold, so a dead encoder is
-   * found quickly once someone interacts with an idle screen.
-   */
-  noteInput(nowMs = this.#clock.now()): void {
-    this.#lastInputMs = nowMs;
-    this.#idleStallResets = 0;
   }
 
   markAwaiting(client: TClient): void {
@@ -310,24 +299,22 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
     ) {
       this.requestVideoReset("first video frame not received");
     } else if (this.#lastFrameMs !== null) {
-      const quietSinceMs = Math.max(
-        this.#lastFrameMs,
-        this.#lastInputMs ?? this.#lastFrameMs,
-      );
       // A static screen answers a restart with only its burst, then goes quiet
       // again (#165). While the encoder keeps answering, each check doubles
-      // the wait for the next one, until a longer run of frames or input shows
-      // the screen is changing. A source that did not answer its last reset
-      // is not idle: its retries follow the no-frame settle backoff instead.
-      const answering = this.#resetsWithoutFrame === 0;
+      // the wait for the next one, until a longer run of frames shows the
+      // screen is changing. Input is deliberately not a signal: an action
+      // that changes nothing on screen sends no frame either, and agents
+      // repeat such actions. A source that did not answer its last reset is
+      // not idle: its retries follow the no-frame settle backoff instead.
+      const idleProbe = this.#resetsWithoutFrame === 0;
       if (
-        now - quietSinceMs >= this.#stallResetAfterMs() &&
+        now - this.#lastFrameMs >= this.#stallResetAfterMs() &&
         this.requestVideoReset(
-          answering && this.#idleStallResets > 0
+          idleProbe && this.#idleStallResets > 0
             ? "video source idle"
             : "video source stalled",
         ) &&
-        answering
+        idleProbe
       ) {
         this.#idleStallResets++;
       }

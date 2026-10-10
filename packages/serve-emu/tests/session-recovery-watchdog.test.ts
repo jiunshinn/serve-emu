@@ -492,54 +492,36 @@ describe("SessionRecoveryWatchdog", () => {
       ]);
     });
 
-    test("input after an idle period finds a dead encoder at the base threshold", () => {
+    test("an encoder that dies on an idle screen is found by the next check", () => {
       const h = harness({ clients: [client()] });
       h.watchdog.recordFrame(true);
       runStaticScreen(h, 60_000);
       expect(h.watchdog.snapshot().stallResetAfterMs).toBe(30_000);
       const before = h.resets.length;
+      const diedAt = h.clock.nowMs;
 
-      // Someone taps; the screen should change, but the encoder is dead.
-      h.watchdog.noteInput();
-      const inputAt = h.clock.nowMs;
-      expect(h.watchdog.snapshot().stallResetAfterMs).toBe(2_500);
-      for (let second = 1; second <= 3; second++) {
-        h.clock.advance(1_000);
-        h.watchdog.tick();
-      }
-      // Quiet time counts from the input, not from the last frame long ago.
-      expect(h.resets.slice(before)).toEqual([
-        { reason: "video source stalled", nowMs: inputAt + 3_000 },
-      ]);
-
-      // No frame ever answers: the source stays stalled through every retry,
-      // and retries follow the no-frame settle backoff, not the idle one.
+      // The encoder dies: from now on no reset is answered.
       const states = new Set<string>();
-      for (let second = 1; second <= 60; second++) {
+      for (let second = 1; second <= 90; second++) {
         h.clock.advance(1_000);
         h.watchdog.tick();
-        if (second >= 3) states.add(h.watchdog.snapshot().sourceState);
+        const retries = h.resets.slice(before);
+        if (retries.length > 0 && h.clock.nowMs - retries[0]!.nowMs >= 3_000) {
+          states.add(h.watchdog.snapshot().sourceState);
+        }
       }
-      expect(states).toEqual(new Set(["stalled"]));
       const retries = h.resets.slice(before);
-      expect(new Set(retries.map((reset) => reset.reason))).toEqual(
+      // Found by the next idle check, within the 30 s cap of the last frame.
+      expect(retries[0]!.reason).toBe("video source idle");
+      expect(retries[0]!.nowMs - diedAt).toBeLessThanOrEqual(32_000);
+      // Unanswered from then on: stalled, with the no-frame settle backoff.
+      expect(states).toEqual(new Set(["stalled"]));
+      expect(new Set(retries.slice(1).map((reset) => reset.reason))).toEqual(
         new Set(["video source stalled"]),
       );
       const gaps = retries.slice(1).map((reset, i) => reset.nowMs - retries[i]!.nowMs);
       // The settle window: 2.5 s (rounded up to the tick), then doubling.
-      expect(gaps).toEqual([3_000, 5_000, 10_000, 20_000]);
-      expect(h.watchdog.snapshot().stallResetAfterMs).toBe(5_000);
-    });
-
-    test("input does not trigger a reset while frames are still expected", () => {
-      const h = harness({ clients: [client()] });
-      h.watchdog.recordFrame(true);
-      for (let second = 1; second <= 10; second++) {
-        h.clock.advance(1_000);
-        h.watchdog.noteInput();
-        h.watchdog.tick();
-      }
-      expect(h.resets).toEqual([]);
+      expect(gaps.slice(0, 4)).toEqual([3_000, 5_000, 10_000, 20_000]);
     });
 
     test("reports starting, streaming, idle, and stalled sources", () => {

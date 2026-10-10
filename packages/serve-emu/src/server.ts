@@ -631,7 +631,6 @@ export async function startServer(
       throw new Error(`session is ${context.status}`);
     }
     const accepted = context.inputQueue.enqueue(gesture, { ...context.screen });
-    recoveries.get(context)?.noteInput();
     if (record) context.recorder.recordGesture(accepted.gesture, source);
     return accepted;
   };
