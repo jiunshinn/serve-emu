@@ -180,7 +180,12 @@ Prepare a release:
 bun run release -- patch
 ```
 
-You can also pass `minor`, `major`, or an exact version such as `0.1.0`.
+You can also pass `minor`, `major`, or an exact version such as `0.2.0`. An
+exact version must be greater than the current one, have no leading zeros, and
+not already have a `v<version>` tag; otherwise the script exits with a one-line
+error and changes nothing. Add `--dry-run` to preview the bump and changelog
+source without writing files. The new changelog entry goes above the newest
+release.
 
 Before publishing, review `packages/serve-emu/CHANGELOG.md`, then run:
 
