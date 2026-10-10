@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { CommandFailureError } from "./command-failure.ts";
 import { execText } from "./exec.ts";
 
 export type { GeoFix } from "./shared/api-contracts.ts";
@@ -49,7 +50,11 @@ function geoFixArgs(serial: string, fix: GeoFix): string[] {
 
 function assertGeoFixOutput(status: number | null, output: string): void {
   if (status !== 0 || /^KO\b/.test(output)) {
-    throw new Error(`adb emu geo fix failed: ${output || "unknown error"}`);
+    throw new CommandFailureError(
+      "adb-failed",
+      "adb emu geo fix failed",
+      output || "unknown error",
+    );
   }
 }
 
@@ -112,11 +117,15 @@ export async function setEmulatorLocationAsync(
       ? signal.reason
       : new Error("location update aborted");
   }
-  if (result.timedOut) throw new Error("adb emu geo fix timed out");
+  if (result.timedOut) {
+    throw new CommandFailureError("adb-timeout", "adb emu geo fix timed out");
+  }
   const output = `${result.stdout}${result.stderr}`.trim();
   if (result.error) {
-    throw new Error(
-      `adb emu geo fix failed: ${output || result.error.message}`,
+    throw new CommandFailureError(
+      "adb-failed",
+      "adb emu geo fix failed",
+      output || result.error.message,
       { cause: result.error },
     );
   }

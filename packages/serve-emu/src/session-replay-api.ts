@@ -1,3 +1,4 @@
+import { publicErrorMessage } from "./command-failure.ts";
 import {
   SessionReplayConflictError,
   sessionReplayErrorStatus,
@@ -17,7 +18,7 @@ export function sessionReplayErrorResponse(
   return Response.json(
     {
       ok: false,
-      error: error instanceof Error ? error.message : String(error),
+      error: publicErrorMessage(error),
     },
     { status },
   );

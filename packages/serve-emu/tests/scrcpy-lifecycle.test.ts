@@ -1,9 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import type { ChildProcess } from "node:child_process";
 import type { Socket } from "node:net";
 import { SCRCPY_VERSION } from "../scripts/fetch-scrcpy.ts";
+import { CommandFailureError } from "../src/command-failure.ts";
 import {
   startScrcpy,
   type AdbCommandResult,
@@ -173,6 +174,8 @@ type HarnessOptions = {
   removeResult?: AdbCommandResult;
   rmResults?: AdbCommandResult[];
   childIgnoresKill?: boolean;
+  /** Result of `adb push`; "hang" never settles until aborted. */
+  pushResult?: AdbCommandResult | "hang";
 };
 
 function createHarness(options: HarnessOptions = {}) {
@@ -227,7 +230,10 @@ function createHarness(options: HarnessOptions = {}) {
     }
     if (args[0] === "push") {
       state.pushCount++;
-      return ok("pushed");
+      if (options.pushResult === "hang") {
+        return waitForDeferred(deferred<AdbCommandResult>(), commandOptions.signal);
+      }
+      return options.pushResult ?? ok("pushed");
     }
     if (args[0] === "shell" && args[1] === "mv") {
       state.cachePresent = true;
@@ -485,10 +491,26 @@ describe("scrcpy async lifecycle", () => {
     );
     const pollCall = await harness.socketPollReached.promise;
 
-    harness.state.children[0].exit(17, null);
-    expect((await outcome).error?.message).toContain(
-      "scrcpy process exited during startup (code=17, signal=none)",
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(
+      () => true,
     );
+    try {
+      harness.state.children[0].stderr.emit(
+        "data",
+        Buffer.from("java.lang.RuntimeException at /home/me/SECRET-PATH\n"),
+      );
+    } finally {
+      stderrWrite.mockRestore();
+    }
+    harness.state.children[0].exit(17, null);
+    const { error } = await outcome;
+    // The server's stderr stays in the message for logs, not the public one.
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-failed",
+      publicMessage: "scrcpy process exited during startup (code=17, signal=none)",
+    });
+    expect(error?.message).toContain("/home/me/SECRET-PATH");
 
     expect(pollCall.signal.aborted).toBe(true);
     expect(harness.state.activeForwards.size).toBe(0);
@@ -535,9 +557,16 @@ describe("scrcpy async lifecycle", () => {
       fixedResults: Array.from({ length: 5 }, () => failed("port busy")),
     });
 
-    await expect(startWith(harness)).rejects.toThrow(
-      "Failed to create adb forward",
+    const error = await startWith(harness).then(
+      () => null,
+      (reason: unknown) => reason,
     );
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-failed",
+      publicMessage: "adb forward failed",
+      message: "adb forward failed: localabstract:scrcpy_01234560: port busy",
+    });
 
     expect(harness.state.spawnCalls).toHaveLength(0);
     expect(harness.state.fixedAttempt).toBe(5);
@@ -550,6 +579,58 @@ describe("scrcpy async lifecycle", () => {
           call.args[2] === `tcp:${ambiguousPort}`,
       ),
     ).toBe(true);
+  });
+
+  test("a failed adb step names only its subcommand in the public message", async () => {
+    const harness = createHarness({
+      pushResult: failed(
+        "adb: error: failed to copy '/fake/scrcpy-server.jar': device offline",
+      ),
+    });
+
+    const error = await startWith(harness).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+
+    // The host jar path and adb's output stay in `message` for the server log.
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-failed",
+      publicMessage: "adb push failed",
+    });
+    expect((error as Error).message).toBe(
+      `adb push failed: adb -s ${SERIAL} push /fake/scrcpy-server.jar ` +
+        "/data/local/tmp/serve-emu-scrcpy-server-v" +
+        `${SCRCPY_VERSION}.jar-${"a".repeat(24)}.01234560.tmp: ` +
+        "adb: error: failed to copy '/fake/scrcpy-server.jar': device offline",
+    );
+    expect(harness.state.spawnCalls).toHaveLength(0);
+  });
+
+  test("an adb step past its deadline is a command timeout", async () => {
+    const harness = createHarness({ pushResult: "hang" });
+
+    const error = await startScrcpy(
+      { serial: SERIAL },
+      {
+        ...harness.deps,
+        timeouts: { ...harness.deps.timeouts, pushMs: 20 },
+      },
+    ).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-timeout",
+      publicMessage: "adb push timed out",
+    });
+    expect((error as Error).message).toContain(
+      `adb -s ${SERIAL} push /fake/scrcpy-server.jar`,
+    );
+    expect((error as Error).message).toEndWith("timed out after 20ms");
   });
 
   test("fixed-port fallback always uses --no-rebind", async () => {

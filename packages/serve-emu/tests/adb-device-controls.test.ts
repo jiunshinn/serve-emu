@@ -143,7 +143,7 @@ describe("ADB screenshot and shell commands", () => {
     await expect(
       shell("device-1", ["settings", "put", "global", "x", "1"], failedText),
     ).rejects.toThrow(
-      "adb shell settings put global x 1 failed: permission denied",
+      "adb shell failed: permission denied",
     );
   });
 
@@ -246,7 +246,7 @@ describe("ADB display controls", () => {
     await expect(
       setUserRotation("device-1", "landscape", failed),
     ).rejects.toThrow(
-      "adb shell cmd window user-rotation lock 1 failed: rotation denied",
+      "cmd window user-rotation failed: rotation denied",
     );
   });
 });
@@ -303,7 +303,7 @@ describe("ADB font controls", () => {
     const failed = (async () =>
       result("", { status: 1, stderr: "write denied" })) as typeof execText;
     await expect(setFontScale("device-1", 1, failed)).rejects.toThrow(
-      "adb shell settings put system font_scale 1 failed: write denied",
+      "settings put system font_scale failed: write denied",
     );
   });
 });
@@ -355,7 +355,7 @@ describe("ADB night mode controls", () => {
       "cmd uimode night failed: uimode unavailable",
     );
     await expect(setNightMode("device-1", "dark", failed)).rejects.toThrow(
-      "adb shell cmd uimode night yes failed: uimode unavailable",
+      "cmd uimode night failed: uimode unavailable",
     );
   });
 });
@@ -442,7 +442,7 @@ describe("ADB network controls", () => {
 
     await expect(
       setNetworkEnabled("device-1", true, runExec),
-    ).rejects.toThrow("adb shell svc data enable failed: data denied");
+    ).rejects.toThrow("svc data enable failed: data denied");
     expect(calls).toEqual(["svc wifi enable", "svc data enable"]);
   });
 });

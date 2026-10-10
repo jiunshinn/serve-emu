@@ -1,3 +1,8 @@
+import {
+  commandFailureOf,
+  commandFailureStatus,
+  publicErrorMessage,
+} from "./command-failure.ts";
 import type { GeoFix } from "./location.ts";
 
 export type {
@@ -35,7 +40,10 @@ export class RoutePlaybackApplyError extends Error {
 
 export function routePlaybackErrorStatus(error: unknown): number {
   if (error instanceof RoutePlaybackConflictError) return 409;
-  if (error instanceof RoutePlaybackApplyError) return 502;
+  if (error instanceof RoutePlaybackApplyError) {
+    const failure = commandFailureOf(error);
+    return failure ? commandFailureStatus(failure) : 502;
+  }
   return 500;
 }
 
@@ -410,13 +418,16 @@ export class RoutePlayback {
           if (propagateError) throw err;
           return false;
         }
-        const message = err instanceof Error ? err.message : String(err);
+        const message = publicErrorMessage(err);
         this.#status = "error";
         this.#lastError = message;
         this.#clearTimer(runId);
         if (propagateError) {
+          // The API response that reports this error also logs it.
           throw new RoutePlaybackApplyError(message, { cause: err });
         }
+        // `lastError` keeps only the public message; log the detail.
+        console.error("[route] playback stopped: could not apply location:", err);
       }
       return false;
     } finally {

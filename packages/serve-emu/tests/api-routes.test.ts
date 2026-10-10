@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { ApiMethod } from "../src/api/router.ts";
 import { createApiRoutes } from "../src/api/routes/index.ts";
+import { CommandFailureError } from "../src/command-failure.ts";
 import { createHarness, response } from "./helpers/server-harness.ts";
 
 const EXPECTED_ROUTES = [
@@ -170,5 +171,76 @@ describe("production API routing", () => {
       ok: false,
       error: { code: "not_found", message: "API route not found" },
     });
+  });
+
+  test("reports device command failures without their output", async () => {
+    const geoFixOutput = "KO: bad command /home/me/.android/emulator_console_auth_token";
+    const h = await createHarness({}, {
+      setLocation: async () => {
+        throw new CommandFailureError(
+          "adb-failed",
+          "adb emu geo fix failed",
+          geoFixOutput,
+        );
+      },
+    });
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const location = await response(
+        h.request("/api/location", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ latitude: 37.5, longitude: 127 }),
+        }),
+      );
+      expect(location.status).toBe(502);
+      expect(await location.json()).toEqual({
+        ok: false,
+        code: "adb-failed",
+        error: "adb emu geo fix failed",
+      });
+      expect(errorLog).toHaveBeenCalledWith(
+        "[api] POST /api/location -> 502 adb emu geo fix failed:",
+        expect.objectContaining({
+          message: `adb emu geo fix failed: ${geoFixOutput}`,
+        }),
+      );
+      errorLog.mockClear();
+
+      const route = await response(
+        h.request("/api/route", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            waypoints: [
+              { latitude: 37.5, longitude: 127 },
+              { latitude: 37.51, longitude: 127.01 },
+            ],
+          }),
+        }),
+      );
+      expect(route.status).toBe(502);
+      const routeBody = await route.text();
+      expect(JSON.parse(routeBody)).toEqual({
+        ok: false,
+        code: "adb-failed",
+        error: "adb emu geo fix failed",
+      });
+      expect(routeBody).not.toContain("emulator_console_auth_token");
+      // Logged once, by the response, with the geo fix output as the cause.
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      expect(errorLog.mock.calls[0]?.[0]).toBe(
+        "[api] POST /api/route -> 502 adb emu geo fix failed:",
+      );
+      expect((errorLog.mock.calls[0]?.[1] as Error).cause).toMatchObject({
+        message: `adb emu geo fix failed: ${geoFixOutput}`,
+      });
+      const status = await response(h.request("/api/route"));
+      const statusBody = await status.text();
+      expect(statusBody).toContain('"lastError":"adb emu geo fix failed"');
+      expect(statusBody).not.toContain("emulator_console_auth_token");
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 });

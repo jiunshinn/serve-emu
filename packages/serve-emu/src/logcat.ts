@@ -387,11 +387,12 @@ export class LogcatHub {
     try {
       this.#ensureChild();
     } catch (error) {
+      console.error(`[logcat] could not start logcat for ${this.serial}:`, error);
       return Response.json(
         {
           ok: false,
           code: "logcat-start-failed",
-          error: error instanceof Error ? error.message : String(error),
+          error: "logcat could not start",
         },
         { status: 502 },
       );

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { adbOperation, CommandFailureError } from "./command-failure.ts";
 import { execText } from "./exec.ts";
 import type {
   AppActionResponse,
@@ -25,13 +26,25 @@ export type AppManagementDependencies = {
   uploadId?: () => string;
 };
 
-export class AppManagementError extends Error {
+const PUBLIC_MESSAGES: Record<AppManagementErrorCode, string> = {
+  "adb-failed": "adb command failed",
+  "adb-timeout": "adb command timed out",
+  "adb-cleanup-failed": "adb cleanup failed",
+};
+
+/** `message` is adb's own output; `publicMessage` is what clients see. */
+export class AppManagementError extends CommandFailureError {
+  declare readonly code: AppManagementErrorCode;
+
   constructor(
-    readonly code: AppManagementErrorCode,
+    code: AppManagementErrorCode,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; publicMessage?: string },
   ) {
-    super(message, options);
+    super(code, options?.publicMessage ?? PUBLIC_MESSAGES[code], undefined, {
+      cause: options?.cause,
+    });
+    this.message = message;
     this.name = "AppManagementError";
   }
 }
@@ -67,24 +80,26 @@ async function adb(
       : new DOMException("The operation was aborted", "AbortError");
   }
   const text = output(result.stdout, result.stderr);
+  const operation = adbOperation(args);
   if (result.timedOut) {
     throw new AppManagementError(
       "adb-timeout",
       text || `adb ${args.join(" ")} timed out`,
-      { cause: result.error },
+      { cause: result.error, publicMessage: `${operation} timed out` },
     );
   }
   if (result.error) {
     throw new AppManagementError(
       "adb-failed",
       text || result.error.message || `adb ${args.join(" ")} failed`,
-      { cause: result.error },
+      { cause: result.error, publicMessage: `${operation} failed` },
     );
   }
   if (result.status !== 0) {
     throw new AppManagementError(
       "adb-failed",
       text || `adb ${args.join(" ")} failed`,
+      { publicMessage: `${operation} failed` },
     );
   }
   return { ok: true, output: text };

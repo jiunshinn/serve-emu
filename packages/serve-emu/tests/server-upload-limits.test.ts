@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { access, readFile } from "node:fs/promises";
 import { EventEmitter } from "node:events";
 import { AppManagementError } from "../src/app-management.ts";
@@ -640,6 +640,8 @@ describe("server request and upload limits", () => {
   test("maps ADB failure and timeout errors and still cleans staging", async () => {
     let action = 0;
     let cleanupCalls = 0;
+    const adbOutput =
+      "Performing Streamed Install\nadb: failed to install /tmp/serve-emu-upload-x1/error.apk: Failure [INSTALL_FAILED_INVALID_APK]";
     const harness = await createHarness({}, {
       stageMultipartUpload: async () =>
         stagedFile("error.apk", async () => {
@@ -649,19 +651,47 @@ describe("server request and upload limits", () => {
         action++;
         throw new AppManagementError(
           action === 1 ? "adb-failed" : "adb-timeout",
-          action === 1 ? "adb install failed" : "adb install timed out",
+          adbOutput,
+          {
+            publicMessage:
+              action === 1 ? "adb install failed" : "adb install timed out",
+          },
         );
       },
     });
 
-    const failed = await harness.fetch(fakeUploadRequest("/api/apps/install"));
-    const timedOut = await harness.fetch(fakeUploadRequest("/api/apps/install"));
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const failed = await harness.fetch(fakeUploadRequest("/api/apps/install"));
+      const timedOut = await harness.fetch(fakeUploadRequest("/api/apps/install"));
 
-    expect(failed.status).toBe(502);
-    expect(await failed.json()).toMatchObject({ code: "adb-failed" });
-    expect(timedOut.status).toBe(504);
-    expect(await timedOut.json()).toMatchObject({ code: "adb-timeout" });
-    expect(cleanupCalls).toBe(2);
+      expect(failed.status).toBe(502);
+      const failedBody = await failed.text();
+      expect(JSON.parse(failedBody)).toEqual({
+        ok: false,
+        code: "adb-failed",
+        error: "adb install failed",
+      });
+      expect(failedBody).not.toContain("serve-emu-upload");
+      expect(timedOut.status).toBe(504);
+      expect(await timedOut.json()).toEqual({
+        ok: false,
+        code: "adb-timeout",
+        error: "adb install timed out",
+      });
+      expect(cleanupCalls).toBe(2);
+      // The detail is kept for the server log.
+      expect(errorLog).toHaveBeenCalledTimes(2);
+      expect(String(errorLog.mock.calls[0]?.[0])).toBe(
+        "[api] POST /api/apps/install -> 502 adb install failed:",
+      );
+      expect(String(errorLog.mock.calls[1]?.[0])).toBe(
+        "[api] POST /api/apps/install -> 504 adb install timed out:",
+      );
+      expect((errorLog.mock.calls[0]?.[1] as Error).message).toBe(adbOutput);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   test("async stop waits for active upload cleanup", async () => {

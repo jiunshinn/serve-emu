@@ -15,6 +15,7 @@ export type ApiDependencies = {
   listDevices: (
     runExec?: typeof import("../exec.ts").execText,
   ) => Promise<import("../adb.ts").Device[]>;
+  /** Bound to the request, so failures are logged with its method and path. */
   errorResponse: (err: unknown, fallbackStatus?: number) => Response;
   deviceGrid: (context: DeviceContext) => Promise<DeviceGridResponse>;
   readJsonBody: (

@@ -1,3 +1,4 @@
+import { adbCommandFailure } from "./command-failure.ts";
 import { execText } from "./exec.ts";
 import type { ForegroundApp } from "./shared/api-contracts.ts";
 
@@ -11,15 +12,9 @@ async function adbShell(
 ): Promise<string> {
   const result = await runExec("adb", ["-s", serial, "shell", ...args], { timeout });
   if (result.status !== 0 || result.error) {
-    throw new Error(
-      (
-        result.stderr ||
-        result.error?.message ||
-        result.stdout ||
-        `adb shell ${args.join(" ")} failed`
-      ).trim(),
-      { cause: result.error ?? undefined },
-    );
+    // args[0] is the shell command (dumpsys, pidof); later args may be a
+    // client-supplied package name and stay out of the public message.
+    throw adbCommandFailure(`adb shell ${args[0]}`, result);
   }
   return result.stdout;
 }

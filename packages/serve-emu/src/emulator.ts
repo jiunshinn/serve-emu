@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { listAllDevices, type Device } from "./adb.ts";
+import { adbCommandFailure, CommandFailureError } from "./command-failure.ts";
 import { execText, type ExecResult } from "./exec.ts";
 
 export type EmulatorLaunch = {
@@ -165,8 +166,10 @@ async function listAvdsWithEmulator(
     maxBuffer: 1024 * 1024,
   });
   if (!execSucceeded(r)) {
-    throw new Error(
-      `emulator -list-avds failed: ${execFailure(r)}`,
+    throw new CommandFailureError(
+      "emulator-failed",
+      "emulator -list-avds failed",
+      execFailure(r),
       { cause: r.error ?? undefined },
     );
   }
@@ -397,7 +400,7 @@ export async function stopEmulator(
 ): Promise<void> {
   const r = await adb(serial, ["emu", "kill"], runExec);
   if (!execSucceeded(r)) {
-    throw new Error(`Failed to stop ${serial}: ${execFailure(r)}`);
+    throw adbCommandFailure("adb emu kill", r);
   }
 }
 

@@ -1,3 +1,4 @@
+import { adbCommandFailure, CommandFailureError } from "./command-failure.ts";
 import { execText } from "./exec.ts";
 import type {
   AccessibilityNode,
@@ -176,7 +177,9 @@ async function dumpXml(serial: string, signal?: AbortSignal): Promise<string> {
   };
   throwIfAborted();
   const path = `/sdcard/window-${Date.now()}.xml`;
-  let lastError = "uiautomator dump failed";
+  // uiautomator's output can carry device paths and stack traces: it stays in
+  // the error's message for the server log, never in the public message.
+  let lastError: CommandFailureError | undefined;
   for (let attempt = 1; attempt <= DUMP_ATTEMPTS; attempt++) {
     const dump = await execText("adb", ["-s", serial, "shell", "uiautomator", "dump", path], {
       timeout: 8_000,
@@ -185,12 +188,7 @@ async function dumpXml(serial: string, signal?: AbortSignal): Promise<string> {
     });
     throwIfAborted();
     if (dump.status !== 0 || dump.error) {
-      lastError = (
-        dump.stderr ||
-        dump.error?.message ||
-        dump.stdout ||
-        `uiautomator dump failed with status ${dump.status}`
-      ).trim();
+      lastError = adbCommandFailure("uiautomator dump", dump);
       await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
       continue;
     }
@@ -203,16 +201,11 @@ async function dumpXml(serial: string, signal?: AbortSignal): Promise<string> {
     throwIfAborted();
     void execText("adb", ["-s", serial, "shell", "rm", path], { timeout: 2_000 });
     if (result.status === 0 && !result.error) return result.stdout;
-    lastError = (
-      result.stderr ||
-      result.error?.message ||
-      result.stdout ||
-      "uiautomator dump read failed"
-    ).trim();
+    lastError = adbCommandFailure("uiautomator dump read", result);
     await new Promise((resolve) => setTimeout(resolve, 150 * attempt));
   }
   void execText("adb", ["-s", serial, "shell", "rm", path], { timeout: 2_000 });
-  throw new Error(lastError);
+  throw lastError ?? new CommandFailureError("adb-failed", "uiautomator dump failed");
 }
 
 export async function getAccessibilitySnapshot(
