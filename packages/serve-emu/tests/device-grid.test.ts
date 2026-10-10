@@ -106,3 +106,30 @@ test("device grid performs one adb discovery and reuses its snapshot", async () 
   expect(runningQueries).toBe(1);
   expect(receivedSnapshot).toBe(devices);
 });
+
+test("a running but offline AVD keeps one row with its name and is not offered to start", async () => {
+  const grid = await loadDeviceGrid("emulator-5554", "streaming", {
+    listAllDevices: async () => [
+      { serial: "emulator-5554", state: "device" },
+      { serial: "emulator-5556", state: "offline" },
+    ],
+    listAvds: async () => ["Pixel_A", "Pixel_B"],
+    resolveRunningAvds: async () => [
+      { serial: "emulator-5554", avd: "Pixel_A", state: "device" },
+      { serial: "emulator-5556", avd: "Pixel_B", state: "offline" },
+    ],
+  });
+  expect(grid.devices).toEqual([
+    expect.objectContaining({ id: "emulator-5554", avd: "Pixel_A", current: true, canSelect: true }),
+    expect.objectContaining({
+      id: "emulator-5556",
+      avd: "Pixel_B",
+      name: "Pixel_B",
+      state: "offline",
+      canSelect: false,
+      canStart: false,
+      canStop: true,
+    }),
+  ]);
+});
+

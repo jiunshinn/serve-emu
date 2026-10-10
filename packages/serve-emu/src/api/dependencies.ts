@@ -3,7 +3,8 @@ import type { DeviceSessionManager } from "../device-session-context.ts";
 import type { Gesture } from "../input.ts";
 import type { JsonResponseTracker } from "../json-response.ts";
 import type { GeoFix } from "../location.ts";
-import type { DeviceContext, DeviceGridResponse, WsData } from "../server.ts";
+import type { DeviceContext, WsData } from "../server.ts";
+import type { DeviceGridResponse } from "../shared/api-contracts.ts";
 
 /** Session-bound services consumed by the production HTTP routes. */
 export type ApiDependencies = {
