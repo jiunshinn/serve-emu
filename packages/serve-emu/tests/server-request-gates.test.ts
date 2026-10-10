@@ -728,6 +728,7 @@ describe("server shutdown and errors", () => {
       startServer(
         { serial: session.serial, port: 33_041 },
         {
+          log: () => {},
           openScrcpy: async () => session,
           createInputQueue: () => {
             throw new Error("input queue construction failed");

@@ -7,6 +7,22 @@ import {
 
 describe("server module", () => {
   test("server module remains importable without opening Android or a port", () => {
+    // A child process with Bun.serve trapped and no adb on PATH: importing
+    // must neither listen nor run any command.
+    const serverModule = new URL("../src/server.ts", import.meta.url).pathname;
+    const probe = Bun.spawnSync(
+      [
+        process.execPath,
+        "-e",
+        `Bun.serve = () => { throw new Error("Bun.serve called during import"); };
+         const { DEFAULT_HOST } = await import(${JSON.stringify(serverModule)});
+         console.log(DEFAULT_HOST);`,
+      ],
+      { env: { ...process.env, PATH: "/nonexistent" }, timeout: 10_000 },
+    );
+    expect(probe.stderr.toString()).toBe("");
+    expect(probe.exitCode).toBe(0);
+    expect(probe.stdout.toString().trim()).toBe(DEFAULT_HOST);
     expect(DEFAULT_HOST).toBe("127.0.0.1");
   });
 });

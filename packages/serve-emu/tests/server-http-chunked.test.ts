@@ -87,6 +87,7 @@ test("real Bun HTTP rejects oversized chunked JSON with structured 413", async (
   const started = await startServer(
     { serial: session.serial, port: 0 },
     {
+      log: () => {},
       openScrcpy: async () => session,
       listDevices: async () => [
         { serial: session.serial, state: "device" },
