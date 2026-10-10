@@ -37,10 +37,26 @@ export function routePlaybackErrorResponse(
   );
 }
 
+export type StartRoutePlaybackOptions = {
+  /** False once the caller's device session is gone. */
+  isCurrent?: () => boolean;
+  /** Wraps the start so its owner can wait for it (a device session's drain). */
+  track?: (
+    start: Promise<RoutePlaybackSnapshot>,
+  ) => Promise<RoutePlaybackSnapshot>;
+  /** The HTTP request; given, server failures are logged with its method and path. */
+  req?: Pick<Request, "method" | "url">;
+};
+
+/** POST /api/route: start playback and map every failure to a response. */
 export async function startRoutePlaybackResponse(
   playback: RouteStarter,
   request: RoutePlaybackRequest,
-  isCurrent: () => boolean = () => true,
+  {
+    isCurrent = () => true,
+    track = (start) => start,
+    req,
+  }: StartRoutePlaybackOptions = {},
 ): Promise<Response> {
   if (!isCurrent()) {
     return routePlaybackErrorResponse(
@@ -50,9 +66,16 @@ export async function startRoutePlaybackResponse(
     );
   }
   try {
-    const route: RoutePlaybackSnapshot = await playback.start(request);
+    const route = await track(playback.start(request));
+    if (!isCurrent()) {
+      return routePlaybackErrorResponse(
+        new RoutePlaybackConflictError(
+          "device session changed during route playback start",
+        ),
+      );
+    }
     return Response.json({ ok: true, route });
   } catch (error) {
-    return routePlaybackErrorResponse(error);
+    return routePlaybackErrorResponse(error, undefined, req);
   }
 }

@@ -12,6 +12,8 @@ import {
 import { listAllDevices } from "./adb.ts";
 import { loadDeviceGrid } from "./device-grid.ts";
 import { createApiRouter } from "./api/router.ts";
+import type { ApplyLocationOptions } from "./api/dependencies.ts";
+import { createDeviceService, type DeviceService } from "./device-service.ts";
 import { createApiRoutes } from "./api/routes/index.ts";
 import { importMediaFile, installApk } from "./app-management.ts";
 import {
@@ -174,6 +176,8 @@ export type ServerDependencies = {
   stopEmulator?: typeof stopEmulator;
   listRunningAvds?: typeof listRunningAvds;
   listAvds?: typeof listAvds;
+  /** Device commands used by the API routes (screenshot, settings, apps). */
+  deviceService?: DeviceService;
   loadAccessibility?: (
     serial: string,
     signal: AbortSignal,
@@ -286,6 +290,7 @@ export async function startServer(
     dependencies.setLocation ??
     ((serial: string, fix: GeoFix, signal: AbortSignal) =>
       setEmulatorLocationAsync(serial, fix, signal));
+  const device = dependencies.deviceService ?? createDeviceService();
   const createInputQueue =
     dependencies.createInputQueue ??
     ((session: ScrcpySession) =>
@@ -619,14 +624,26 @@ export async function startServer(
     });
   };
 
+  /**
+   * Runs device work for one session. The operation gets a signal that aborts
+   * when that session ends (a device switch) or the client goes away, so its
+   * adb process is killed instead of running to its timeout. Either way the
+   * caller sees a 409 for the old session, not the abort error.
+   */
   const runForContext = async <T>(
     context: DeviceContext,
-    operation: (captured: DeviceContext) => Promise<T>,
+    operation: (captured: DeviceContext, signal: AbortSignal) => Promise<T>,
+    requestSignal?: AbortSignal,
   ): Promise<T> => {
     sessions.assertCurrent(context);
-    const result = await operation(context);
-    sessions.assertCurrent(context);
-    return result;
+    const signal = requestSignal
+      ? AbortSignal.any([context.signal, requestSignal])
+      : context.signal;
+    try {
+      return await operation(context, signal);
+    } finally {
+      sessions.assertCurrent(context);
+    }
   };
 
   const runForPublishedContext = async <T>(
@@ -723,18 +740,22 @@ export async function startServer(
     client.touches.clear();
   };
 
+  /** The one place a location is applied, for REST and for session replay. */
   const applyLocation = async (
     context: DeviceContext,
     fix: GeoFix,
-    source: string,
-    record = true,
+    options: ApplyLocationOptions,
   ) => {
-    sessions.assertCurrent(context);
+    const ensureCurrent =
+      options.ensureCurrent ?? (() => sessions.assertCurrent(context));
+    ensureCurrent();
     context.route.stop();
-    await setLocation(context.serial, fix, context.signal);
-    sessions.assertCurrent(context);
+    await setLocation(context.serial, fix, options.signal ?? context.signal);
+    ensureCurrent();
     context.lastLocation = { ...fix, appliedAt: new Date().toISOString() };
-    if (record) context.recorder.recordLocation(fix, source);
+    if (options.record ?? true) {
+      context.recorder.recordLocation(fix, options.source);
+    }
     return context.lastLocation;
   };
 
@@ -883,7 +904,10 @@ export async function startServer(
   const appJsonEndpoint = async (
     context: DeviceContext,
     req: Request,
-    action: (payload: Record<string, unknown>) => unknown | Promise<unknown>,
+    action: (
+      payload: Record<string, unknown>,
+      signal: AbortSignal,
+    ) => unknown | Promise<unknown>,
   ) => {
     try {
       const payload = await readJsonBody(req, MAX_JSON_BODY_BYTES, context);
@@ -894,8 +918,12 @@ export async function startServer(
       ) {
         throw new Error("payload must be an object");
       }
-      const result = await action(payload as Record<string, unknown>);
-      sessions.assertCurrent(context);
+      const result = await runForContext(
+        context,
+        (_captured, signal) =>
+          Promise.resolve(action(payload as Record<string, unknown>, signal)),
+        req.signal,
+      );
       return Response.json(result);
     } catch (err) {
       return errorResponse(err, req);
@@ -1291,7 +1319,7 @@ export async function startServer(
     keyEndpoint,
     responseMetrics,
     enqueueGesture,
-    setLocation,
+    device,
     installEndpoint,
     fileImportEndpoint,
     appJsonEndpoint,

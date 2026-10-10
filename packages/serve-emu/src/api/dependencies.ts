@@ -1,3 +1,4 @@
+import type { DeviceService } from "../device-service.ts";
 import type { AccessibilitySnapshot } from "../accessibility.ts";
 import type { DeviceSessionManager } from "../device-session-context.ts";
 import type { Gesture } from "../input.ts";
@@ -53,8 +54,11 @@ export type ApiDependencies = {
   ) => Promise<void>;
   runForContext: <T>(
     context: DeviceContext,
-    operation: (captured: DeviceContext) => Promise<T>,
+    operation: (captured: DeviceContext, signal: AbortSignal) => Promise<T>,
+    requestSignal?: AbortSignal,
   ) => Promise<T>;
+  /** Device commands; pass the signal runForContext provides. */
+  device: DeviceService;
   srv: Bun.Server<WsData>;
   logcatStream: (context: DeviceContext, req: Request, url: URL) => Response;
   readAccessibilitySnapshot: (
@@ -81,11 +85,6 @@ export type ApiDependencies = {
     source: string,
     record?: boolean,
   ) => import("../control-input-queue.ts").ControlInputHandle;
-  setLocation: (
-    serial: string,
-    fix: GeoFix,
-    signal: AbortSignal,
-  ) => Promise<void>;
   installEndpoint: (context: DeviceContext, req: Request) => Promise<Response>;
   fileImportEndpoint: (
     context: DeviceContext,
@@ -94,13 +93,26 @@ export type ApiDependencies = {
   appJsonEndpoint: (
     context: DeviceContext,
     req: Request,
-    action: (payload: Record<string, unknown>) => unknown | Promise<unknown>,
+    action: (
+      payload: Record<string, unknown>,
+      signal: AbortSignal,
+    ) => unknown | Promise<unknown>,
   ) => Promise<Response>;
   applyLocation: (
     context: DeviceContext,
     fix: GeoFix,
-    source: string,
-    record?: boolean,
+    options: ApplyLocationOptions,
   ) => Promise<GeoFix & { appliedAt: string }>;
   MAX_ROUTE_BODY_BYTES: number;
+};
+
+export type ApplyLocationOptions = {
+  /** Session-recording source, for example "rest:location". */
+  source: string;
+  /** Defaults to true; replay applies without recording. */
+  record?: boolean;
+  /** Defaults to the device session's signal. */
+  signal?: AbortSignal;
+  /** Throws when the caller may no longer apply; defaults to the session check. */
+  ensureCurrent?: () => void;
 };

@@ -314,7 +314,7 @@ describe("RoutePlayback lifecycle", () => {
     const response = await startRoutePlaybackResponse(
       playback,
       request,
-      () => false,
+      { isCurrent: () => false },
     );
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
