@@ -179,6 +179,11 @@ while coalesced pointer moves use `ack: false`. A disconnected client's remainin
 touches are released on the same device session, with distinct wire pointer IDs
 for each client.
 
+Session recording is decided per pointer at its `down`: a touch `down` with
+`"record": false` keeps that pointer's `move`, `up`, and disconnect release out
+of the session, and a recorded `down` records them all, whatever their own
+`record` fields say.
+
 A timing request `{ "type": "clock-sync", "clientTsMs": 1000 }` receives
 `{ "type": "clock-sync", "clientTsMs": 1000, "serverTsMs": 1005 }`.
 Both timestamps are epoch milliseconds; the response is a timing sample, not a

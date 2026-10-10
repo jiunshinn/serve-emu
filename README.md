@@ -414,7 +414,11 @@ one-second status poll does not force the map center back onto the route.
 
 REST and WebSocket input events are recorded by default. Add `"record":false`
 to a tap, swipe, text, key, or `/api/location` payload when an event should not
-be saved. History uses a
+be saved. A WebSocket touch pointer is recorded or not as a whole, decided by
+its `down`: its moves, its `up`, and a disconnect release follow that choice, so
+the record flag never splits a gesture. Replay likewise skips a move or `up`
+whose `down` was not replayed (for example after a clear or an eviction) and
+lifts any pointer still pressed when it completes or is cancelled. History uses a
 2,000-event, 1 MiB circular retention budget; `/health` contains only its
 compact count/byte/replay summary. Text is normalized to scrcpy's 300-byte
 UTF-8 control limit before both dispatch and recording.
