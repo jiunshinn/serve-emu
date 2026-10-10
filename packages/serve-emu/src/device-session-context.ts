@@ -5,7 +5,7 @@ import type { Screen } from "./input.ts";
 import type { GeoFix } from "./location.ts";
 import { LogcatHub } from "./logcat.ts";
 import { RoutePlayback } from "./route-playback.ts";
-import type { ScrcpySession } from "./scrcpy.ts";
+import { closeScrcpySession, type ScrcpySession } from "./scrcpy.ts";
 import { SessionRecorder } from "./session-recorder.ts";
 import { disposeReplayBefore } from "./session-replay-lifecycle.ts";
 import type { SessionStatus } from "./session-status.ts";
@@ -287,11 +287,13 @@ export class ActiveDeviceSession<
     void (async () => {
       for (const cleanup of cleanups) this.#startCleanup(cleanup);
       await replayDisposed;
-      try {
-        this.scrcpy.close();
-      } catch {}
+      // Closing the sockets ends the drains; the rest of scrcpy's cleanup
+      // (process reap, adb forward removal) settles before dispose resolves so
+      // shutdown cannot exit with a forward still installed.
+      const scrcpyClosed = closeScrcpySession(this.scrcpy);
       await Promise.allSettled(drains);
       await this.#drainCleanups();
+      await scrcpyClosed;
       // A route start that was awaiting its initial location can otherwise
       // create a timer after the first close(). Close again after draining it.
       this.route.stop();

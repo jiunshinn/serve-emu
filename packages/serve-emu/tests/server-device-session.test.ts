@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { startServer } from "../src/server.ts";
 import type { EmulatorLaunch } from "../src/emulator.ts";
 import type { GeoFix } from "../src/location.ts";
@@ -412,5 +412,62 @@ describe("startServer device session lifecycle", () => {
     expect(switchResponse.status).toBe(200);
     expect(started.session).toBe(b.session);
     await started.stop();
+  });
+
+  test("keeps serving when the previous session's scrcpy cleanup fails", async () => {
+    const a = fakeScrcpy("A");
+    const b = fakeScrcpy("B");
+    const cleanupError = new AggregateError(
+      [new Error("adb: device unauthorized")],
+      "scrcpy cleanup failed",
+    );
+    // Like the real session: sockets close at once (ending the stream), and
+    // the adb cleanup that follows rejects.
+    a.session.close = () => {
+      a.endStream();
+      return Promise.reject(cleanupError);
+    };
+    const captured: CapturedServer = { options: null, stopCalls: 0 };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const started = await startServer(
+        { serial: "A", port: 3300 },
+        {
+          openScrcpy: async (serial) => (serial === "A" ? a : b).session,
+          listDevices: async () => [
+            { serial: "A", state: "device" },
+            { serial: "B", state: "device" },
+          ],
+          serve: capturingServe(captured),
+        },
+      );
+
+      const switchResponse = await invokeFetch(captured, "/api/devices/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serial: "B" }),
+      });
+      expect(switchResponse.status).toBe(200);
+      await Bun.sleep(0);
+      expect(unhandled).toEqual([]);
+      expect(errorLog).toHaveBeenCalledWith(
+        "[scrcpy] cleanup failed for A:",
+        cleanupError,
+      );
+
+      const health = await invokeFetch(captured, "/health");
+      expect(health.status).toBe(200);
+      expect(await health.json()).toMatchObject({ serial: "B", generation: 1 });
+      await started.stop();
+      expect(b.closeCalls()).toBe(1);
+    } finally {
+      errorLog.mockRestore();
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 });

@@ -33,6 +33,21 @@ export type ScrcpySession = {
   close: () => Promise<void>;
 };
 
+/**
+ * Closes a session and logs a failed cleanup instead of rejecting. `close()`
+ * rejects when stopping scrcpy or removing its adb forward fails, and an
+ * unobserved rejection terminates the whole server.
+ */
+export async function closeScrcpySession(
+  session: Pick<ScrcpySession, "serial" | "close">,
+): Promise<void> {
+  try {
+    await session.close();
+  } catch (err) {
+    console.error(`[scrcpy] cleanup failed for ${session.serial}:`, err);
+  }
+}
+
 export type ScrcpyErrorCode =
   | "clean-eof"
   | "truncated-header"
@@ -272,7 +287,7 @@ function commandFailure(
 
 function deviceUnavailable(result: AdbCommandResult): boolean {
   const detail = `${result.stderr ?? ""} ${result.stdout ?? ""}`;
-  return /\b(?:device offline|device .* not found|no devices?|closed)\b/i.test(
+  return /\b(?:device offline|device .* not found|no devices?|unauthorized|closed)\b/i.test(
     detail,
   );
 }
