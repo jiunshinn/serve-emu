@@ -1147,6 +1147,11 @@ export async function startScrcpy(
       "connecting scrcpy video socket",
       (signal) => runtime.connect(localPort!, timeouts.connectMs, signal),
     );
+    // Listen before the next await. Bun drops socket data that arrives while
+    // no `data` listener is attached (#162), and scrcpy writes to the video
+    // socket early: the dummy byte on accept, and the device name as soon as
+    // it accepts the control socket, which can be before this side resumes.
+    const reader = new FramedReader(videoSock);
     throwIfAborted(startupController.signal, "scrcpy startup aborted");
     controlSock = await withDeadline(
       runtime,
@@ -1158,7 +1163,6 @@ export async function startScrcpy(
     throwIfAborted(startupController.signal, "scrcpy startup aborted");
     controlSock.on("data", () => {});
 
-    const reader = new FramedReader(videoSock);
     const preambleBytes = await withDeadline(
       runtime,
       startupController.signal,

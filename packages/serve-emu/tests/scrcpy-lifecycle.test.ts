@@ -105,6 +105,17 @@ class FakeSocket extends EventEmitter {
     return this;
   }
 
+  droppedBytes = 0;
+
+  /** Bun's semantics: data that finds no `data` listener is lost. */
+  arrive(data: Buffer): void {
+    if (this.listenerCount("data") === 0) {
+      this.droppedBytes += data.length;
+      return;
+    }
+    this.emit("data", data);
+  }
+
   destroy(): this {
     this.destroyCalls++;
     if (this.destroyed) return this;
@@ -163,6 +174,11 @@ type ConnectCall = {
 };
 
 type HarnessOptions = {
+  /**
+   * The video bytes arrive while the control socket connects, on a socket
+   * that drops data without a listener (as Bun's node:net does).
+   */
+  videoDataDuringControlConnect?: boolean;
   cacheInitially?: boolean;
   deferProbe?: boolean;
   deferSocketPoll?: boolean;
@@ -329,9 +345,14 @@ function createHarness(options: HarnessOptions = {}) {
         connectBlocked.resolve(call);
         return waitForDeferred(connectDeferred, signal);
       }
+      if (options.videoDataDuringControlConnect && index % 2 === 1) {
+        state.sockets[index - 1]!.arrive(v4Stream());
+      }
       const socket = new FakeSocket(
         index % 2 === 0 ? `video-${index / 2}` : `control-${(index - 1) / 2}`,
-        index % 2 === 0 ? v4Stream() : undefined,
+        index % 2 === 0 && !options.videoDataDuringControlConnect
+          ? v4Stream()
+          : undefined,
       );
       state.sockets.push(socket);
       return socket as unknown as Socket;
@@ -462,6 +483,16 @@ describe("scrcpy async lifecycle", () => {
       ),
     ).toHaveLength(2);
     await second.close();
+  });
+
+  test("keeps video bytes that arrive while the control socket connects (#162)", async () => {
+    const harness = createHarness({ videoDataDuringControlConnect: true });
+    const session = await startWith(harness);
+
+    expect(harness.state.sockets[0]!.droppedBytes).toBe(0);
+    expect(session.meta.deviceName).toBe("Lifecycle Device");
+    expect(await session.readFrame()).toMatchObject({ isKey: true, pts: 123n });
+    await session.close();
   });
 
   test("a deferred adb command does not block unrelated timers", async () => {
