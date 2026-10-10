@@ -213,6 +213,41 @@ describe("LogcatHub", () => {
     await reader.cancel();
   });
 
+  test("a failed PID refresh keeps the previous PIDs", async () => {
+    const lookups: Array<() => Promise<Set<string>>> = [
+      async () => new Set(["123"]),
+      async () => {
+        throw new Error("pidof com.example.app failed: command deadline exceeded after 2000ms");
+      },
+    ];
+    const { hub, clock, children } = makeHub({
+      dependencies: { resolvePackagePids: () => lookups.shift()!() },
+    });
+    const reader = hub.subscribe({ packageName: "com.example.app" }).body!.getReader();
+    await flushMicrotasks();
+    expect((await readEvent(reader)).event).toBe("ready");
+
+    // The second lookup fails (a stalled adb, for example).
+    clock.runIntervals();
+    await flushMicrotasks();
+    expect(lookups).toHaveLength(0);
+    expect(hub.snapshot().lastError).toContain("deadline exceeded");
+
+    // Lines from the app's PID still pass; they do not mention the package,
+    // so a cleared PID set would have dropped them.
+    children[0]!.stdout.write(
+      "07-11 12:00:00.000 123 456 I Tag: from the app\n" +
+        "07-11 12:00:00.001 999 456 I Tag: from another process\n",
+    );
+    clock.runTimeouts();
+    const logs = await readEvent(reader);
+    expect(logs.data).toMatchObject({
+      lines: [{ line: "07-11 12:00:00.000 123 456 I Tag: from the app" }],
+    });
+    expect((logs.data as { lines: unknown[] }).lines).toHaveLength(1);
+    await reader.cancel();
+  });
+
   test("uses the captured serial for non-overlapping PID refreshes and filtering", async () => {
     type PendingLookup = {
       signal: AbortSignal;
