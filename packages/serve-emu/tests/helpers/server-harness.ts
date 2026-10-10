@@ -53,9 +53,12 @@ class FakeControlSocket extends EventEmitter {
   readonly destroyed = false;
   readonly writable = true;
   readonly writes: Buffer[] = [];
+  /** Records each write, then throws this error instead of completing it. */
+  throwOnWrite: Error | null = null;
 
   write(packet: Buffer, callback?: (error?: Error | null) => void): boolean {
     this.writes.push(Buffer.from(packet));
+    if (this.throwOnWrite) throw this.throwOnWrite;
     callback?.();
     return true;
   }
@@ -69,7 +72,10 @@ type FakeScrcpy = ScrcpySession & {
   failFrames(error: unknown): void;
 };
 
-function fakeScrcpy(serial = "emulator-5554"): FakeScrcpy {
+function fakeScrcpy(
+  serial = "emulator-5554",
+  options: { meta?: Partial<ScrcpySession["meta"]> } = {},
+): FakeScrcpy {
   const frames = new FrameFeed();
   const controlSocket = new FakeControlSocket();
   let settled = false;
@@ -83,6 +89,7 @@ function fakeScrcpy(serial = "emulator-5554"): FakeScrcpy {
       codecId: "h264",
       width: 720,
       height: 1280,
+      ...options.meta,
     },
     proc: new EventEmitter(),
     controlSocket,
@@ -129,6 +136,8 @@ type UpgradeData = {
 };
 
 type CapturedHandlers = {
+  /** The HTTP body ceiling startServer derived from its upload limits. */
+  maxRequestBodySize?: number;
   fetch(
     request: Request,
     server: CapturedServer,
@@ -200,6 +209,8 @@ type Harness = {
   session: FakeScrcpy;
   /** One fake scrcpy session per serial in `options.serials`. */
   sessions: Map<string, FakeScrcpy>;
+  /** Each serial the harness's openScrcpy was asked for, in order. */
+  openCalls: string[];
   server: CapturedServer;
   handlers: CapturedHandlers;
   request(path: string, init?: RequestInit): Promise<Response | undefined>;
@@ -215,6 +226,11 @@ type HarnessOptions = Partial<ServerOpts> & {
    * server starts on the first. Defaults to `[options.serial]`.
    */
   serials?: string[];
+  /**
+   * Prebuilt sessions instead of `serials`, for a test that also overrides
+   * openScrcpy (to gate or fail an open) and needs the same sessions.
+   */
+  sessions?: FakeScrcpy[];
 };
 
 const activeServers: Array<Awaited<ReturnType<typeof startServer>>> = [];
@@ -228,9 +244,22 @@ async function createHarness(
   options: HarnessOptions = {},
   dependencyOverrides: ServerDependencies = {},
 ): Promise<Harness> {
-  const serials = options.serials ?? [options.serial ?? "emulator-5554"];
-  const sessions = new Map(serials.map((serial) => [serial, fakeScrcpy(serial)]));
+  const {
+    serials: requestedSerials,
+    sessions: givenSessions,
+    ...serverOptions
+  } = options;
+  const sessions = new Map(
+    (
+      givenSessions ??
+      (requestedSerials ?? [options.serial ?? "emulator-5554"]).map((serial) =>
+        fakeScrcpy(serial),
+      )
+    ).map((fake) => [fake.serial, fake]),
+  );
+  const serials = [...sessions.keys()];
   const session = sessions.get(serials[0]!)!;
+  const openCalls: string[] = [];
   let handlers: CapturedHandlers | null = null;
   const server: CapturedServer = {
     port: options.port ?? 33_040,
@@ -252,22 +281,21 @@ async function createHarness(
   }) as unknown as typeof Bun.serve;
   const started = await startServer(
     {
+      ...serverOptions,
       serial: options.serial ?? session.serial,
       port: options.port ?? server.port,
-      host: options.host,
-      token: options.token,
-      allowedHosts: options.allowedHosts,
     },
     {
       log: () => {},
       openScrcpy: async (serial) => {
+        openCalls.push(serial);
         const opened = sessions.get(serial);
         if (!opened) throw new Error(`no fake scrcpy session for ${serial}`);
         return opened;
       },
       // With explicit serials, fake adb lists exactly those devices. Without,
       // the real listing runs (tests stub `adb` on PATH for it).
-      ...(options.serials
+      ...(requestedSerials || givenSessions
         ? {
             listDevices: async () =>
               serials.map((serial) => ({ serial, state: "device" })),
@@ -300,6 +328,7 @@ async function createHarness(
     started,
     session,
     sessions,
+    openCalls,
     server,
     handlers: capturedHandlers,
     request,
@@ -327,13 +356,14 @@ async function response(
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
+  message = "condition was not met before timeout",
 ): Promise<void> {
   const deadline = Date.now() + 1_000;
   while (Date.now() < deadline) {
     if (await predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
-  throw new Error("condition was not met before timeout");
+  throw new Error(message);
 }
 
 export {
