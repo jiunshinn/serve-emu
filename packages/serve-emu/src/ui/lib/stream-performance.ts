@@ -22,6 +22,40 @@ class Samples {
   }
 }
 
+export type RecoveryAdmission =
+  | { action: "decode"; endsDrop: boolean }
+  | { action: "drop"; requestKeyframe: boolean }
+  | { action: "recover" };
+
+/**
+ * Decides what an incoming packet does to a pipeline that may be recovering.
+ *
+ * While dropping until a keyframe, every dropped delta re-asks for one (the
+ * request has its own cooldown), so a request lost to a cooldown or coalesced
+ * by the server cannot leave the stream frozen until the encoder's next
+ * periodic IDR. The keyframe that ends the drop is always decoded: it is the
+ * frame recovery asked for, and holding it back because older work is still
+ * queued would only start another drop.
+ */
+export function admitDuringRecovery(input: {
+  dropping: boolean;
+  isKey: boolean;
+  decoderReady: boolean;
+  backlogged: () => boolean;
+}): RecoveryAdmission {
+  if (input.dropping) {
+    if (!input.isKey || !input.decoderReady) {
+      return { action: "drop", requestKeyframe: true };
+    }
+    return { action: "decode", endsDrop: true };
+  }
+  if (!input.decoderReady) {
+    return { action: "drop", requestKeyframe: !input.isKey };
+  }
+  if (input.backlogged()) return { action: "recover" };
+  return { action: "decode", endsDrop: false };
+}
+
 export class StreamPerformance {
   #pending = new Map<number, number>();
   #decode = new Samples();
