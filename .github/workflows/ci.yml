@@ -13,28 +13,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: ${{ matrix.name }}
+  check:
+    name: Package check
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Complete package check
-            command: bun run --filter serve-emu check
-          - name: Unit tests
-            command: bun run --filter serve-emu test
-          - name: Critical coverage
-            command: bun run --filter serve-emu coverage
-          - name: Server typecheck
-            command: bun run --filter serve-emu typecheck
-          - name: UI typecheck
-            command: bun run --filter serve-emu typecheck:ui
-          - name: Test and script typecheck
-            command: bun run --filter serve-emu typecheck:tests
-          - name: Production build
-            command: bun run --filter serve-emu build
+    # One step per command of the `check` script in packages/serve-emu/
+    # package.json, in the same order (tests/ci-workflow.test.ts enforces
+    # this). Each step runs even if an earlier one failed, so every failure in
+    # a push is reported once, by name.
     steps:
       - name: Check out repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
@@ -47,10 +33,36 @@ jobs:
           bun-version: 1.3.13
 
       - name: Install locked dependencies
+        id: install
         run: bun install --frozen-lockfile
 
-      - name: Run ${{ matrix.name }}
-        run: ${{ matrix.command }}
+      - name: README in sync
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run --filter serve-emu docs:check
+
+      - name: Unit tests and critical coverage
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run --filter serve-emu coverage
+
+      - name: Server typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run --filter serve-emu typecheck
+
+      - name: UI typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run --filter serve-emu typecheck:ui
+
+      - name: Test and script typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run --filter serve-emu typecheck:tests
+
+      - name: Production build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run --filter serve-emu build
+
+      - name: Package smoke test
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: bun run --filter serve-emu test:package
 
   browser:
     name: Browser streaming integration
