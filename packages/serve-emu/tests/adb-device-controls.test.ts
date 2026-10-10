@@ -1,7 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { spawn } from "node:child_process";
 import {
-  getDeviceSize,
   getFontScale,
   getNetworkStatus,
   getNightMode,
@@ -14,8 +12,6 @@ import {
   setNetworkEnabled,
   setNightMode,
   setUserRotation,
-  shell,
-  shellSpawn,
 } from "../src/adb.ts";
 import type { execBuffer, execText } from "../src/exec.ts";
 
@@ -112,7 +108,7 @@ unauthorized-1 unauthorized
   });
 });
 
-describe("ADB screenshot and shell commands", () => {
+describe("ADB screenshot", () => {
   test("captures PNG bytes with a bounded command", async () => {
     const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
     const calls: unknown[][] = [];
@@ -131,67 +127,16 @@ describe("ADB screenshot and shell commands", () => {
     ]);
   });
 
-  test("reports screenshot and shell failures", async () => {
+  test("reports screenshot failures", async () => {
     const failedBuffer = (async () =>
       result(Buffer.from("binary diagnostic"), { status: 1 })) as typeof execBuffer;
     await expect(screencapPng("device-1", failedBuffer)).rejects.toThrow(
       "screencap failed: unknown error",
     );
-
-    const failedText = (async () =>
-      result("", { status: 1, stderr: "permission denied" })) as typeof execText;
-    await expect(
-      shell("device-1", ["settings", "put", "global", "x", "1"], failedText),
-    ).rejects.toThrow(
-      "adb shell failed: permission denied",
-    );
-  });
-
-  test("passes shell arguments to promise and streaming process executors", async () => {
-    const textCalls: unknown[][] = [];
-    const runExec = (async (command, args, options) => {
-      textCalls.push([command, args, options]);
-      return result("");
-    }) as typeof execText;
-    await shell("device-1", ["logcat", "-d"], runExec);
-    expect(textCalls).toEqual([
-      ["adb", ["-s", "device-1", "shell", "logcat", "-d"], { timeout: 5_000 }],
-    ]);
-
-    const child = { pid: 1234 };
-    const spawnCalls: unknown[][] = [];
-    const runSpawn = ((command: string, args: string[]) => {
-      spawnCalls.push([command, args]);
-      return child;
-    }) as unknown as typeof spawn;
-    expect(shellSpawn("device-1", ["logcat"], runSpawn) as unknown).toBe(child);
-    expect(spawnCalls).toEqual([
-      ["adb", ["-s", "device-1", "shell", "logcat"]],
-    ]);
   });
 });
 
 describe("ADB display controls", () => {
-  test("parses physical or override display sizes and rejects malformed output", async () => {
-    const successful = (async () =>
-      result("Physical size: 1440x2960\nOverride size: 1080x2220\n")) as typeof execText;
-    await expect(getDeviceSize("device-1", successful)).resolves.toEqual({
-      width: 1440,
-      height: 2960,
-    });
-
-    const malformed = (async () => result("size unavailable")) as typeof execText;
-    await expect(getDeviceSize("device-1", malformed)).rejects.toThrow(
-      "Could not parse wm size output: size unavailable",
-    );
-
-    const failed = (async () =>
-      result("", { status: 1, stderr: "wm failed" })) as typeof execText;
-    await expect(getDeviceSize("device-1", failed)).rejects.toThrow(
-      "wm size failed: wm failed",
-    );
-  });
-
   test("maps free and locked rotations to logical orientations", async () => {
     const cases = [
       { raw: "free\n", mode: "free", rotation: null, orientation: "auto" },

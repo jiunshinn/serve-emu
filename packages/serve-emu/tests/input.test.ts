@@ -1,21 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { Socket } from "node:net";
 import {
   MAX_TEXT_BYTES,
-  dispatch,
+  compileGesture,
   normalizeTextForControl,
   parseGesture,
   type Gesture,
 } from "../src/input.ts";
-
-class FakeSocket {
-  readonly writes: Buffer[] = [];
-
-  write(chunk: Uint8Array | string): boolean {
-    this.writes.push(Buffer.from(chunk));
-    return true;
-  }
-}
 
 function parsedText(text: string): Extract<Gesture, { type: "text" }> {
   const gesture = parseGesture({ type: "text", text });
@@ -30,11 +20,11 @@ function decodeTextPacket(packet: Buffer): string {
   return packet.subarray(5).toString("utf8");
 }
 
+// The control queue writes compileGesture's steps to the socket as they are.
 async function dispatchText(gesture: Extract<Gesture, { type: "text" }>) {
-  const socket = new FakeSocket();
-  await dispatch(socket as unknown as Socket, gesture, { width: 1080, height: 1920 });
-  expect(socket.writes).toHaveLength(1);
-  return socket.writes[0];
+  const { steps } = compileGesture(gesture, { width: 1080, height: 1920 });
+  expect(steps).toHaveLength(1);
+  return steps[0]!.packet;
 }
 
 async function expectParsedPacketParity(input: string, expected: string) {
@@ -103,7 +93,7 @@ describe("text control packet parity", () => {
     );
   });
 
-  test("dispatch normalizes callers that bypass parseGesture", async () => {
+  test("compileGesture normalizes callers that bypass parseGesture", async () => {
     const input = `${"한".repeat(100)}😀extra`;
     const expected = "한".repeat(100);
     const packet = await dispatchText({ type: "text", text: input });

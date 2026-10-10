@@ -1,4 +1,5 @@
-import { listAllDevices, type Device } from "./adb.ts";
+import { listAllDevices } from "./adb.ts";
+import type { Device } from "./shared/api-contracts.ts";
 import {
   listAvds,
   resolveRunningAvds,

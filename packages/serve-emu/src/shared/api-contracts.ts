@@ -154,7 +154,6 @@ export type GeoFix = {
   satellites?: number;
   velocity?: number;
 };
-export type LocationPoint = GeoFix;
 export type AppliedGeoFix = GeoFix & { appliedAt: string };
 export type LocationResponse = {
   serial: string;
@@ -213,7 +212,6 @@ export type LocationSessionEvent = {
   location: GeoFix;
 };
 export type SessionEvent = GestureSessionEvent | LocationSessionEvent;
-export type RecordedEvent = SessionEvent;
 export type SessionReplayStatus =
   | "idle"
   | "running"

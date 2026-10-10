@@ -2,8 +2,9 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { listAllDevices, type Device } from "./adb.ts";
+import { listAllDevices } from "./adb.ts";
 import { adbCommandFailure, CommandFailureError } from "./command-failure.ts";
+import type { Device } from "./shared/api-contracts.ts";
 import { execText, type ExecResult } from "./exec.ts";
 
 export type EmulatorLaunch = {
@@ -521,7 +522,7 @@ async function waitForBoot(
 }
 
 /** The booted emulator on the launch's port is another AVD, which is left running. */
-export class EmulatorIdentityError extends Error {
+class EmulatorIdentityError extends Error {
   constructor(serial: string, expected: string, actual: string) {
     super(
       `${serial} is running AVD "${actual}", not "${expected}"; ` +

@@ -6,7 +6,6 @@ import { startServer } from "../src/server.ts";
 import {
   FramedReader,
   type ScrcpySession,
-  type StartOpts,
 } from "../src/scrcpy.ts";
 
 function deferred<T>() {
@@ -71,12 +70,12 @@ describe("live device switching", () => {
     const started = await startServer(
       { serial: "device-1", host: "127.0.0.1", port: 0 },
       {
-        listAllDevices: async () => [
+        listDevices: async () => [
           { serial: "device-1", state: "device" },
           { serial: "device-2", state: "device" },
         ],
-        startScrcpy: async (opts: StartOpts) => {
-          if (opts.serial === "device-1") return initial;
+        openScrcpy: async (serial) => {
+          if (serial === "device-1") return initial;
           nextRequested.resolve();
           return nextStart.promise;
         },
@@ -139,13 +138,13 @@ describe("live device switching", () => {
     const started = await startServer(
       { serial: "device-1", host: "127.0.0.1", port: 0 },
       {
-        listAllDevices: async () => [
+        listDevices: async () => [
           { serial: "device-1", state: "device" },
           { serial: "device-2", state: "device" },
         ],
-        startScrcpy: async (opts: StartOpts) => {
-          if (opts.serial === "device-1") return initial;
-          candidateRequested.resolve(opts.signal!);
+        openScrcpy: async (serial, signal) => {
+          if (serial === "device-1") return initial;
+          candidateRequested.resolve(signal!);
           return candidateStart.promise;
         },
       },
@@ -191,7 +190,7 @@ describe("live device switching", () => {
             host: "127.0.0.1",
             port: occupied.port!,
           },
-          { startScrcpy: async () => initial },
+          { openScrcpy: async () => initial },
         ),
       ).rejects.toThrow();
       expect(closeCount).toBe(1);

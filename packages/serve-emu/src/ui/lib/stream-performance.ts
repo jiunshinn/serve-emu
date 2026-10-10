@@ -1,7 +1,7 @@
 /** Local elapsed times are independent of server/browser clock skew. */
 const SAMPLE_CAPACITY = 256;
-export const MAX_DECODE_WAIT_MS = 250;
-export const HARD_DECODE_QUEUE_SIZE = 48;
+const MAX_DECODE_WAIT_MS = 250;
+const HARD_DECODE_QUEUE_SIZE = 48;
 
 class Samples {
   #values: number[] = [];

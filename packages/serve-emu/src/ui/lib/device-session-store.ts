@@ -101,14 +101,6 @@ export function createDeviceSessionStore(): DeviceSessionStore {
 
 export const deviceSessionStore = createDeviceSessionStore();
 
-export function useDeviceSessionRevision(): number {
-  return useSyncExternalStore(
-    deviceSessionStore.subscribe,
-    () => deviceSessionStore.getSnapshot().revision,
-    () => 0,
-  );
-}
-
 export function useDeviceSessionSnapshot(): DeviceSessionSnapshot {
   return useSyncExternalStore(
     deviceSessionStore.subscribe,

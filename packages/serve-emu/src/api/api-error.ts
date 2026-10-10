@@ -5,7 +5,7 @@ import type {
 
 export type { ApiErrorCode } from "../shared/api-contracts.ts";
 
-export const API_ERROR_STATUS = {
+const API_ERROR_STATUS = {
   invalid_request: 400,
   invalid_json: 400,
   unauthorized: 401,
@@ -61,7 +61,7 @@ export class ApiError extends Error {
   }
 }
 
-export function apiErrorBody(error: ApiError): ApiErrorBody {
+function apiErrorBody(error: ApiError): ApiErrorBody {
   return {
     ok: false,
     error: {

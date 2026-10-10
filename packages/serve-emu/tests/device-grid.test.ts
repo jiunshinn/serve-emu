@@ -3,7 +3,7 @@ import {
   loadDeviceGrid,
   type DeviceGridDependencies,
 } from "../src/device-grid.ts";
-import type { Device } from "../src/adb.ts";
+import type { Device } from "../src/shared/api-contracts.ts";
 
 type Deferred<T> = {
   promise: Promise<T>;

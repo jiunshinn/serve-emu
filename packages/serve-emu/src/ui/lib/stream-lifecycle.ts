@@ -4,9 +4,9 @@ import type {
   StreamPhase,
 } from "../../shared/worker-contracts";
 
-export const DEFAULT_STREAM_WAITING_MS = 5_000;
-export const DEFAULT_STREAM_STALL_MS = 5_000;
-export const DEFAULT_PACKET_FRESH_MS = 2_000;
+const DEFAULT_STREAM_WAITING_MS = 5_000;
+const DEFAULT_STREAM_STALL_MS = 5_000;
+const DEFAULT_PACKET_FRESH_MS = 2_000;
 
 export type { StreamGenerationReason, StreamLifecycleState, StreamPhase };
 

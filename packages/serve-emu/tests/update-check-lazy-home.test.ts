@@ -21,8 +21,19 @@ test("importing update-check does not resolve the home directory", async () => {
   const updateCheck = (await import(specifier)) as typeof import("../src/update-check.ts");
   expect(calls).toBe(0);
 
-  expect(updateCheck.defaultUpdateCachePath()).toBe(
-    join(home, ".cache", "serve-emu", "update-check.json"),
-  );
+  // Without a cachePath, the check resolves the default path on use. A fresh
+  // cache entry keeps it off the network.
+  let cachePath: string | undefined;
+  await updateCheck.getUpdateNotice({
+    packageName: "serve-emu",
+    currentVersion: "1.0.0",
+    now: () => 1_000,
+    readCache: async (path) => {
+      cachePath = path;
+      return { checkedAt: 1_000, latestVersion: "1.0.0" };
+    },
+    writeCache: async () => {},
+  });
+  expect(cachePath).toBe(join(home, ".cache", "serve-emu", "update-check.json"));
   expect(calls).toBe(1);
 });

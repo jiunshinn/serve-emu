@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { CommandFailureError } from "./command-failure.ts";
 import { execText } from "./exec.ts";
 
@@ -82,12 +81,6 @@ export function parseGeoFix(value: unknown): GeoFix {
   }
 
   return { latitude, longitude, altitude, satellites, velocity };
-}
-
-export function setEmulatorLocation(serial: string, fix: GeoFix): void {
-  const r = spawnSync("adb", geoFixArgs(serial, fix), { encoding: "utf8", timeout: 5_000 });
-  const output = `${r.stdout}${r.stderr}`.trim();
-  assertGeoFixOutput(r.status, output);
 }
 
 export async function setEmulatorLocationAsync(

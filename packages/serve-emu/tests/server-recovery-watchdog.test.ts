@@ -265,7 +265,7 @@ async function createHarness(options: {
   const clock = new ManualClock();
   const captured = captureServe();
   const dependencies: ServerDependencies = {
-    startScrcpy: async ({ serial }) => {
+    openScrcpy: async (serial) => {
       startCalls.push(serial);
       const gate = startGates.get(serial);
       if (gate) await gate.promise;
@@ -273,7 +273,7 @@ async function createHarness(options: {
       if (!session) throw new Error(`missing fake session ${serial}`);
       return session;
     },
-    listAllDevices: async () =>
+    listDevices: async () =>
       serials.map((serial) => ({ serial, state: "device" })),
     serve: captured.serve,
     recoveryClock: clock,

@@ -116,8 +116,8 @@ async function createHarness(
       ...opts,
     },
     {
-      startScrcpy: async () => initial.session,
-      listAllDevices: async () => [
+      openScrcpy: async () => initial.session,
+      listDevices: async () => [
         { serial: "device-old", state: "device" },
         { serial: "device-new", state: "device" },
       ],
@@ -411,7 +411,7 @@ describe("server request and upload limits", () => {
     let stageStarted = false;
     let actionCalled = false;
     const harness = await createHarness({}, {
-      startScrcpy: async ({ serial }) =>
+      openScrcpy: async (serial) =>
         serial === "device-old" ? old.session : next.session,
       stageMultipartUpload: async (_request, options) => {
         stageStarted = true;
@@ -455,7 +455,7 @@ describe("server request and upload limits", () => {
     let adbStarted = false;
     let actionSerial = "";
     const harness = await createHarness({}, {
-      startScrcpy: async ({ serial }) => {
+      openScrcpy: async (serial) => {
         if (serial === "device-old") return old.session;
         events.push("next-prepare");
         await nextReady.promise;

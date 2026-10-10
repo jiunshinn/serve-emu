@@ -237,12 +237,12 @@ async function createHarness(options: {
   const queues = new Map<string, ControlInputQueue>();
   const captured = captureServe();
   const dependencies: ServerDependencies = {
-    startScrcpy: async ({ serial }) => {
+    openScrcpy: async (serial) => {
       const session = sessions.get(serial);
       if (!session) throw new Error(`missing fake session ${serial}`);
       return session;
     },
-    listAllDevices: async () =>
+    listDevices: async () =>
       serials.map((serial) => ({ serial, state: "device" })),
     serve: captured.serve,
     createInputQueue: (session) => {

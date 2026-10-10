@@ -20,6 +20,10 @@
     "src/device-grid.ts", // #108
     "src/ui/lib/poller.ts" // #107
   ],
+  // A type its own module uses (a union member in a shared wire contract,
+  // say) may stay exported to document the contract. Values may not: export
+  // a constant or function only when another module imports it.
+  "ignoreExportsUsedInFile": { "type": true, "interface": true },
   "includeEntryExports": true,
   "ignoreBinaries": ["adb", "tsc"]
 }

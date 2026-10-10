@@ -24,14 +24,14 @@ export class RoutePlaybackConflictError extends Error {
   }
 }
 
-export class RoutePlaybackDisposedError extends RoutePlaybackConflictError {
+class RoutePlaybackDisposedError extends RoutePlaybackConflictError {
   constructor(message: string) {
     super(message);
     this.name = "RoutePlaybackDisposedError";
   }
 }
 
-export class RoutePlaybackApplyError extends Error {
+class RoutePlaybackApplyError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "RoutePlaybackApplyError";

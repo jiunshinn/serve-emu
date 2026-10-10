@@ -156,7 +156,7 @@ describe("startServer device session lifecycle", () => {
     });
     expect(switchResponse.status).toBe(200);
     expect(started.session).toBe(b.session);
-    expect(started.getSession()).toBe(b.session);
+    expect(started.session).toBe(b.session);
     expect(a.closeCalls()).toBe(1);
 
     oldLocation.resolve();

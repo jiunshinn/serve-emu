@@ -106,16 +106,6 @@ async function adb(
   return { ok: true, output: text };
 }
 
-function adbHost(
-  serial: string,
-  args: string[],
-  timeout = 30_000,
-  signal?: AbortSignal,
-  runExec: typeof execText = execText,
-): Promise<AppActionResult> {
-  return adb(serial, args, timeout, signal, runExec);
-}
-
 function validate(value: unknown, name: string, pattern: RegExp): string {
   if (typeof value !== "string" || !pattern.test(value.trim())) {
     throw new Error(`${name} is invalid`);
@@ -192,7 +182,7 @@ export async function importMediaFile(
       signal,
       runExec,
     );
-    await adbHost(
+    await adb(
       serial,
       ["push", file.path, partialPath],
       120_000,
