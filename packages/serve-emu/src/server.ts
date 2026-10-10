@@ -6,12 +6,8 @@ import {
   type AccessibilitySnapshot,
 } from "./accessibility.ts";
 import { listAllDevices } from "./adb.ts";
-import { loadDeviceGrid } from "./device-grid.ts";
 import { createApiRouter } from "./api/router.ts";
-import type {
-  ApiDependencies,
-  ApplyLocationOptions,
-} from "./api/dependencies.ts";
+import type { ApiDependencies } from "./api/dependencies.ts";
 import { createDeviceService, type DeviceService } from "./device-service.ts";
 import { apiErrorResponse } from "./api/api-error.ts";
 import { toApiError, type ApiErrorFallback } from "./api/error-mapping.ts";
@@ -31,11 +27,9 @@ import {
   stopEmulator,
 } from "./emulator.ts";
 import { getExecSnapshot } from "./exec.ts";
-import type { Gesture } from "./input.ts";
 import { JsonResponseTracker } from "./json-response.ts";
 import { setEmulatorLocationAsync, type GeoFix } from "./location.ts";
 import { stageMultipartUpload } from "./multipart-upload.ts";
-import { readJsonLimited } from "./request-body.ts";
 import {
   closeScrcpySession,
   startScrcpy,
@@ -44,6 +38,7 @@ import {
 import { createRequestGate } from "./server/auth.ts";
 import { createEmulatorRegistry } from "./server/emulators.ts";
 import { buildHealthSnapshot } from "./server/health.ts";
+import { createSessionServices } from "./server/session-services.ts";
 import { serveStaticFile } from "./server/static.ts";
 import type { Client, DeviceContext, WsData } from "./server/types.ts";
 import {
@@ -61,7 +56,6 @@ import {
   type RecoveryWatchdogClock,
 } from "./session-recovery-watchdog.ts";
 import type { DeviceSelectionResponse } from "./shared/api-contracts.ts";
-import type { DeviceGridResponse } from "./shared/api-contracts.ts";
 import {
   UploadManager,
   UploadManagerError,
@@ -142,6 +136,23 @@ export type ServerDependencies = {
   uiDir?: string;
 };
 
+/**
+ * Every handled /api failure, in the documented shape via toApiError.
+ * Server-side failures are logged with the request's method and path and
+ * the original error; the response carries only the public message.
+ */
+function errorResponse(
+  err: unknown,
+  req: Request,
+  fallback: ApiErrorFallback = "invalid_request",
+) {
+  const error = toApiError(err, fallback);
+  if (error.status >= 500) {
+    logApiFailure(req, error.status, error.message, err);
+  }
+  return apiErrorResponse(error);
+}
+
 export async function startServer(
   opts: ServerOpts,
   dependencies: ServerDependencies = {},
@@ -163,8 +174,7 @@ export async function startServer(
       }));
   const serve = dependencies.serve ?? Bun.serve;
   const log = dependencies.log ?? ((line: string) => console.log(line));
-  const listDevices =
-    dependencies.listDevices ?? listAllDevices;
+  const listDevices = dependencies.listDevices ?? listAllDevices;
   const emulators = createEmulatorRegistry({
     startEmulator: dependencies.startEmulator ?? startEmulator,
     stopEmulator: dependencies.stopEmulator ?? stopEmulator,
@@ -229,15 +239,28 @@ export async function startServer(
     return context;
   };
 
-  const initialScrcpy = await openScrcpy(opts.serial, opts.signal);
-  let initialContext: DeviceContext;
-  try {
-    initialContext = createContext(opts.serial, 0, initialScrcpy);
-  } catch (err) {
-    await closeScrcpySession(initialScrcpy);
-    throw err;
-  }
-  const sessions = new DeviceSessionManager(initialContext);
+  /** Opens scrcpy and wraps it in a session; scrcpy closes if that fails. */
+  const openContext = async (
+    serial: string,
+    generation: number,
+    signal?: AbortSignal,
+  ): Promise<DeviceContext> => {
+    const scrcpy = await openScrcpy(serial, signal);
+    try {
+      return createContext(serial, generation, scrcpy);
+    } catch (err) {
+      await closeScrcpySession(scrcpy);
+      throw err;
+    }
+  };
+  const logReady = ({ scrcpy: { meta } }: DeviceContext) =>
+    log(
+      `scrcpy ready: ${meta.deviceName} • ${meta.codecId} • ${meta.width}×${meta.height}`,
+    );
+
+  const sessions = new DeviceSessionManager(
+    await openContext(opts.serial, 0, opts.signal),
+  );
   const responseMetrics = new JsonResponseTracker([
     "health",
     "sessionPage",
@@ -249,9 +272,7 @@ export async function startServer(
     clock: recoveryClock,
     isStopping: () => stopRequested,
   });
-  log(
-    `scrcpy ready: ${initialScrcpy.meta.deviceName} • ${initialScrcpy.meta.codecId} • ${initialScrcpy.meta.width}×${initialScrcpy.meta.height}`,
-  );
+  logReady(sessions.current);
 
   const health = (context = sessions.current) => {
     const now = recoveryClock.now();
@@ -266,128 +287,15 @@ export async function startServer(
     });
   };
 
-  const deviceGrid = async (
-    context: DeviceContext,
-  ): Promise<DeviceGridResponse> => {
-    // One `adb devices` snapshot per request: running-AVD names resolve from
-    // that same list, so the rows cannot disagree with each other.
-    const grid = await loadDeviceGrid(context.serial, context.status, {
-      listAllDevices: () => listDevices(),
-      listAvds: () => availableAvds(),
-      resolveRunningAvds: (devices) => listActiveAvds(devices),
-    });
-    sessions.assertPublished(context);
-    return grid;
-  };
-
-  const readJsonBody = async (
-    req: Request,
-    maxBytes = MAX_JSON_BODY_BYTES,
-    context?: DeviceContext,
-    requireUsableContext = true,
-  ): Promise<unknown> => {
-    const value = await readJsonLimited(req, maxBytes);
-    if (context) {
-      if (requireUsableContext) sessions.assertCurrent(context);
-      else sessions.assertPublished(context);
-    }
-    return value;
-  };
-
-  /**
-   * Every handled /api failure, in the documented shape via toApiError.
-   * Server-side failures are logged with the request's method and path and
-   * the original error; the response carries only the public message.
-   */
-  const errorResponse = (
-    err: unknown,
-    req: Request,
-    fallback: ApiErrorFallback = "invalid_request",
-  ) => {
-    const error = toApiError(err, fallback);
-    if (error.status >= 500) {
-      logApiFailure(req, error.status, error.message, err);
-    }
-    return apiErrorResponse(error);
-  };
-
-  /**
-   * Runs device work for one session. The operation gets a signal that aborts
-   * when that session ends (a device switch) or the client goes away, so its
-   * adb process is killed instead of running to its timeout. Either way the
-   * caller sees a 409 for the old session, not the abort error.
-   */
-  const runForContext = async <T>(
-    context: DeviceContext,
-    operation: (captured: DeviceContext, signal: AbortSignal) => Promise<T>,
-    requestSignal?: AbortSignal,
-  ): Promise<T> => {
-    sessions.assertCurrent(context);
-    const signal = requestSignal
-      ? AbortSignal.any([context.signal, requestSignal])
-      : context.signal;
-    try {
-      return await operation(context, signal);
-    } finally {
-      sessions.assertCurrent(context);
-    }
-  };
-
-  const runForPublishedContext = async <T>(
-    context: DeviceContext,
-    operation: (captured: DeviceContext) => Promise<T>,
-  ): Promise<T> => {
-    sessions.assertPublished(context);
-    const result = await operation(context);
-    sessions.assertPublished(context);
-    return result;
-  };
-
-  const readAccessibilitySnapshot = async (
-    context: DeviceContext,
-    cacheMs = 2_500,
-  ) => {
-    const snapshot = await context.readAccessibilitySnapshot(
-      loadAccessibility,
-      cacheMs,
-    );
-    sessions.assertCurrent(context);
-    return snapshot;
-  };
-
-  const enqueueGesture = (
-    context: DeviceContext,
-    gesture: Gesture,
-    source: string,
-    record = true,
-  ) => {
-    sessions.assertCurrent(context);
-    if (context.status !== "streaming") {
-      throw new Error(`session is ${context.status}`);
-    }
-    const accepted = context.inputQueue.enqueue(gesture, { ...context.screen });
-    if (record) context.recorder.recordGesture(accepted.gesture, source);
-    return accepted;
-  };
-
-  /** The one place a location is applied, for REST and for session replay. */
-  const applyLocation = async (
-    context: DeviceContext,
-    fix: GeoFix,
-    options: ApplyLocationOptions,
-  ) => {
-    const ensureCurrent =
-      options.ensureCurrent ?? (() => sessions.assertCurrent(context));
-    ensureCurrent();
-    context.route.stop();
-    await setLocation(context.serial, fix, options.signal ?? context.signal);
-    ensureCurrent();
-    context.lastLocation = { ...fix, appliedAt: new Date().toISOString() };
-    if (options.record ?? true) {
-      context.recorder.recordLocation(fix, options.source);
-    }
-    return context.lastLocation;
-  };
+  const services = createSessionServices({
+    sessions,
+    maxJsonBodyBytes: MAX_JSON_BODY_BYTES,
+    loadAccessibility,
+    setLocation,
+    listDevices,
+    listAvds: availableAvds,
+    listRunningAvds: listActiveAvds,
+  });
 
   const uploadEndpoints = createUploadEndpoints({
     uploads,
@@ -421,19 +329,11 @@ export async function startServer(
         if (device.state !== "device") {
           throw new Error(`${targetSerial} is ${device.state}, not ready.`);
         }
-        const scrcpy = await openScrcpy(targetSerial, signal);
-        try {
-          return createContext(targetSerial, generation, scrcpy);
-        } catch (err) {
-          await closeScrcpySession(scrcpy);
-          throw err;
-        }
+        return openContext(targetSerial, generation, signal);
       },
       video.activate,
     );
-    log(
-      `scrcpy ready: ${context.scrcpy.meta.deviceName} • ${context.scrcpy.meta.codecId} • ${context.scrcpy.meta.width}×${context.scrcpy.meta.height}`,
-    );
+    logReady(context);
     return {
       ok: true,
       serial: context.serial,
@@ -455,22 +355,16 @@ export async function startServer(
     ApiDependencies,
     "requestContext" | "srv" | "errorResponse"
   > = {
+    ...services,
     sessions,
-    readJsonBody,
     MAX_JSON_BODY_BYTES,
     MAX_ROUTE_BODY_BYTES,
-    runForPublishedContext,
-    runForContext,
     device,
     listDevices,
-    deviceGrid,
     switchSession,
     launchEmulator: emulators.launchEmulator,
     listActiveAvds,
     killEmulator: emulators.killEmulator,
-    readAccessibilitySnapshot,
-    enqueueGesture,
-    applyLocation,
     uploads: uploadEndpoints,
     responseMetrics,
   };
@@ -478,7 +372,7 @@ export async function startServer(
   const ws = createWebSocketEndpoint({
     sessions,
     recovery: video.recovery,
-    enqueueGesture,
+    enqueueGesture: services.enqueueGesture,
     enqueueVideoReset: video.enqueueVideoReset,
     health,
   });

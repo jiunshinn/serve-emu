@@ -16,6 +16,7 @@ const CRITICAL_SOURCE_FILES = {
   "src/request-body.ts": 95,
   "src/server/emulators.ts": 95,
   "src/server/health.ts": 95,
+  "src/server/session-services.ts": 95,
   "src/server/static.ts": 95,
   "src/server/uploads.ts": 90,
   "src/server/video.ts": 95,
