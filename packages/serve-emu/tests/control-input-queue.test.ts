@@ -726,7 +726,7 @@ describe("ControlInputQueue priority packets", () => {
       priority: true,
     });
     await clock.advanceNext();
-    expect(types(writer)).toEqual([2, 2, 17]);
+    expect(types(writer)).toEqual([2, 17, 2]);
     expect(await reset.completion).toEqual({ status: "completed" });
 
     await drain(clock);

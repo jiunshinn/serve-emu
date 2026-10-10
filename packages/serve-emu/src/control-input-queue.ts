@@ -643,9 +643,6 @@ export class ControlInputQueue {
           "control input queue closed",
         );
       }
-      // Between two steps of a long gesture, let a waiting priority packet
-      // (a video reset) go out instead of holding it for the whole gesture.
-      await this.#writePriority();
       if (step.delayMs > 0) {
         await this.#clock.sleep(step.delayMs, this.#controller.signal);
       }
@@ -655,6 +652,11 @@ export class ControlInputQueue {
           "control input queue closed",
         );
       }
+      // Between two steps of a long gesture, let a waiting priority packet
+      // (a video reset) go out ahead of the next step instead of holding it
+      // for the whole gesture. Checking after the step's sleep also sends a
+      // reset that arrived during that sleep before the step, not after it.
+      await this.#writePriority();
       await this.#writer.write(step.packet, this.#controller.signal);
       if (this.#controller.signal.aborted) {
         throw signalError(
