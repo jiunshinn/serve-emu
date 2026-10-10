@@ -4,23 +4,32 @@ import type { DeviceService } from "../src/device-service.ts";
 import type { execText } from "../src/exec.ts";
 import type { RecoveryWatchdogClock } from "../src/session-recovery-watchdog.ts";
 import { startServer } from "../src/server.ts";
+import { startContentionProbe } from "../src/server/contention.ts";
+import type { DeviceContext } from "../src/server/types.ts";
 import { parseHealthResponse } from "../src/shared/api-contracts.ts";
 import { createHarness, fakeScrcpy, fakeWebSocket, response } from "./helpers/server-harness.ts";
 
 const HEADER = "Num       RefCount Protocol Flags    Type St Inode Path";
+// A connected socket (St 03), as a live session's sockets read on a device.
 const socket = (path: string, inode = 4242) =>
+  `0000000000000000: 00000003 00000000 00000000 0001 03 ${inode} ${path}`;
+// A listening socket (__SO_ACCEPTCON, St 01).
+const listener = (path: string, inode = 4243) =>
   `0000000000000000: 00000002 00000000 00010000 0001 01 ${inode} ${path}`;
 
 describe("scrcpy sessions in /proc/net/unix (#76)", () => {
   test("finds zero, one, or several sessions", () => {
     expect(parseScrcpySocketNames([HEADER, socket("/dev/socket/zygote"), socket("@jdwp-control")].join("\n"))).toEqual([]);
     expect(parseScrcpySocketNames([HEADER, socket("@scrcpy_1a2b3c4d")].join("\n"))).toEqual(["scrcpy_1a2b3c4d"]);
-    // A session's listening socket and accepted connections share one name.
+    // A listener alone, such as one a crashed desktop scrcpy left behind
+    // through adb reverse, is not a session.
+    expect(parseScrcpySocketNames([HEADER, listener("@scrcpy_1a2b3c4d")].join("\n"))).toEqual([]);
+    // A session's connections share one name.
     expect(
       parseScrcpySocketNames(
         [
           HEADER,
-          socket("@scrcpy_1a2b3c4d", 1),
+          listener("@scrcpy_1a2b3c4d", 1),
           socket("@scrcpy_1a2b3c4d", 2),
           socket("@scrcpy_1a2b3c4d", 3),
           socket("@scrcpy_00ff00ff", 4),
@@ -71,7 +80,10 @@ function manualClock() {
       if (intervalMs === 2_000) callback();
     }
   };
-  return { clock, advance };
+  /** Live intervals of `ms`. */
+  const intervalsOf = (ms: number) =>
+    [...intervals.values()].filter(({ intervalMs }) => intervalMs === ms).length;
+  return { clock, advance, intervalsOf };
 }
 
 function deviceService(scrcpySockets: DeviceService["scrcpySockets"]): DeviceService {
@@ -153,6 +165,60 @@ describe("/health contention and reset reasons (#76)", () => {
     } finally {
       await started.stop();
     }
+  });
+
+  test("probes only while streaming, and its timer goes with the session", async () => {
+    const { clock, advance, intervalsOf } = manualClock();
+    const cleanups: Array<() => void> = [];
+    let probes = 0;
+    const context = {
+      serial: "emulator-5554",
+      scrcpy: { scid: "0000abcd" },
+      signal: new AbortController().signal,
+      status: "stopped",
+      contention: null,
+      trackDrain: (work: Promise<unknown>) => work,
+      registerCleanup: (cleanup: () => void) => void cleanups.push(cleanup),
+    };
+    startContentionProbe(context as unknown as DeviceContext, {
+      clock,
+      device: {
+        scrcpySockets: async () => {
+          probes++;
+          return [];
+        },
+      },
+    });
+    expect(intervalsOf(2_000)).toBe(1);
+    // The first probe tick finds the session not streaming.
+    advance(2_000);
+    expect(probes).toBe(0);
+    context.status = "streaming";
+    for (let tick = 0; tick < 5; tick++) advance(2_000);
+    expect(probes).toBe(1);
+    // The session's cleanup stops the probe's timer.
+    for (const cleanup of cleanups) cleanup();
+    expect(intervalsOf(2_000)).toBe(0);
+  });
+
+  test("a device switch leaves one probe timer, and stop leaves none", async () => {
+    const { clock, intervalsOf } = manualClock();
+    const harness = await createHarness(
+      { serials: ["emulator-5554", "emulator-5556"], probeDeviceContention: true },
+      { recoveryClock: clock, deviceService: deviceService(async () => []) },
+    );
+    expect(intervalsOf(2_000)).toBe(1);
+    const switched = await response(
+      harness.request("/api/devices/select", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ serial: "emulator-5556" }),
+      }),
+    );
+    expect(switched.status).toBe(200);
+    expect(intervalsOf(2_000)).toBe(1);
+    await harness.started.stop();
+    expect(intervalsOf(2_000)).toBe(0);
   });
 
   test("a failed probe keeps the last answer", async () => {

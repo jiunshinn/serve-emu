@@ -238,14 +238,18 @@ const SCRCPY_SOCKET_PROBE_MAX_BYTES = 1024 * 1024;
 
 /**
  * The scrcpy sessions on a device, by abstract socket name (`scrcpy_<scid>`,
- * or `scrcpy` for a client without a scid), read from `/proc/net/unix`. The
- * listening socket and its accepted connections share the name, so each
- * session counts once.
+ * or `scrcpy` for a client without a scid), read from `/proc/net/unix`. Only
+ * connected sockets count: a session's server closes its listening socket
+ * once its clients connect, while a listener left behind by a desktop scrcpy
+ * that crashed before removing its `adb reverse` serves no one. A session's
+ * connections share its name, so each session counts once.
  */
 export function parseScrcpySocketNames(procNetUnix: string): string[] {
   const names = new Set<string>();
   for (const line of procNetUnix.split("\n")) {
-    const match = /\s@(scrcpy(?:_[0-9a-f]{8})?)\s*$/.exec(line);
+    // Num RefCount Protocol Flags Type St Inode Path; St 03 is connected.
+    const match =
+      /^\S+:\s+\S+\s+\S+\s+\S+\s+\S+\s+03\s+\d+\s+@(scrcpy(?:_[0-9a-f]{8})?)\s*$/.exec(line);
     if (match) names.add(match[1]!);
   }
   return [...names].sort();
