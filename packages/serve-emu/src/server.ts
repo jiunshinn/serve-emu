@@ -25,6 +25,7 @@ import {
   listRunningAvds,
   startEmulator,
   stopEmulator,
+  type StartEmulatorOpts,
 } from "./emulator.ts";
 import { getExecSnapshot } from "./exec.ts";
 import { JsonResponseTracker } from "./json-response.ts";
@@ -92,6 +93,11 @@ export type ServerOpts = {
   maxActiveUploads?: number;
   maxQueuedUploads?: number;
   uploadQueueTimeoutMs?: number;
+  /**
+   * Launch settings for emulators started through /api/avds/start, the same
+   * ones the CLI uses for --avd: the emulator binary, `-gpu`, and the window.
+   */
+  emulator?: Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window">;
 };
 
 export const DEFAULT_HOST = "127.0.0.1";
@@ -175,9 +181,13 @@ export async function startServer(
   const serve = dependencies.serve ?? Bun.serve;
   const log = dependencies.log ?? ((line: string) => console.log(line));
   const listDevices = dependencies.listDevices ?? listAllDevices;
+  // The CLI's emulator settings, for launches through /api/avds/start and
+  // the AVD list (the same binary as --avd).
+  const emulatorSettings = opts.emulator ?? {};
   const emulators = createEmulatorRegistry({
     startEmulator: dependencies.startEmulator ?? startEmulator,
     stopEmulator: dependencies.stopEmulator ?? stopEmulator,
+    settings: emulatorSettings,
   });
   const listActiveAvds = dependencies.listRunningAvds ?? listRunningAvds;
   const availableAvds = dependencies.listAvds ?? listAvds;
@@ -293,7 +303,7 @@ export async function startServer(
     loadAccessibility,
     setLocation,
     listDevices,
-    listAvds: availableAvds,
+    listAvds: () => availableAvds(emulatorSettings.emulatorPath),
     listRunningAvds: listActiveAvds,
   });
 

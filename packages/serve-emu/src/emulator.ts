@@ -51,6 +51,13 @@ export type StartEmulatorOpts = {
    */
   gpu?: string;
   /**
+   * Whether the emulator opens its desktop window. `false` launches it with
+   * `-no-window`: the browser is the display, and a host without one (Linux
+   * with neither DISPLAY nor WAYLAND_DISPLAY) cannot open a window at all.
+   * Defaults to `true`; the CLI picks `emulatorWindowDefault()`.
+   */
+  window?: boolean;
+  /**
    * Emulator `-camera-back` mode, such as `webcam0` to show a host webcam in
    * the Android back camera. The emulator picks cameras at boot, so a running
    * AVD only gets this through `restartAvd`.
@@ -61,6 +68,20 @@ export type StartEmulatorOpts = {
   /** Aborting ends the boot wait and stops the emulator this launch spawned. */
   signal?: AbortSignal;
 };
+
+/**
+ * Whether launched emulators get a window by default: yes wherever a display
+ * exists. On Linux without DISPLAY or WAYLAND_DISPLAY the emulator's Qt UI
+ * aborts at startup ("no Qt platform plugin could be initialized"), so it
+ * runs headless there.
+ */
+export function emulatorWindowDefault(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (platform !== "linux") return true;
+  return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
+}
 
 type CameraDirection = "back" | "front";
 
@@ -604,6 +625,7 @@ async function launchOnPort(
 ): Promise<EmulatorLaunch> {
   const args = [emulatorAvdArg(name), "-port", String(port)];
   if (opts.gpu) args.push("-gpu", opts.gpu);
+  if (opts.window === false) args.push("-no-window");
   args.push(...camera);
 
   throwIfAborted(opts.signal);
