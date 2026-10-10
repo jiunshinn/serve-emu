@@ -1,9 +1,7 @@
-import {
-  spawn,
-  type ChildProcessByStdio,
-} from "node:child_process";
+import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
+import { spawnAdb } from "./adb-command.ts";
 import { packagePids } from "./package-pids.ts";
 
 const DEFAULT_MAX_LOGCAT_SUBSCRIBERS = 8;
@@ -117,11 +115,7 @@ async function resolvePackagePids(
 
 function spawnLogcat(serial: string): LogcatChild {
   // Start at the live edge so reconnects do not replay the device ring buffer.
-  return spawn(
-    "adb",
-    ["-s", serial, "logcat", "-T", "1", "-v", "threadtime"],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
+  return spawnAdb(serial, ["logcat", "-T", "1", "-v", "threadtime"]);
 }
 
 // Payloads are typed by the shared contract so the UI parser cannot drift.

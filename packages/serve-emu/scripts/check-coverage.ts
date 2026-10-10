@@ -18,6 +18,7 @@ const CRITICAL_SOURCE_FILES = {
   "src/control-input-queue.ts": 90,
   "src/device-session-context.ts": 85,
   "src/scrcpy.ts": 85,
+  "src/adb-command.ts": 95,
   "src/input.ts": 90,
   "src/route-playback.ts": 90,
   "src/session-recorder.ts": 95,
