@@ -1,149 +1,34 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { access, readFile } from "node:fs/promises";
-import { EventEmitter } from "node:events";
 import { AppManagementError } from "../src/app-management.ts";
 import type { StagedMultipartFile } from "../src/multipart-upload.ts";
-import type { ScrcpySession } from "../src/scrcpy.ts";
-import {
-  startServer,
-  type ServerDependencies,
-  type ServerOpts,
-} from "../src/server.ts";
+import { startServer } from "../src/server.ts";
 import { deferred } from "./helpers/deferred.ts";
+import {
+  createHarness,
+  fakeScrcpy,
+  response,
+  type HarnessOptions,
+} from "./helpers/server-harness.ts";
 
-type StartedServer = Awaited<ReturnType<typeof startServer>>;
+/** Fake adb lists both devices; the server starts on device-old. */
+const DEVICES: HarnessOptions = { serials: ["device-old", "device-new"] };
 
-type CapturedServeOptions = {
-  maxRequestBodySize?: number;
-  fetch(
-    request: Request,
-    server: { upgrade(): boolean },
-  ): Response | Promise<Response> | undefined;
-  websocket?: { maxPayloadLength?: number };
-};
-
-type FakeSession = {
-  session: ScrcpySession;
-  readonly closeCalls: number;
-};
-
-type ServerHarness = {
-  started: StartedServer;
-  options: CapturedServeOptions;
-  fetch(request: Request): Promise<Response>;
-  serverStopCalls(): number;
-};
-
-const activeServers: StartedServer[] = [];
-
-function fakeSession(serial: string, onClose?: () => void): FakeSession {
-  const proc = new EventEmitter();
-  const controlSocket = new EventEmitter() as EventEmitter & {
-    write(data: Uint8Array): boolean;
-  };
-  controlSocket.write = () => true;
-  let closeCalls = 0;
-  let resolveFrame!: (frame: null) => void;
-  const frame = new Promise<null>((resolve) => {
-    resolveFrame = resolve;
-  });
-  const session = {
-    transport: "scrcpy",
-    meta: {
-      deviceName: `device-${serial}`,
-      codecId: "h264",
-      width: 1080,
-      height: 1920,
-    },
-    protocol: 3,
-    videoReader: {},
-    controlSocket,
-    proc,
-    scid: "00000001",
-    localPort: 27_200,
-    serial,
-    readFrame: () => frame,
-    close: () => {
-      closeCalls++;
-      resolveFrame(null);
-      onClose?.();
-    },
-  } as unknown as ScrcpySession;
+function jsonRequest(body: unknown): RequestInit {
   return {
-    session,
-    get closeCalls() {
-      return closeCalls;
-    },
-  };
-}
-
-async function createHarness(
-  opts: Partial<ServerOpts> = {},
-  dependencies: ServerDependencies = {},
-): Promise<ServerHarness> {
-  let captured: CapturedServeOptions | null = null;
-  let stopCalls = 0;
-  const initial = fakeSession(opts.serial ?? "device-old");
-  const serve = ((options: CapturedServeOptions) => {
-    captured = options;
-    return {
-      port: opts.port ?? 31_031,
-      stop() {
-        stopCalls++;
-      },
-    };
-  }) as unknown as typeof Bun.serve;
-
-  const started = await startServer(
-    {
-      serial: "device-old",
-      port: 31_031,
-      ...opts,
-    },
-    {
-      log: () => {},
-      openScrcpy: async () => initial.session,
-      listDevices: async () => [
-        { serial: "device-old", state: "device" },
-        { serial: "device-new", state: "device" },
-      ],
-      serve,
-      ...dependencies,
-    },
-  );
-  activeServers.push(started);
-  if (!captured) throw new Error("Bun.serve options were not captured");
-  const options = captured as CapturedServeOptions;
-
-  return {
-    started,
-    options,
-    async fetch(request) {
-      const response = await options.fetch(request, { upgrade: () => false });
-      if (!(response instanceof Response)) {
-        throw new Error("server fetch did not return a response");
-      }
-      return response;
-    },
-    serverStopCalls: () => stopCalls,
-  };
-}
-
-function jsonRequest(path: string, body: unknown): Request {
-  return new Request(`http://localhost${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
-  });
+  };
 }
 
 function streamedJsonRequest(
   chunks: string[],
   headers: HeadersInit = {},
-): Request {
+): RequestInit {
   const encoder = new TextEncoder();
   let index = 0;
-  return new Request("http://localhost/api/devices/select", {
+  return {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: new ReadableStream<Uint8Array>({
@@ -153,16 +38,16 @@ function streamedJsonRequest(
         else controller.enqueue(encoder.encode(chunk));
       },
     }),
-  });
+  };
 }
 
-function fakeUploadRequest(path: string, signal?: AbortSignal): Request {
-  return new Request(`http://localhost${path}`, {
+function fakeUploadRequest(signal?: AbortSignal): RequestInit {
+  return {
     method: "POST",
     headers: { "content-type": "multipart/form-data; boundary=fake" },
     body: "--fake--\r\n",
     signal,
-  });
+  };
 }
 
 function stagedFile(
@@ -186,24 +71,25 @@ async function flushUntil(predicate: () => boolean): Promise<void> {
   throw new Error("condition did not become true");
 }
 
-afterEach(async () => {
-  const servers = activeServers.splice(0);
-  await Promise.allSettled(servers.map((server) => server.stop()));
-});
-
 describe("server request and upload limits", () => {
   test.each([
     ["chunked", { "transfer-encoding": "chunked" }],
     ["missing Content-Length", {}],
     ["understated Content-Length", { "content-length": "1" }],
   ])("rejects %s oversized JSON with a structured 413", async (_, headers) => {
-    const harness = await createHarness();
-    const response = await harness.fetch(
-      streamedJsonRequest(["{\"serial\":\"", "x".repeat(9_000), "\"}"], headers),
+    const harness = await createHarness(DEVICES);
+    const res = await response(
+      harness.request(
+        "/api/devices/select",
+        streamedJsonRequest(
+          ["{\"serial\":\"", "x".repeat(9_000), "\"}"],
+          headers,
+        ),
+      ),
     );
 
-    expect(response.status).toBe(413);
-    expect(await response.json()).toMatchObject({
+    expect(res.status).toBe(413);
+    expect(await res.json()).toMatchObject({
       ok: false,
       error: { code: "payload_too_large" },
     });
@@ -218,7 +104,7 @@ describe("server request and upload limits", () => {
       bytes: string;
     }> = [];
     const harness = await createHarness(
-      { maxApkUploadBytes: 1_024, maxMediaUploadBytes: 2_048 },
+      { ...DEVICES, maxApkUploadBytes: 1_024, maxMediaUploadBytes: 2_048 },
       {
         installApk: async (serial, file) => {
           if (file instanceof File) throw new Error("expected staged APK");
@@ -260,14 +146,14 @@ describe("server request and upload limits", () => {
     const media = new FormData();
     media.set("file", new File(["jpg-bytes"], "photo.jpg", { type: "image/jpeg" }));
 
-    const installResponse = await harness.fetch(
-      new Request("http://localhost/api/apps/install", {
+    const installResponse = await response(
+      harness.request("/api/apps/install", {
         method: "POST",
         body: apk,
       }),
     );
-    const importResponse = await harness.fetch(
-      new Request("http://localhost/api/files/import", {
+    const importResponse = await response(
+      harness.request("/api/files/import", {
         method: "POST",
         body: media,
       }),
@@ -297,7 +183,7 @@ describe("server request and upload limits", () => {
   test("returns structured 413 responses for oversized APK and media files", async () => {
     let actionCalls = 0;
     const harness = await createHarness(
-      { maxApkUploadBytes: 4, maxMediaUploadBytes: 5 },
+      { ...DEVICES, maxApkUploadBytes: 4, maxMediaUploadBytes: 5 },
       {
         installApk: async () => {
           actionCalls++;
@@ -320,23 +206,23 @@ describe("server request and upload limits", () => {
     media.set("file", new File(["123456"], "too-large.bin"));
 
     const responses = await Promise.all([
-      harness.fetch(
-        new Request("http://localhost/api/apps/install", {
+      response(
+        harness.request("/api/apps/install", {
           method: "POST",
           body: apk,
         }),
       ),
-      harness.fetch(
-        new Request("http://localhost/api/files/import", {
+      response(
+        harness.request("/api/files/import", {
           method: "POST",
           body: media,
         }),
       ),
     ]);
 
-    for (const response of responses) {
-      expect(response.status).toBe(413);
-      expect(await response.json()).toMatchObject({
+    for (const res of responses) {
+      expect(res.status).toBe(413);
+      expect(await res.json()).toMatchObject({
         ok: false,
         error: { code: "payload_too_large" },
       });
@@ -350,7 +236,7 @@ describe("server request and upload limits", () => {
     let stageCalls = 0;
     let cleanupCalls = 0;
     const harness = await createHarness(
-      { maxActiveUploads: 1, maxQueuedUploads: 1 },
+      { ...DEVICES, maxActiveUploads: 1, maxQueuedUploads: 1 },
       {
         stageMultipartUpload: async () => {
           stageCalls++;
@@ -366,9 +252,15 @@ describe("server request and upload limits", () => {
       },
     );
 
-    const first = harness.fetch(fakeUploadRequest("/api/apps/install"));
-    const second = harness.fetch(fakeUploadRequest("/api/apps/install"));
-    const overflow = await harness.fetch(fakeUploadRequest("/api/apps/install"));
+    const first = response(
+      harness.request("/api/apps/install", fakeUploadRequest()),
+    );
+    const second = response(
+      harness.request("/api/apps/install", fakeUploadRequest()),
+    );
+    const overflow = await response(
+      harness.request("/api/apps/install", fakeUploadRequest()),
+    );
 
     expect(overflow.status).toBe(429);
     expect(await overflow.json()).toMatchObject({
@@ -377,7 +269,7 @@ describe("server request and upload limits", () => {
     });
     expect(stageCalls).toBe(1);
 
-    const health = await harness.fetch(new Request("http://localhost/health"));
+    const health = await response(harness.request("/health"));
     expect(await health.json()).toMatchObject({
       uploads: { active: 1, queued: 1 },
     });
@@ -391,19 +283,15 @@ describe("server request and upload limits", () => {
   });
 
   test("switching during staging cancels the old generation before closing it", async () => {
-    const events: string[] = [];
-    const old = fakeSession("device-old", () => events.push("old-close"));
-    const next = fakeSession("device-new", () => events.push("new-close"));
     let stageStarted = false;
     let actionCalled = false;
-    const harness = await createHarness({}, {
-      openScrcpy: async (serial) =>
-        serial === "device-old" ? old.session : next.session,
+    let oldClosesAtStagingCleanup: number | undefined;
+    const harness = await createHarness(DEVICES, {
       stageMultipartUpload: async (_request, options) => {
         stageStarted = true;
         return await new Promise<StagedMultipartFile>((_resolve, reject) => {
           const abort = () => {
-            events.push("staging-cleanup");
+            oldClosesAtStagingCleanup = harness.session.closeCalls;
             reject(options.signal?.reason);
           };
           options.signal?.addEventListener("abort", abort, { once: true });
@@ -415,11 +303,18 @@ describe("server request and upload limits", () => {
         return { ok: true, output: "unexpected" };
       },
     });
+    const old = harness.sessions.get("device-old")!;
+    const next = harness.sessions.get("device-new")!;
 
-    const upload = harness.fetch(fakeUploadRequest("/api/apps/install"));
+    const upload = response(
+      harness.request("/api/apps/install", fakeUploadRequest()),
+    );
     await flushUntil(() => stageStarted);
-    const switching = harness.fetch(
-      jsonRequest("/api/devices/select", { serial: "device-new" }),
+    const switching = response(
+      harness.request(
+        "/api/devices/select",
+        jsonRequest({ serial: "device-new" }),
+      ),
     );
     const [uploadResponse, switchResponse] = await Promise.all([upload, switching]);
 
@@ -429,23 +324,28 @@ describe("server request and upload limits", () => {
     });
     expect(switchResponse.status).toBe(200);
     expect(actionCalled).toBe(false);
-    expect(events.slice(0, 2)).toEqual(["staging-cleanup", "old-close"]);
+    // Staging was cleaned up while the old session was still open, then the
+    // old session (and not the new one) was closed.
+    expect(oldClosesAtStagingCleanup).toBe(0);
+    expect(old.closeCalls).toBe(1);
+    expect(next.closeCalls).toBe(0);
   });
 
   test("switching during ADB keeps the captured old serial and cancels it once the switch commits", async () => {
     const events: string[] = [];
     const cleanupGate = deferred<void>();
     const nextReady = deferred<void>();
-    const old = fakeSession("device-old", () => events.push("old-close"));
-    const next = fakeSession("device-new");
+    const old = fakeScrcpy("device-old");
+    const next = fakeScrcpy("device-new");
     let adbStarted = false;
     let actionSerial = "";
-    const harness = await createHarness({}, {
+    const harness = await createHarness({ sessions: [old, next] }, {
+      // Gates the candidate's scrcpy start so the test can act mid-switch.
       openScrcpy: async (serial) => {
-        if (serial === "device-old") return old.session;
+        if (serial === "device-old") return old;
         events.push("next-prepare");
         await nextReady.promise;
-        return next.session;
+        return next;
       },
       stageMultipartUpload: async () =>
         stagedFile("switch.apk", async () => {
@@ -467,14 +367,19 @@ describe("server request and upload limits", () => {
       },
     });
 
-    const upload = harness.fetch(fakeUploadRequest("/api/apps/install"));
+    const upload = response(
+      harness.request("/api/apps/install", fakeUploadRequest()),
+    );
     await flushUntil(() => adbStarted);
     let switchSettled = false;
-    const switching = harness
-      .fetch(jsonRequest("/api/devices/select", { serial: "device-new" }))
-      .finally(() => {
-        switchSettled = true;
-      });
+    const switching = response(
+      harness.request(
+        "/api/devices/select",
+        jsonRequest({ serial: "device-new" }),
+      ),
+    ).finally(() => {
+      switchSettled = true;
+    });
 
     // While the candidate is prepared, the still-current device keeps its
     // upload: a switch that fails here must leave it untouched.
@@ -502,7 +407,7 @@ describe("server request and upload limits", () => {
 
   test("a failed switch leaves uploads on the current device working", async () => {
     const installs: string[] = [];
-    const harness = await createHarness({}, {
+    const harness = await createHarness(DEVICES, {
       stageMultipartUpload: async () => stagedFile("again.apk"),
       installApk: async (serial) => {
         installs.push(serial);
@@ -510,15 +415,22 @@ describe("server request and upload limits", () => {
       },
     });
 
-    const before = await harness.fetch(fakeUploadRequest("/api/apps/install"));
+    const before = await response(
+      harness.request("/api/apps/install", fakeUploadRequest()),
+    );
     expect(before.status).toBe(200);
 
-    const failedSwitch = await harness.fetch(
-      jsonRequest("/api/devices/select", { serial: "device-missing" }),
+    const failedSwitch = await response(
+      harness.request(
+        "/api/devices/select",
+        jsonRequest({ serial: "device-missing" }),
+      ),
     );
     expect(failedSwitch.status).toBe(400);
 
-    const after = await harness.fetch(fakeUploadRequest("/api/apps/install"));
+    const after = await response(
+      harness.request("/api/apps/install", fakeUploadRequest()),
+    );
     expect(after.status).toBe(200);
     expect(installs).toEqual(["device-old", "device-old"]);
   });
@@ -527,7 +439,7 @@ describe("server request and upload limits", () => {
     const controller = new AbortController();
     let actionStarted = false;
     let cleanupCalls = 0;
-    const harness = await createHarness({}, {
+    const harness = await createHarness(DEVICES, {
       stageMultipartUpload: async () =>
         stagedFile("aborted.apk", async () => {
           cleanupCalls++;
@@ -542,15 +454,18 @@ describe("server request and upload limits", () => {
       },
     });
 
-    const upload = harness.fetch(
-      fakeUploadRequest("/api/apps/install", controller.signal),
+    const upload = response(
+      harness.request(
+        "/api/apps/install",
+        fakeUploadRequest(controller.signal),
+      ),
     );
     await flushUntil(() => actionStarted);
     controller.abort(new Error("client disconnected"));
-    const response = await upload;
+    const res = await upload;
 
-    expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
       ok: false,
       error: { code: "invalid_request", reason: "upload-cancelled" },
     });
@@ -560,7 +475,7 @@ describe("server request and upload limits", () => {
   test("reports a staging cleanup failure even when the request is cancelled", async () => {
     const controller = new AbortController();
     let actionStarted = false;
-    const harness = await createHarness({}, {
+    const harness = await createHarness(DEVICES, {
       stageMultipartUpload: async () =>
         stagedFile("cleanup-failure.apk", async () => {
           throw new Error("temporary directory is still present");
@@ -575,15 +490,18 @@ describe("server request and upload limits", () => {
       },
     });
 
-    const upload = harness.fetch(
-      fakeUploadRequest("/api/apps/install", controller.signal),
+    const upload = response(
+      harness.request(
+        "/api/apps/install",
+        fakeUploadRequest(controller.signal),
+      ),
     );
     await flushUntil(() => actionStarted);
     controller.abort(new Error("client disconnected"));
-    const response = await upload;
+    const res = await upload;
 
-    expect(response.status).toBe(500);
-    expect(await response.json()).toMatchObject({
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({
       ok: false,
       error: { code: "internal_error", reason: "upload-cleanup-failed" },
     });
@@ -592,7 +510,7 @@ describe("server request and upload limits", () => {
   test("reports a remote partial cleanup failure after cancellation", async () => {
     const controller = new AbortController();
     let actionStarted = false;
-    const harness = await createHarness({}, {
+    const harness = await createHarness(DEVICES, {
       stageMultipartUpload: async () => stagedFile("cleanup-failure.jpg"),
       importMediaFile: async (_serial, _file, { signal } = {}) => {
         actionStarted = true;
@@ -610,15 +528,18 @@ describe("server request and upload limits", () => {
       },
     });
 
-    const upload = harness.fetch(
-      fakeUploadRequest("/api/files/import", controller.signal),
+    const upload = response(
+      harness.request(
+        "/api/files/import",
+        fakeUploadRequest(controller.signal),
+      ),
     );
     await flushUntil(() => actionStarted);
     controller.abort(new Error("client disconnected"));
-    const response = await upload;
+    const res = await upload;
 
-    expect(response.status).toBe(502);
-    expect(await response.json()).toMatchObject({
+    expect(res.status).toBe(502);
+    expect(await res.json()).toMatchObject({
       ok: false,
       error: { code: "downstream_failure", reason: "adb-cleanup-failed" },
     });
@@ -629,7 +550,7 @@ describe("server request and upload limits", () => {
     let cleanupCalls = 0;
     const adbOutput =
       "Performing Streamed Install\nadb: failed to install /tmp/serve-emu-upload-x1/error.apk: Failure [INSTALL_FAILED_INVALID_APK]";
-    const harness = await createHarness({}, {
+    const harness = await createHarness(DEVICES, {
       stageMultipartUpload: async () =>
         stagedFile("error.apk", async () => {
           cleanupCalls++;
@@ -649,8 +570,12 @@ describe("server request and upload limits", () => {
 
     const errorLog = spyOn(console, "error").mockImplementation(() => {});
     try {
-      const failed = await harness.fetch(fakeUploadRequest("/api/apps/install"));
-      const timedOut = await harness.fetch(fakeUploadRequest("/api/apps/install"));
+      const failed = await response(
+        harness.request("/api/apps/install", fakeUploadRequest()),
+      );
+      const timedOut = await response(
+        harness.request("/api/apps/install", fakeUploadRequest()),
+      );
 
       expect(failed.status).toBe(502);
       const failedBody = await failed.text();
@@ -691,7 +616,7 @@ describe("server request and upload limits", () => {
     const cleanupGate = deferred<void>();
     let actionStarted = false;
     let cleanupStarted = false;
-    const harness = await createHarness({}, {
+    const harness = await createHarness(DEVICES, {
       stageMultipartUpload: async () =>
         stagedFile("stop.apk", async () => {
           cleanupStarted = true;
@@ -707,7 +632,9 @@ describe("server request and upload limits", () => {
       },
     });
 
-    const upload = harness.fetch(fakeUploadRequest("/api/apps/install"));
+    const upload = response(
+      harness.request("/api/apps/install", fakeUploadRequest()),
+    );
     await flushUntil(() => actionStarted);
     let stopSettled = false;
     const stopping = harness.started.stop().finally(() => {
@@ -715,35 +642,37 @@ describe("server request and upload limits", () => {
     });
     await flushUntil(() => cleanupStarted);
 
-    expect(harness.serverStopCalls()).toBe(1);
+    expect(harness.server.stopArguments).toHaveLength(1);
     expect(stopSettled).toBe(false);
     cleanupGate.resolve();
     await stopping;
     expect(stopSettled).toBe(true);
 
-    const response = await upload;
-    expect(response.status).toBe(409);
-    expect(await response.json()).toMatchObject({
+    const res = await upload;
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({
       error: { code: "conflict", reason: "device-session-changed" },
     });
   });
 
   test("passes HTTP and WebSocket byte ceilings to Bun.serve", async () => {
     const harness = await createHarness({
+      ...DEVICES,
       maxApkUploadBytes: 123,
       maxMediaUploadBytes: 456,
     });
 
-    expect(harness.options.maxRequestBodySize).toBe(
+    expect(harness.handlers.maxRequestBodySize).toBe(
       456 + 2 * 1024 * 1024,
     );
-    expect(harness.options.websocket?.maxPayloadLength).toBe(16 * 1024);
+    expect(harness.handlers.websocket.maxPayloadLength).toBe(16 * 1024);
   });
 
   test("rejects upload limits that would overflow Bun's body ceiling", async () => {
     const unsafeUploadLimit =
       Number.MAX_SAFE_INTEGER - 2 * 1024 * 1024 + 1;
 
+    // Calls startServer directly: it must reject the options before serving.
     await expect(
       startServer({
         serial: "device-old",
@@ -754,6 +683,7 @@ describe("server request and upload limits", () => {
   });
 
   test("rejects queue timeouts above the platform timer range", async () => {
+    // Calls startServer directly: it must reject the options before serving.
     await expect(
       startServer({
         serial: "device-old",
