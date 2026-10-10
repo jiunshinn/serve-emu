@@ -56,6 +56,105 @@ export function admitDuringRecovery(input: {
   return { action: "decode", endsDrop: false };
 }
 
+/** The display interval assumed until vsync callbacks have been observed. */
+const DEFAULT_VSYNC_MS = 1000 / 60;
+const VSYNC_WINDOW = 32;
+// Older gaps are forgotten, so a move to a slower display shows within 2 s.
+const VSYNC_SAMPLE_MAX_AGE_MS = 2_000;
+
+/**
+ * Estimates the display's frame interval from animation-frame timestamps.
+ * Callbacks are requested only when a frame is waiting, so a gap can span
+ * several vsyncs; the shortest recent gap is one interval once callbacks
+ * ran on consecutive vsyncs. On a fast display showing slower content they
+ * rarely do, and the estimate is the content's interval instead, which only
+ * makes presentOldestFrame stricter.
+ */
+export class VsyncEstimator {
+  #last: number | null = null;
+  #gaps: Array<{ at: number; gap: number }> = [];
+
+  observe(timestampMs: number): void {
+    if (!Number.isFinite(timestampMs)) return;
+    if (this.#last !== null) {
+      const gap = timestampMs - this.#last;
+      // 4–50 ms covers 240 Hz through 20 Hz; anything else is a pause.
+      if (gap >= 4 && gap <= 50) this.#gaps.push({ at: timestampMs, gap });
+    }
+    while (
+      this.#gaps.length > VSYNC_WINDOW ||
+      (this.#gaps.length > 0 &&
+        timestampMs - this.#gaps[0]!.at > VSYNC_SAMPLE_MAX_AGE_MS)
+    ) {
+      this.#gaps.shift();
+    }
+    this.#last = timestampMs;
+  }
+
+  get intervalMs(): number {
+    return this.#gaps.length
+      ? Math.min(...this.#gaps.map(({ gap }) => gap))
+      : DEFAULT_VSYNC_MS;
+  }
+}
+
+/**
+ * Adaptive pacing (#75): which decoded frame a vsync shows.
+ *
+ * Two frames that finish decoding within one display interval would cost
+ * the older one under newest-only pacing (about 6% of a steady 60 fps
+ * stream on a 60 Hz display). While the player keeps up (no more than two
+ * frames queued, and the oldest decoded under 1.5 intervals ago), it shows
+ * the oldest and keeps the next for the following vsync, which adds at most
+ * one interval of latency. A deeper queue or an older frame means the
+ * player fell behind, after a stall or a burst: it skips to the newest, as
+ * before, so latency recovers at once.
+ */
+function presentOldestFrame(input: {
+  queued: number;
+  oldestAgeMs: number | null;
+  vsyncMs: number;
+}): boolean {
+  return (
+    input.queued === 2 &&
+    input.oldestAgeMs !== null &&
+    input.oldestAgeMs < 1.5 * input.vsyncMs
+  );
+}
+
+/** The decoded-frame queue as a vsync reads it (StreamSessionResources). */
+type PresentationQueue<Frame> = {
+  readonly queuedFrameCount: number;
+  peekOldestFrame(): Frame | null;
+  takeOldestFrame(): Frame | null;
+  takeLatestFrame(): Frame | null;
+};
+
+/**
+ * One vsync's presentation (#75): the frame to draw, chosen by
+ * presentOldestFrame, and whether a frame stays queued for the next vsync.
+ * The caller must then request that vsync itself: on a static screen no
+ * decoder output follows to request it, and the kept frame would wait until
+ * the screen next changes.
+ */
+export function nextPresentation<Frame>(
+  queue: PresentationQueue<Frame>,
+  decodedAtOf: (frame: Frame) => number | null,
+  nowMs: number,
+  vsyncMs: number,
+): { frame: Frame | null; reschedule: boolean } {
+  const oldest = queue.peekOldestFrame();
+  const decodedAt = oldest ? decodedAtOf(oldest) : null;
+  const frame = presentOldestFrame({
+    queued: queue.queuedFrameCount,
+    oldestAgeMs: decodedAt === null ? null : nowMs - decodedAt,
+    vsyncMs,
+  })
+    ? queue.takeOldestFrame()
+    : queue.takeLatestFrame();
+  return { frame, reschedule: frame !== null && queue.queuedFrameCount > 0 };
+}
+
 export class StreamPerformance {
   #pending = new Map<number, number>();
   #decode = new Samples();

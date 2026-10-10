@@ -31,6 +31,7 @@ export function StatusBar({
         stats.transitMs != null ? `transit ${stats.transitMs}ms` : null,
         stats.e2eMs != null ? `estimated server→canvas ${stats.e2eMs}ms` : null,
         `decode queue ${stats.decodeQueue} • pending ${stats.decodePendingMs}ms`,
+        `skipped ${stats.skippedFrames}`,
         stats.decodeMsP95 !== null ? `decode p95 ${stats.decodeMsP95}ms` : null,
         stats.presentMsP95 !== null
           ? `presentation wait p95 ${stats.presentMsP95}ms`

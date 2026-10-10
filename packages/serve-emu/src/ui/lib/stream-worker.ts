@@ -1,7 +1,9 @@
 import {
   StreamPerformance,
   StreamClockSync,
+  VsyncEstimator,
   admitDuringRecovery,
+  nextPresentation,
 } from "./stream-performance";
 import { parseWsServerJson } from "../../shared/websocket-contracts";
 import { buildCodecString, scanAU } from "./h264";
@@ -44,7 +46,8 @@ const workerPort = self as unknown as {
 
 // requestAnimationFrame is available in dedicated workers everywhere WebCodecs
 // is, but fall back to a vsync-ish timer just in case.
-const scheduleFrame: (cb: () => void) => number =
+// The callback gets the vsync time (performance timeline) when there is one.
+const scheduleFrame: (cb: (vsyncAt?: number) => void) => number =
   typeof requestAnimationFrame === "function"
     ? (cb) => requestAnimationFrame(cb)
     : (cb) => setTimeout(cb, 16) as unknown as number;
@@ -83,6 +86,7 @@ type FrameTiming = {
   decodedAt: number | null;
 };
 const streamPerformance = new StreamPerformance();
+const vsync = new VsyncEstimator();
 const clockSync = new StreamClockSync();
 let pendingClockSync: number | null = null;
 let lastClockSyncAt = Number.NEGATIVE_INFINITY;
@@ -133,6 +137,7 @@ const postStats = (includeLifecycleSnapshot = true) => {
     rendered: lifecycle.rendered,
     ...streamPerformance.takeStats(),
     decodePendingMs: Math.round(streamPerformance.pendingMs(epochNowMs())),
+    skippedFrames: resources.takeSkippedFrames(),
     recoveries: recoveryCount,
     clockUncertaintyMs: clockSync.estimate(epochNowMs())?.uncertaintyMs ?? null,
   };
@@ -283,19 +288,28 @@ const beginDecoderRecovery = () => {
   requestKeyframe(generation);
 };
 
-const renderFromQueue = (generation: number) => {
+const renderFromQueue = (generation: number, vsyncAt?: number) => {
   renderHandle = 0;
   if (!isCurrentStreamGeneration(lifecycle, generation) || !canvas || !ctx)
     return;
+  if (vsyncAt !== undefined) vsync.observe(vsyncAt);
 
-  // Latency-first policy: each vsync, present the NEWEST decoded frame and
-  // discard the staler ones still queued. They were superseded before they
-  // could be shown, so drawing them would only add display lag. Showing the
-  // freshest frame keeps glass-to-glass latency near one vsync interval
-  // instead of growing with queue depth. The queue stays as a small burst
-  // absorber.
-  const frame = resources.takeLatestFrame();
+  // Adaptive pacing (presentOldestFrame): while the player keeps up, show
+  // the oldest of two queued frames and the other on the next vsync, so a
+  // pair that decoded within one interval is not cut to one. Otherwise
+  // present the NEWEST frame and discard the staler ones: they were
+  // superseded before they could be shown, and drawing them would only add
+  // display lag. The queue stays as a small burst absorber.
+  const { frame, reschedule } = nextPresentation(
+    resources,
+    (queued) => resources.peekTiming(queued.timestamp)?.decodedAt ?? null,
+    epochNowMs(),
+    vsync.intervalMs,
+  );
   if (!frame) return;
+  if (reschedule && !renderHandle) {
+    renderHandle = scheduleFrame((at) => renderFromQueue(generation, at));
+  }
   if (!isCurrentStreamGeneration(lifecycle, generation)) {
     frame.close();
     return;
@@ -369,7 +383,7 @@ const ensureDecoder = (spsBytes: Uint8Array, generation: number): boolean => {
       if (timing) timing.decodedAt = now;
       resources.pushFrame(frame);
       if (!renderHandle) {
-        renderHandle = scheduleFrame(() => renderFromQueue(generation));
+        renderHandle = scheduleFrame((at) => renderFromQueue(generation, at));
       }
     },
     error: (e) => {

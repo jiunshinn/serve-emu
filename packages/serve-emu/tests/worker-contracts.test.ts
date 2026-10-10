@@ -118,6 +118,7 @@ describe("stream worker events", () => {
           decodeMsP95: 4,
           presentMsP95: 1,
           decodePendingMs: 0,
+          skippedFrames: 0,
           recoveries: 0,
           clockUncertaintyMs: 2,
         },

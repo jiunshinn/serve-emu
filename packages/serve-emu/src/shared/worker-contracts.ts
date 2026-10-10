@@ -42,6 +42,8 @@ export type StreamStats = {
   decodeMsP95: number | null;
   presentMsP95: number | null;
   decodePendingMs: number;
+  /** Decoded frames closed without being drawn since the last stats tick. */
+  skippedFrames: number;
   recoveries: number;
   clockUncertaintyMs: number | null;
 };

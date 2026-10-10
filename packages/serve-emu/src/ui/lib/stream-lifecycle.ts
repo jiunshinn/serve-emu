@@ -361,6 +361,7 @@ export class StreamSessionResources<
   readonly #timings = new Map<number, Timing>();
   #frameHead = 0;
   #frameCount = 0;
+  #skippedFrames = 0;
 
   constructor(options: StreamSessionResourceOptions = {}) {
     this.#frameCapacity = positiveCapacity(options.frameCapacity, 3, "frameCapacity");
@@ -397,18 +398,49 @@ export class StreamSessionResources<
     return timing;
   }
 
+  /**
+   * Decoded frames closed without being drawn since the last call: superseded
+   * by a newer frame or pushed out of the full queue. A reset's frames are
+   * not counted; they belong to a generation that ended.
+   */
+  takeSkippedFrames(): number {
+    const skipped = this.#skippedFrames;
+    this.#skippedFrames = 0;
+    return skipped;
+  }
+
+  /** The frame that has waited longest, still owned by the queue. */
+  peekOldestFrame(): Frame | null {
+    if (this.#frameCount === 0) return null;
+    return this.#frames[this.#oldestIndex()] ?? null;
+  }
+
+  /** Transfers ownership of the oldest frame and keeps the newer ones. */
+  takeOldestFrame(): Frame | null {
+    if (this.#frameCount === 0) return null;
+    const oldest = this.#oldestIndex();
+    const frame = this.#frames[oldest] ?? null;
+    this.#frames[oldest] = null;
+    this.#frameCount -= 1;
+    return frame;
+  }
+
+  #oldestIndex(): number {
+    return (this.#frameHead - this.#frameCount + this.#frameCapacity) % this.#frameCapacity;
+  }
+
   /** Returns 1 when an overflow frame was closed, otherwise 0. */
   pushFrame(frame: Frame): number {
     finiteTimestamp(frame.timestamp, "frame timestamp");
     let closedFrames = 0;
     if (this.#frameCount >= this.#frameCapacity) {
-      const oldest =
-        (this.#frameHead - this.#frameCount + this.#frameCapacity) % this.#frameCapacity;
+      const oldest = this.#oldestIndex();
       const stale = this.#frames[oldest];
       if (stale) {
         this.#timings.delete(stale.timestamp);
         this.#safeClose(stale);
         closedFrames = 1;
+        this.#skippedFrames += 1;
       }
       this.#frames[oldest] = null;
       this.#frameCount -= 1;
@@ -429,6 +461,7 @@ export class StreamSessionResources<
       if (frame && index !== newest) {
         this.#timings.delete(frame.timestamp);
         this.#safeClose(frame);
+        this.#skippedFrames += 1;
       }
       this.#frames[index] = null;
     }
@@ -451,6 +484,8 @@ export class StreamSessionResources<
     this.#timings.clear();
     this.#frameHead = 0;
     this.#frameCount = 0;
+    // Skips not yet reported belong to the ended generation too.
+    this.#skippedFrames = 0;
     return { closedFrames, clearedTimings };
   }
 
