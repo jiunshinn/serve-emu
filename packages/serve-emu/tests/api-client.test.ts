@@ -101,28 +101,18 @@ describe("API client", () => {
     expect(page.hasMore).toBe(false);
   });
 
-  test("turns both error shapes into string messages", async () => {
+  test("turns a structured failure into its message", async () => {
     const structured = createApiClient(async () =>
       jsonResponse(
         { ok: false, error: { code: "not_found", message: "API route not found" } },
         { status: 404 },
       ),
     );
-    const legacy = createApiClient(async () =>
-      jsonResponse(
-        { ok: false, code: "adb-failed", error: "screencap failed" },
-        { status: 502 },
-      ),
-    );
 
     const structuredError = await structured("/api/orientation", { method: "GET" }).catch(
       (error: unknown) => error,
     );
-    const legacyError = await legacy("/api/orientation", { method: "GET" }).catch(
-      (error: unknown) => error,
-    );
     expect(apiErrorMessage(structuredError)).toBe("API route not found");
-    expect(apiErrorMessage(legacyError)).toBe("screencap failed");
     expect(apiErrorMessage("plain")).toBe("plain");
   });
 
@@ -200,15 +190,30 @@ describe("API client", () => {
     });
   });
 
-  test("supports original string failures during a rolling upgrade", async () => {
+  test("treats the retired string failure shape as an invalid response", async () => {
     const request = createApiClient(async () =>
       jsonResponse({ ok: false, error: "old server failure" }, { status: 400 }),
     );
 
     await expect(request("/api/device-grid", { method: "GET" })).rejects.toMatchObject({
       status: 400,
-      code: "legacy_error",
-      message: "old server failure",
+      code: "invalid_response",
+    });
+  });
+
+  test("keeps a failure's reason in its payload", async () => {
+    const request = createApiClient(async () =>
+      jsonResponse(
+        { ok: false, error: { code: "rate_limited", message: "upload queue is full", reason: "upload-queue-full" } },
+        { status: 429 },
+      ),
+    );
+
+    await expect(request("/api/device-grid", { method: "GET" })).rejects.toMatchObject({
+      status: 429,
+      code: "rate_limited",
+      message: "upload queue is full",
+      payload: { error: { reason: "upload-queue-full" } },
     });
   });
 

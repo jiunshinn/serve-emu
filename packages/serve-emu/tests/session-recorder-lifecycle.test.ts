@@ -1,10 +1,10 @@
 import { describe, expect, spyOn, test } from "bun:test";
+import { toApiError } from "../src/api/error-mapping.ts";
 import {
   SessionRecorder,
   SessionReplayConflictError,
   SessionReplayValidationError,
   parseSessionReplayMultiplier,
-  sessionReplayErrorStatus,
   type ReplayHandlers,
   type SessionReplayClock,
 } from "../src/session-recorder.ts";
@@ -85,15 +85,21 @@ describe("session replay input validation", () => {
     }
   });
 
-  test("maps validation, conflict, and unexpected errors to HTTP statuses", () => {
-    expect(
-      sessionReplayErrorStatus(new SessionReplayValidationError("bad input")),
-    ).toBe(400);
-    expect(
-      sessionReplayErrorStatus(new SessionReplayConflictError("busy")),
-    ).toBe(409);
-    expect(sessionReplayErrorStatus(new Error("unexpected"))).toBe(500);
-    expect(sessionReplayErrorStatus("unexpected")).toBe(500);
+  test("maps validation, conflict, and unexpected errors to API failures", () => {
+    expect(toApiError(new SessionReplayValidationError("bad input"), "internal_error")).toMatchObject({
+      status: 400,
+      code: "invalid_request",
+      message: "bad input",
+    });
+    expect(toApiError(new SessionReplayConflictError("busy"), "internal_error")).toMatchObject({
+      status: 409,
+      code: "conflict",
+    });
+    expect(toApiError(new Error("unexpected"), "internal_error")).toMatchObject({
+      status: 500,
+      code: "internal_error",
+      message: "Internal server error",
+    });
   });
 });
 

@@ -321,7 +321,10 @@ describe("emulator lifecycle", () => {
           }) as unknown as typeof spawn,
         },
       ),
-    ).rejects.toThrow("Timed out waiting for emulator-5554 to stop.");
+    ).rejects.toMatchObject({
+      code: "emulator-failed",
+      message: "Timed out waiting for emulator-5554 to stop.",
+    });
     expect(spawns).toBe(0);
   });
 
@@ -407,9 +410,12 @@ describe("emulator lifecycle", () => {
       if (args.includes("get-state")) return result("offline\n");
       return result("", { status: 1 });
     }) as typeof execText;
-    await expect(runFailure(timeoutProcess.proc, timeoutExec)).rejects.toThrow(
-      "Timed out waiting for emulator-5554 to boot.",
-    );
+    // Emulator failures are command failures, which the API reports as 502.
+    await expect(runFailure(timeoutProcess.proc, timeoutExec)).rejects.toMatchObject({
+      name: "CommandFailureError",
+      code: "emulator-failed",
+      message: "Timed out waiting for emulator-5554 to boot.",
+    });
     expect(timeoutProcess.killSignals).toEqual(["SIGTERM"]);
     // The AVD on the port was never confirmed, so `emu kill` could reach
     // someone else's emulator.
@@ -421,9 +427,45 @@ describe("emulator lifecycle", () => {
       command === "/sdk/emulator"
         ? result("Pixel_8\n")
         : result("", { status: 1 })) as typeof execText;
-    await expect(runFailure(exitedProcess.proc, exitExec)).rejects.toThrow(
-      "emulator exited before boot completed (code 9)",
+    await expect(runFailure(exitedProcess.proc, exitExec)).rejects.toMatchObject({
+      name: "CommandFailureError",
+      code: "emulator-failed",
+      message: "emulator exited before boot completed (code 9)",
+    });
+  });
+
+  test("reports a failed spawn as an emulator failure that names no host path", async () => {
+    const { proc } = fakeProcess();
+    const spawnFailure = new Error("spawn /home/me/sdk/emulator ENOENT");
+    const failure = await startEmulator(
+      {
+        avd: "Pixel_8",
+        emulatorPath: "/sdk/emulator",
+        port: 5554,
+        bootTimeoutMs: 1_000,
+      },
+      {
+        execText: (async (command) =>
+          command === "/sdk/emulator"
+            ? result("Pixel_8\n")
+            : result("offline\n")) as typeof execText,
+        listAllDevices: async () => [],
+        spawn: (() => {
+          setTimeout(() => proc.emit("error", spawnFailure), 0);
+          return proc;
+        }) as unknown as typeof spawn,
+        sleep: () => new Promise((resolve) => setTimeout(resolve, 1)),
+      },
+    ).then(
+      () => null,
+      (reason: unknown) => reason,
     );
+    expect(failure).toMatchObject({
+      name: "CommandFailureError",
+      code: "emulator-failed",
+      publicMessage: "emulator could not start",
+      cause: spawnFailure,
+    });
   });
 
   test("rejects an explicit port another emulator already uses, before spawning", async () => {

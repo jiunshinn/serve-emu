@@ -1,8 +1,5 @@
-import {
-  ApiError,
-  apiErrorResponse,
-  internalApiError,
-} from "./api-error.ts";
+import { ApiError, apiErrorResponse } from "./api-error.ts";
+import { toApiError } from "./error-mapping.ts";
 
 export type ApiMethod =
   | "GET"
@@ -171,8 +168,10 @@ export function createApiRouter<Deps>(
         }
         return response;
       } catch (cause) {
-        const error =
-          cause instanceof ApiError ? cause : internalApiError(cause);
+        // Errors a handler did not catch go through the same table as handled
+        // ones (a stale device session is still 409); anything it does not
+        // know is a 500 with a fixed message.
+        const error = toApiError(cause, "internal_error");
         if (error.status >= 500) {
           logServerError(logger, request, url, error);
         }

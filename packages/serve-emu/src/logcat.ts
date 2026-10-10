@@ -2,6 +2,7 @@ import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { spawnAdb } from "./adb-command.ts";
+import { ApiError, apiErrorResponse } from "./api/api-error.ts";
 import { packagePids } from "./package-pids.ts";
 
 const DEFAULT_MAX_LOGCAT_SUBSCRIBERS = 8;
@@ -292,38 +293,35 @@ export class LogcatHub {
     signal?: AbortSignal,
   ): Response {
     if (this.#closed) {
-      return Response.json(
-        { ok: false, code: "logcat-session-closed", error: "logcat session is closed" },
-        { status: 409 },
+      return apiErrorResponse(
+        new ApiError(409, "conflict", "logcat session is closed", {
+          reason: "logcat-session-closed",
+        }),
       );
     }
     if (signal?.aborted) {
-      return Response.json(
-        { ok: false, code: "logcat-request-aborted", error: "request was aborted" },
-        { status: 499 },
+      return apiErrorResponse(
+        new ApiError(400, "invalid_request", "request was aborted", {
+          reason: "logcat-request-aborted",
+        }),
       );
     }
     if (this.#subscribers.size >= this.#maxSubscribers) {
-      return Response.json(
-        {
-          ok: false,
-          code: "logcat-subscriber-limit",
-          error: `logcat subscriber limit is ${this.#maxSubscribers}`,
-        },
-        { status: 429 },
+      return apiErrorResponse(
+        new ApiError(429, "rate_limited", `logcat subscriber limit is ${this.#maxSubscribers}`, {
+          reason: "logcat-subscriber-limit",
+        }),
       );
     }
     try {
       this.#ensureChild();
     } catch (error) {
       console.error(`[logcat] could not start logcat for ${this.serial}:`, error);
-      return Response.json(
-        {
-          ok: false,
-          code: "logcat-start-failed",
-          error: "logcat could not start",
-        },
-        { status: 502 },
+      return apiErrorResponse(
+        new ApiError(502, "downstream_failure", "logcat could not start", {
+          cause: error,
+          reason: "logcat-start-failed",
+        }),
       );
     }
 

@@ -5,7 +5,8 @@ import type {
 
 export type { ApiErrorCode } from "../shared/api-contracts.ts";
 
-const API_ERROR_STATUS = {
+/** The one HTTP status each API error code is sent with. */
+export const API_ERROR_STATUS = {
   invalid_request: 400,
   invalid_json: 400,
   unauthorized: 401,
@@ -18,6 +19,7 @@ const API_ERROR_STATUS = {
   internal_error: 500,
   downstream_failure: 502,
   service_unavailable: 503,
+  downstream_timeout: 504,
 } as const satisfies Record<ApiErrorCode, number>;
 
 export type ApiErrorStatus = (typeof API_ERROR_STATUS)[ApiErrorCode];
@@ -27,6 +29,8 @@ export type ApiErrorBody = ApiFailure;
 export type ApiErrorOptions = {
   cause?: unknown;
   headers?: HeadersInit;
+  /** A stable, finer-grained reason within `code` (for example `adb-timeout`). */
+  reason?: string;
 };
 
 /**
@@ -39,6 +43,7 @@ export type ApiErrorOptions = {
 export class ApiError extends Error {
   readonly status: ApiErrorStatus;
   readonly code: ApiErrorCode;
+  readonly reason: string | undefined;
   readonly headers: Headers;
 
   constructor(
@@ -57,6 +62,7 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.status = status;
     this.code = code;
+    this.reason = options.reason;
     this.headers = new Headers(options.headers);
   }
 }
@@ -67,6 +73,7 @@ function apiErrorBody(error: ApiError): ApiErrorBody {
     error: {
       code: error.code,
       message: error.message,
+      ...(error.reason ? { reason: error.reason } : {}),
     },
   };
 }

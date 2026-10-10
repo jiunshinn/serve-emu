@@ -109,8 +109,11 @@ describe("API responses for failing adb commands", () => {
         });
         expect(JSON.parse(body)).toEqual({
           ok: false,
-          code: "adb-failed",
-          error: entry.error,
+          error: {
+            code: "downstream_failure",
+            message: entry.error,
+            reason: "adb-failed",
+          },
         });
         expectNoOutput(body);
         expect(log).toHaveBeenCalledTimes(1);
@@ -207,8 +210,11 @@ describe("API responses for a failing scrcpy startup", () => {
         expect({ path, status: res.status }).toEqual({ path, status: 502 });
         expect(JSON.parse(body)).toEqual({
           ok: false,
-          code: "adb-failed",
-          error: "adb push failed",
+          error: {
+            code: "downstream_failure",
+            message: "adb push failed",
+            reason: "adb-failed",
+          },
         });
         expectNoOutput(body);
         expect(log).toHaveBeenCalledTimes(1);

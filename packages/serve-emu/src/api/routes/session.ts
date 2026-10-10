@@ -85,7 +85,7 @@ export function sessionRoutes(): ApiRoute<ApiDependencies>[] {
           return err instanceof SessionChangedError ||
             err instanceof HttpBodyError
             ? errorResponse(err)
-            : sessionReplayErrorResponse(err, 400);
+            : sessionReplayErrorResponse(err, "invalid_request");
         }
         const isCurrentReplaySession = () =>
           replayAdmissionEpoch === replayRecorder.replayAdmissionEpoch &&

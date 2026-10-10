@@ -1,8 +1,4 @@
-import {
-  commandFailureOf,
-  commandFailureStatus,
-  publicErrorMessage,
-} from "./command-failure.ts";
+import { publicErrorMessage } from "./command-failure.ts";
 import type { GeoFix } from "./location.ts";
 
 export type {
@@ -31,20 +27,12 @@ class RoutePlaybackDisposedError extends RoutePlaybackConflictError {
   }
 }
 
-class RoutePlaybackApplyError extends Error {
+/** A location update failed while starting playback; `cause` is the failure. */
+export class RoutePlaybackApplyError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "RoutePlaybackApplyError";
   }
-}
-
-export function routePlaybackErrorStatus(error: unknown): number {
-  if (error instanceof RoutePlaybackConflictError) return 409;
-  if (error instanceof RoutePlaybackApplyError) {
-    const failure = commandFailureOf(error);
-    return failure ? commandFailureStatus(failure) : 502;
-  }
-  return 500;
 }
 
 export type RoutePlaybackClock = {

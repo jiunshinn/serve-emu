@@ -23,7 +23,10 @@ describe("server request gates", () => {
     const missing = await response(harness.request("/api"));
     expect(missing.status).toBe(401);
     expect(missing.headers.get("www-authenticate")).toBe("Bearer");
-    expect(await missing.json()).toEqual({ ok: false, error: "unauthorized" });
+    expect(await missing.json()).toEqual({
+      ok: false,
+      error: { code: "unauthorized", message: "unauthorized" },
+    });
 
     const wrongLength = await response(
       harness.request("/api", {
@@ -130,7 +133,7 @@ describe("server request gates", () => {
     expect(crossOriginPost.status).toBe(403);
     expect(await crossOriginPost.json()).toEqual({
       ok: false,
-      error: "forbidden origin",
+      error: { code: "forbidden", message: "forbidden origin" },
     });
 
     const malformedOrigin = await response(
@@ -152,7 +155,7 @@ describe("server request gates", () => {
     expect(sameOriginPost.status).toBe(400);
     expect(await sameOriginPost.json()).toMatchObject({
       ok: false,
-      code: "invalid-json",
+      error: { code: "invalid_json" },
     });
 
     const crossOriginRead = await response(
@@ -190,7 +193,7 @@ describe("server request gates", () => {
       expect(mutation.status).toBe(403);
       expect(await mutation.json()).toEqual({
         ok: false,
-        error: "forbidden host",
+        error: { code: "forbidden", message: "forbidden host" },
       });
       for (const path of ["/api", "/health", "/", "/ws"]) {
         const read = await response(
@@ -214,7 +217,10 @@ describe("server request gates", () => {
       }),
     );
     expect(viteProxy.status).toBe(400);
-    expect(await viteProxy.json()).toMatchObject({ code: "invalid-json" });
+    expect(await viteProxy.json()).toMatchObject({
+      ok: false,
+      error: { code: "invalid_json" },
+    });
 
     for (const host of ["localhost:33040", "[::1]:33040", "192.168.1.20:33040"]) {
       const read = await response(harness.request("/api", { headers: { host } }));
@@ -279,7 +285,7 @@ describe("server request gates", () => {
     expect(image.status).toBe(403);
     expect(await image.json()).toEqual({
       ok: false,
-      error: "forbidden cross-site request",
+      error: { code: "forbidden", message: "forbidden cross-site request" },
     });
 
     const navigationHeaders = {
@@ -293,7 +299,7 @@ describe("server request gates", () => {
     expect(apiNavigation.status).toBe(403);
     expect(await apiNavigation.json()).toEqual({
       ok: false,
-      error: "forbidden cross-site request",
+      error: { code: "forbidden", message: "forbidden cross-site request" },
     });
 
     const uiNavigation = await response(

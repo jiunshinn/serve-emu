@@ -385,8 +385,7 @@ describe("server control input integration", () => {
       expect(rejected.status).toBe(429);
       expect(await json(rejected)).toMatchObject({
         ok: false,
-        status: "rejected",
-        code: "control-queue-overloaded",
+        error: { code: "rate_limited", reason: "control-queue-overloaded" },
       });
       const snapshot = await json(await harness.request("/api/session"));
       expect(snapshot.events).toHaveLength(1);
@@ -586,8 +585,7 @@ describe("server control input integration", () => {
       expect(cancelled.status).toBe(503);
       expect(await json(cancelled)).toMatchObject({
         ok: false,
-        status: "failed",
-        code: "control-queue-closed",
+        error: { code: "service_unavailable", reason: "control-queue-closed" },
       });
       expect(oldWriter.packets).toHaveLength(1);
       expect(newWriter.packets).toHaveLength(0);

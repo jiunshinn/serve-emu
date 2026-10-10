@@ -235,7 +235,7 @@ describe("RoutePlayback lifecycle", () => {
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({
       ok: false,
-      error: "geo fix failed",
+      error: { code: "downstream_failure", message: "geo fix failed" },
     });
     expect(playback.snapshot()).toMatchObject({
       status: "error",
@@ -262,12 +262,12 @@ describe("RoutePlayback lifecycle", () => {
   test("route request validation errors remain bad requests", async () => {
     const response = routePlaybackErrorResponse(
       new Error("route must include at least one waypoint"),
-      400,
+      "invalid_request",
     );
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({
       ok: false,
-      error: "route must include at least one waypoint",
+      error: { code: "invalid_request", message: "route must include at least one waypoint" },
     });
   });
 
@@ -284,7 +284,7 @@ describe("RoutePlayback lifecycle", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
       ok: false,
-      error: "route playback start is already in progress",
+      error: { code: "conflict", message: "route playback start is already in progress" },
     });
 
     playback.close();
@@ -298,7 +298,7 @@ describe("RoutePlayback lifecycle", () => {
     expect(disposedResponse.status).toBe(409);
     expect(await disposedResponse.json()).toEqual({
       ok: false,
-      error: "route playback is closed",
+      error: { code: "conflict", message: "route playback is closed" },
     });
   });
 
@@ -363,17 +363,25 @@ describe("RoutePlayback lifecycle", () => {
     expect(response.status).toBe(500);
     expect(await response.json()).toEqual({
       ok: false,
-      error: "unexpected route failure",
+      error: { code: "internal_error", message: "Internal server error" },
     });
   });
 
-  test("command failures keep their code and status but not their output", async () => {
+  test("command failures are downstream failures or timeouts without their output", async () => {
     const output = "KO: /home/me/.emulator_console_auth_token";
     const errorLog = spyOn(console, "error").mockImplementation(() => {});
     try {
-      for (const [failure, status] of [
-        [new CommandFailureError("adb-failed", "adb emu geo fix failed", output), 502],
-        [new CommandFailureError("adb-timeout", "adb emu geo fix timed out"), 504],
+      for (const [failure, status, code] of [
+        [
+          new CommandFailureError("adb-failed", "adb emu geo fix failed", output),
+          502,
+          "downstream_failure",
+        ],
+        [
+          new CommandFailureError("adb-timeout", "adb emu geo fix timed out"),
+          504,
+          "downstream_timeout",
+        ],
       ] as const) {
         const playback = new RoutePlayback({
           clock: new ManualClock(),
@@ -398,8 +406,11 @@ describe("RoutePlayback lifecycle", () => {
         expect(response.status).toBe(status);
         expect(await response.json()).toEqual({
           ok: false,
-          code: failure.code,
-          error: failure.publicMessage,
+          error: {
+            code,
+            message: failure.publicMessage,
+            reason: failure.code,
+          },
         });
         expect(errorLog).toHaveBeenLastCalledWith(
           `[api] POST /api/route -> ${status} ${failure.publicMessage}:`,

@@ -76,7 +76,7 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
             await readJsonBody(req, MAX_ROUTE_BODY_BYTES, requestContext),
           );
         } catch (err) {
-          return errorResponse(err, 400);
+          return errorResponse(err);
         }
         try {
           return await startRoutePlaybackResponse(requestContext.route, route, {

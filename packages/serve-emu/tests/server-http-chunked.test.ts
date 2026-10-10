@@ -99,7 +99,7 @@ test("real Bun HTTP rejects oversized chunked JSON with structured 413", async (
     const response = await rawChunkedRequest(started.server.port!, body);
 
     expect(response).toContain(" 413 ");
-    expect(response).toContain('"code":"payload-too-large"');
+    expect(response).toContain('"code":"payload_too_large"');
   } finally {
     await started.stop();
   }

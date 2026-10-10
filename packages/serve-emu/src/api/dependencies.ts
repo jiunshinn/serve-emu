@@ -1,4 +1,5 @@
 import type { DeviceService } from "../device-service.ts";
+import type { ApiErrorFallback } from "./error-mapping.ts";
 import type { AccessibilitySnapshot } from "../accessibility.ts";
 import type { DeviceSessionManager } from "../device-session-context.ts";
 import type { Gesture } from "../input.ts";
@@ -18,7 +19,7 @@ export type ApiDependencies = {
     runExec?: typeof import("../exec.ts").execText,
   ) => Promise<import("../shared/api-contracts.ts").Device[]>;
   /** Bound to the request, so failures are logged with its method and path. */
-  errorResponse: (err: unknown, fallbackStatus?: number) => Response;
+  errorResponse: (err: unknown, fallback?: ApiErrorFallback) => Response;
   deviceGrid: (context: DeviceContext) => Promise<DeviceGridResponse>;
   readJsonBody: (
     req: Request,
