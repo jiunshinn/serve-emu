@@ -1,4 +1,8 @@
-import { StreamPerformance, StreamClockSync } from "./stream-performance";
+import {
+  StreamPerformance,
+  StreamClockSync,
+  shouldRetryKeyframeRequest,
+} from "./stream-performance";
 import { parseWsServerJson } from "../../shared/websocket-contracts";
 import { buildCodecString, scanAU } from "./h264";
 import { epochNowMs, parseFramePacket } from "../../shared/frame-meta";
@@ -479,7 +483,14 @@ const feedFrame = (raw: ArrayBuffer, generation: number) => {
   if (spsBytes && !ensureDecoder(spsBytes, generation)) return;
 
   if (droppingUntilKeyframe) {
-    if (!isKey) return;
+    if (!isKey) {
+      // The request that started this recovery may have been coalesced by
+      // the server's reset gate; keep asking until a key frame arrives.
+      if (shouldRetryKeyframeRequest(lastKeyframeRequestAt, performance.now())) {
+        requestKeyframe(generation);
+      }
+      return;
+    }
     if (!decoder || decoder.state !== "configured") {
       requestKeyframe(generation);
       return;

@@ -2,6 +2,22 @@
 const SAMPLE_CAPACITY = 256;
 export const MAX_DECODE_WAIT_MS = 250;
 export const HARD_DECODE_QUEUE_SIZE = 48;
+/** How long a recovering worker waits for a key frame before asking again. */
+export const KEYFRAME_RETRY_INTERVAL_MS = 1_000;
+
+/**
+ * Whether a worker that is dropping frames until a key frame should send
+ * another key-frame request. The server's reset gate may coalesce a request
+ * (it answers `ack: false` requests silently), and an encoder without
+ * periodic IDRs would then never send the key frame recovery waits for.
+ */
+export function shouldRetryKeyframeRequest(
+  lastRequestAtMs: number,
+  nowMs: number,
+  retryIntervalMs = KEYFRAME_RETRY_INTERVAL_MS,
+): boolean {
+  return nowMs - lastRequestAtMs >= retryIntervalMs;
+}
 
 class Samples {
   #values: number[] = [];

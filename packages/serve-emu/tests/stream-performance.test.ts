@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  KEYFRAME_RETRY_INTERVAL_MS,
   StreamPerformance,
   StreamClockSync,
+  shouldRetryKeyframeRequest,
 } from "../src/ui/lib/stream-performance.ts";
 
 describe("decoder latency budget", () => {
@@ -78,3 +80,14 @@ describe("stream clock synchronization", () => {
     expect(sync.estimate(0)).toBeNull();
   });
 });
+
+describe("key-frame request retries while recovering", () => {
+  test("asks again only after the retry interval", () => {
+    expect(KEYFRAME_RETRY_INTERVAL_MS).toBe(1_000);
+    expect(shouldRetryKeyframeRequest(5_000, 5_999)).toBe(false);
+    expect(shouldRetryKeyframeRequest(5_000, 6_000)).toBe(true);
+    expect(shouldRetryKeyframeRequest(Number.NEGATIVE_INFINITY, 0)).toBe(true);
+    expect(shouldRetryKeyframeRequest(100, 350, 250)).toBe(true);
+  });
+});
+
