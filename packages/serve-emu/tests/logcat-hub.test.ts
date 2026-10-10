@@ -5,6 +5,7 @@ import {
   LogcatHub,
   type LogcatClock,
 } from "../src/logcat.ts";
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 class FakeLogcatChild extends EventEmitter {
   readonly stdout = new PassThrough();
@@ -22,42 +23,6 @@ class FakeLogcatChild extends EventEmitter {
 
   close(code: number | null = 0, signal: string | null = null): void {
     this.emit("close", code, signal);
-  }
-}
-
-class ManualClock implements LogcatClock {
-  #nextId = 1;
-  readonly timeouts = new Map<number, () => void>();
-  readonly intervals = new Map<number, () => void>();
-
-  setTimeout(callback: () => void, _delayMs: number): number {
-    const id = this.#nextId++;
-    this.timeouts.set(id, callback);
-    return id;
-  }
-
-  clearTimeout(timer: unknown): void {
-    this.timeouts.delete(timer as number);
-  }
-
-  setInterval(callback: () => void, _delayMs: number): number {
-    const id = this.#nextId++;
-    this.intervals.set(id, callback);
-    return id;
-  }
-
-  clearInterval(timer: unknown): void {
-    this.intervals.delete(timer as number);
-  }
-
-  runTimeouts(): void {
-    const callbacks = [...this.timeouts.values()];
-    this.timeouts.clear();
-    for (const callback of callbacks) callback();
-  }
-
-  runIntervals(): void {
-    for (const callback of [...this.intervals.values()]) callback();
   }
 }
 
@@ -190,7 +155,7 @@ describe("LogcatHub", () => {
 
     clock.runTimeouts();
     children[0]!.stdout.write("line-10\nline-11\nline-12\nline-13\n");
-    expect(clock.timeouts.size).toBe(0);
+    expect(clock.pendingTimeouts).toBe(0);
     expect(hub.snapshot()).toMatchObject({
       queuedLines: 3,
       totals: { droppedLines: 11 },
@@ -234,7 +199,7 @@ describe("LogcatHub", () => {
     expect((await readEvent(reader)).event).toBe("ready");
 
     // The second lookup fails (a stalled adb, for example).
-    clock.runIntervals();
+    clock.fireActive();
     await flushMicrotasks();
     expect(lookups).toHaveLength(0);
     expect(hub.snapshot().lastError).toContain("deadline exceeded");
@@ -300,8 +265,8 @@ describe("LogcatHub", () => {
     expect(calls).toEqual([
       { serial: "emulator-old", packageName: "com.example.app" },
     ]);
-    clock.runIntervals();
-    clock.runIntervals();
+    clock.fireActive();
+    clock.fireActive();
     await flushMicrotasks();
     expect(calls).toHaveLength(1);
     expect(maxConcurrent).toBe(1);
@@ -335,9 +300,9 @@ describe("LogcatHub", () => {
       ],
     });
 
-    clock.runIntervals();
+    clock.fireActive();
     await flushMicrotasks();
-    clock.runIntervals();
+    clock.fireActive();
     await flushMicrotasks();
     expect(calls).toHaveLength(2);
     expect(calls.every((call) => call.serial === "emulator-old")).toBe(true);
@@ -346,8 +311,8 @@ describe("LogcatHub", () => {
 
     hub.close("device switched");
     hub.close("duplicate close");
-    expect(clock.intervals.size).toBe(0);
-    expect(clock.timeouts.size).toBe(1);
+    expect(clock.activeIntervals).toBe(0);
+    expect(clock.pendingTimeouts).toBe(1);
     expect(children[0]!.killSignals).toEqual(["SIGTERM"]);
     expect(hub.snapshot()).toMatchObject({
       closed: true,
@@ -364,10 +329,10 @@ describe("LogcatHub", () => {
     children[0]!.close(null, "SIGTERM");
     // The grace timer is cleared on the microtask after the child closes.
     await flushMicrotasks();
-    expect(clock.timeouts.size).toBe(0);
+    expect(clock.pendingTimeouts).toBe(0);
     expect(hub.snapshot().childCount).toBe(0);
 
-    clock.runIntervals();
+    clock.fireActive();
     await flushMicrotasks();
     expect(calls).toHaveLength(2);
     expect(hub.subscribe({}).status).toBe(409);

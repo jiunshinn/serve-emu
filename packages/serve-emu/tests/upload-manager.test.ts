@@ -6,47 +6,7 @@ import {
   type UploadManagerErrorCode,
 } from "../src/upload-manager.ts";
 import { deferred } from "./helpers/deferred.ts";
-
-type Timer = {
-  callback: () => void;
-  dueMs: number;
-  active: boolean;
-};
-
-class ManualClock implements UploadManagerClock {
-  nowMs = 0;
-  readonly timers: Timer[] = [];
-
-  now(): number {
-    return this.nowMs;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): unknown {
-    const timer = {
-      callback,
-      dueMs: this.nowMs + delayMs,
-      active: true,
-    };
-    this.timers.push(timer);
-    return timer;
-  }
-
-  clearTimeout(value: unknown): void {
-    (value as Timer).active = false;
-  }
-
-  advance(ms: number): void {
-    this.nowMs += ms;
-  }
-
-  fireDue(): void {
-    for (const timer of this.timers) {
-      if (!timer.active || timer.dueMs > this.nowMs) continue;
-      timer.active = false;
-      timer.callback();
-    }
-  }
-}
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 const context = (generation: number, serial = `device-${generation}`) => ({
   serial,

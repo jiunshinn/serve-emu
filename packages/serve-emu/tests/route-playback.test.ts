@@ -12,41 +12,7 @@ import {
   startRoutePlaybackResponse,
 } from "../src/route-playback-api.ts";
 import { deferred } from "./helpers/deferred.ts";
-
-class ManualClock implements RoutePlaybackClock {
-  nowMs = Date.UTC(2026, 0, 1);
-  active = new Map<number, () => void>();
-  cleared: Array<() => void> = [];
-  maxActive = 0;
-  #nextHandle = 1;
-
-  now = () => this.nowMs;
-
-  setInterval = (callback: () => void): number => {
-    const handle = this.#nextHandle++;
-    this.active.set(handle, callback);
-    this.maxActive = Math.max(this.maxActive, this.active.size);
-    return handle;
-  };
-
-  clearInterval = (handle: unknown): void => {
-    const callback = this.active.get(handle as number);
-    if (callback) this.cleared.push(callback);
-    this.active.delete(handle as number);
-  };
-
-  advance(ms: number): void {
-    this.nowMs += ms;
-  }
-
-  fireActive(): void {
-    for (const callback of [...this.active.values()]) callback();
-  }
-
-  fireCleared(): void {
-    for (const callback of this.cleared.splice(0)) callback();
-  }
-}
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 const request: RoutePlaybackRequest = {
   waypoints: [
@@ -65,7 +31,7 @@ async function flushMicrotasks(): Promise<void> {
 
 describe("RoutePlayback lifecycle", () => {
   test("close during the initial apply aborts the run without a callback or timer", async () => {
-    const clock = new ManualClock();
+    const clock = new ManualClock(Date.UTC(2026, 0, 1));
     const applying = deferred<void>();
     const locations: unknown[] = [];
     let signal: AbortSignal | undefined;
@@ -87,7 +53,7 @@ describe("RoutePlayback lifecycle", () => {
     applying.resolve();
     await expect(starting).rejects.toBeInstanceOf(RoutePlaybackConflictError);
     expect(locations).toHaveLength(0);
-    expect(clock.active.size).toBe(0);
+    expect(clock.activeIntervals).toBe(0);
     expect(playback.snapshot()).toMatchObject({
       status: "closed",
       waypointCount: 0,
@@ -100,7 +66,7 @@ describe("RoutePlayback lifecycle", () => {
   });
 
   test("rejects a concurrent start and owns at most one timer", async () => {
-    const clock = new ManualClock();
+    const clock = new ManualClock(Date.UTC(2026, 0, 1));
     const applying = deferred<void>();
     const playback = new RoutePlayback({
       clock,
@@ -117,15 +83,15 @@ describe("RoutePlayback lifecycle", () => {
 
     applying.resolve();
     expect((await first).status).toBe("running");
-    expect(clock.active.size).toBe(1);
-    expect(clock.maxActive).toBe(1);
+    expect(clock.activeIntervals).toBe(1);
+    expect(clock.maxActiveIntervals).toBe(1);
     expect(playback.stop().status).toBe("idle");
     expect(playback.stop().status).toBe("idle");
-    expect(clock.active.size).toBe(0);
+    expect(clock.activeIntervals).toBe(0);
   });
 
   test("stop is reusable while close is terminal", async () => {
-    const clock = new ManualClock();
+    const clock = new ManualClock(Date.UTC(2026, 0, 1));
     const playback = new RoutePlayback({
       clock,
       applyLocation: () => {},
@@ -133,22 +99,22 @@ describe("RoutePlayback lifecycle", () => {
     });
 
     await playback.start(request);
-    expect(clock.active.size).toBe(1);
+    expect(clock.activeIntervals).toBe(1);
     expect(playback.pause().status).toBe("paused");
-    expect(clock.active.size).toBe(0);
+    expect(clock.activeIntervals).toBe(0);
     expect(playback.resume().status).toBe("running");
     expect(playback.resume().status).toBe("running");
-    expect(clock.active.size).toBe(1);
+    expect(clock.activeIntervals).toBe(1);
     playback.stop();
     playback.stop();
-    expect(clock.active.size).toBe(0);
+    expect(clock.activeIntervals).toBe(0);
 
     await playback.start(request);
-    expect(clock.active.size).toBe(1);
+    expect(clock.activeIntervals).toBe(1);
     playback.close();
     playback.resume();
     clock.fireCleared();
-    expect(clock.active.size).toBe(0);
+    expect(clock.activeIntervals).toBe(0);
     expect(playback.snapshot().status).toBe("closed");
     await expect(playback.start(request)).rejects.toBeInstanceOf(
       RoutePlaybackConflictError,
@@ -156,7 +122,7 @@ describe("RoutePlayback lifecycle", () => {
   });
 
   test("stop during the initial apply invalidates the run and remains reusable", async () => {
-    const clock = new ManualClock();
+    const clock = new ManualClock(Date.UTC(2026, 0, 1));
     const firstApply = deferred<void>();
     let calls = 0;
     let firstSignal: AbortSignal | undefined;
@@ -178,16 +144,16 @@ describe("RoutePlayback lifecycle", () => {
     expect(firstSignal?.aborted).toBe(true);
     const secondStart = playback.start(request);
     expect((await secondStart).status).toBe("running");
-    expect(clock.active.size).toBe(1);
+    expect(clock.activeIntervals).toBe(1);
     firstApply.resolve();
     await expect(firstStart).rejects.toBeInstanceOf(RoutePlaybackConflictError);
     expect(playback.snapshot().status).toBe("running");
-    expect(clock.active.size).toBe(1);
+    expect(clock.activeIntervals).toBe(1);
     playback.close();
   });
 
   test("pause and resume during startup defer timer ownership to start", async () => {
-    const clock = new ManualClock();
+    const clock = new ManualClock(Date.UTC(2026, 0, 1));
     const applying = deferred<void>();
     const playback = new RoutePlayback({
       clock,
@@ -198,17 +164,17 @@ describe("RoutePlayback lifecycle", () => {
     const starting = playback.start(request);
     expect(playback.pause().status).toBe("paused");
     expect(playback.resume().status).toBe("running");
-    expect(clock.active.size).toBe(0);
+    expect(clock.activeIntervals).toBe(0);
     applying.resolve();
     expect((await starting).status).toBe("running");
-    expect(clock.active.size).toBe(1);
-    expect(clock.maxActive).toBe(1);
+    expect(clock.activeIntervals).toBe(1);
+    expect(clock.maxActiveIntervals).toBe(1);
     playback.close();
   });
 
   test("initial apply failures reject and map to a non-success API status", async () => {
     const playback = new RoutePlayback({
-      clock: new ManualClock(),
+      clock: new ManualClock(Date.UTC(2026, 0, 1)),
       applyLocation: () => {
         throw new Error("geo fix failed");
       },
@@ -230,7 +196,7 @@ describe("RoutePlayback lifecycle", () => {
 
   test("successful starts return the running route API response", async () => {
     const playback = new RoutePlayback({
-      clock: new ManualClock(),
+      clock: new ManualClock(Date.UTC(2026, 0, 1)),
       applyLocation: () => {},
       onLocation: () => {},
     });
@@ -259,7 +225,7 @@ describe("RoutePlayback lifecycle", () => {
   test("concurrent and disposed starts map to conflict responses", async () => {
     const applying = deferred<void>();
     const playback = new RoutePlayback({
-      clock: new ManualClock(),
+      clock: new ManualClock(Date.UTC(2026, 0, 1)),
       applyLocation: () => applying.promise,
       onLocation: () => {},
     });
@@ -290,7 +256,7 @@ describe("RoutePlayback lifecycle", () => {
   test("a stale device session is rethrown before starting a route", async () => {
     let applies = 0;
     const playback = new RoutePlayback({
-      clock: new ManualClock(),
+      clock: new ManualClock(Date.UTC(2026, 0, 1)),
       applyLocation: () => {
         applies++;
       },
@@ -313,7 +279,7 @@ describe("RoutePlayback lifecycle", () => {
     let current = true;
     let applies = 0;
     const playback = new RoutePlayback({
-      clock: new ManualClock(),
+      clock: new ManualClock(Date.UTC(2026, 0, 1)),
       applyLocation: () => {
         applies++;
       },
@@ -369,7 +335,7 @@ describe("RoutePlayback lifecycle", () => {
         ],
       ] as const) {
         const playback = new RoutePlayback({
-          clock: new ManualClock(),
+          clock: new ManualClock(Date.UTC(2026, 0, 1)),
           applyLocation: () => {
             throw failure;
           },
@@ -410,7 +376,7 @@ describe("RoutePlayback lifecycle", () => {
   });
 
   test("periodic apply failure stops the owned timer", async () => {
-    const clock = new ManualClock();
+    const clock = new ManualClock(Date.UTC(2026, 0, 1));
     let applyCount = 0;
     const failure = new Error("periodic geo fix failed");
     const playback = new RoutePlayback({
@@ -433,7 +399,7 @@ describe("RoutePlayback lifecycle", () => {
         status: "error",
         lastError: "periodic geo fix failed",
       });
-      expect(clock.active.size).toBe(0);
+      expect(clock.activeIntervals).toBe(0);
       // No API response reports a periodic failure, so it is logged here.
       expect(errorLog).toHaveBeenCalledWith(
         "[route] playback stopped: could not apply location:",
@@ -445,7 +411,7 @@ describe("RoutePlayback lifecycle", () => {
   });
 
   test("close during a periodic apply suppresses the late location callback", async () => {
-    const clock = new ManualClock();
+    const clock = new ManualClock(Date.UTC(2026, 0, 1));
     const periodicApply = deferred<void>();
     const published: unknown[] = [];
     let applyCount = 0;
@@ -473,11 +439,11 @@ describe("RoutePlayback lifecycle", () => {
 
     expect(published).toHaveLength(1);
     expect(playback.snapshot().status).toBe("closed");
-    expect(clock.active.size).toBe(0);
+    expect(clock.activeIntervals).toBe(0);
   });
 
   test("a disposed device player cannot publish a late location", async () => {
-    const oldClock = new ManualClock();
+    const oldClock = new ManualClock(Date.UTC(2026, 0, 1));
     const oldApply = deferred<void>();
     const published: string[] = [];
     let oldSignal: AbortSignal | undefined;
@@ -493,7 +459,7 @@ describe("RoutePlayback lifecycle", () => {
 
     oldPlayback.close();
     const newPlayback = new RoutePlayback({
-      clock: new ManualClock(),
+      clock: new ManualClock(Date.UTC(2026, 0, 1)),
       applyLocation: () => {},
       onLocation: () => published.push("new"),
     });
@@ -503,7 +469,7 @@ describe("RoutePlayback lifecycle", () => {
 
     expect(oldSignal?.aborted).toBe(true);
     expect(published).toEqual(["new"]);
-    expect(oldClock.active.size).toBe(0);
+    expect(oldClock.activeIntervals).toBe(0);
     oldPlayback.close();
     oldClock.fireCleared();
     expect(published).toEqual(["new"]);

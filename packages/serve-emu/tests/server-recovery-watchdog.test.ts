@@ -7,44 +7,7 @@ import {
 } from "../src/server.ts";
 import type { RecoveryWatchdogClock } from "../src/session-recovery-watchdog.ts";
 import { deferred, type Deferred } from "./helpers/deferred.ts";
-
-type Timer = {
-  callback: () => void;
-  active: boolean;
-};
-
-class ManualClock implements RecoveryWatchdogClock {
-  nowMs = 0;
-  readonly timers: Timer[] = [];
-
-  now(): number {
-    return this.nowMs;
-  }
-
-  setInterval(callback: () => void): unknown {
-    const timer = { callback, active: true };
-    this.timers.push(timer);
-    return timer;
-  }
-
-  clearInterval(value: unknown): void {
-    (value as Timer).active = false;
-  }
-
-  advance(ms: number): void {
-    this.nowMs += ms;
-  }
-
-  fireActive(): void {
-    for (const timer of this.timers) {
-      if (timer.active) timer.callback();
-    }
-  }
-
-  get activeTimers(): number {
-    return this.timers.filter((timer) => timer.active).length;
-  }
-}
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 class FrameFeed {
   #packets: Array<VideoPacket | null> = [];
@@ -569,23 +532,23 @@ describe("server recovery watchdog", () => {
   test("owns exactly one timer through terminal recovery, switch, and shutdown", async () => {
     const harness = await createHarness({ serials: ["A", "B", "C"] });
     try {
-      expect(harness.clock.activeTimers).toBe(1);
+      expect(harness.clock.activeIntervals).toBe(1);
       harness.sessions.get("A")!.feed.push(null);
       await waitFor(async () => (await harness.health()).status === "stopped");
-      expect(harness.clock.activeTimers).toBe(0);
+      expect(harness.clock.activeIntervals).toBe(0);
 
       const selectedB = await harness.post("/api/devices/select", {
         serial: "B",
       });
       expect(selectedB.status).toBe(200);
-      expect(harness.clock.activeTimers).toBe(1);
+      expect(harness.clock.activeIntervals).toBe(1);
 
       const oldTimer = harness.clock.timers.at(-1)!;
       const selectedC = await harness.post("/api/devices/select", {
         serial: "C",
       });
       expect(selectedC.status).toBe(200);
-      expect(harness.clock.activeTimers).toBe(1);
+      expect(harness.clock.activeIntervals).toBe(1);
       const clientC = await harness.openWebSocket();
       await waitFor(
         () =>
@@ -601,7 +564,7 @@ describe("server recovery watchdog", () => {
     } finally {
       await harness.started.stop();
     }
-    expect(harness.clock.activeTimers).toBe(0);
+    expect(harness.clock.activeIntervals).toBe(0);
     expect(harness.captured.stopCalls).toBe(1);
   });
 
@@ -661,8 +624,8 @@ describe("server recovery watchdog", () => {
     await waitFor(() => harness.startCalls.includes("B"));
 
     const stopping = harness.started.stop();
-    await waitFor(() => harness.clock.activeTimers === 0);
-    expect(harness.clock.activeTimers).toBe(0);
+    await waitFor(() => harness.clock.activeIntervals === 0);
+    expect(harness.clock.activeIntervals).toBe(0);
     harness.startGates.get("B")!.resolve();
 
     const response = await switching;
@@ -672,7 +635,7 @@ describe("server recovery watchdog", () => {
       error: { code: "invalid_request", message: "device session manager is closed" },
     });
     expect(harness.sessions.get("B")!.closeCount).toBe(1);
-    expect(harness.clock.activeTimers).toBe(0);
+    expect(harness.clock.activeIntervals).toBe(0);
     await stopping;
   });
 
