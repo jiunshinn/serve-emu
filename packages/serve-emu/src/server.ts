@@ -38,6 +38,7 @@ import {
   stageMultipartUpload,
 } from "./multipart-upload.ts";
 import { HttpBodyError, readJsonLimited } from "./request-body.ts";
+import { shouldRecordPayload } from "./session-api.ts";
 import {
   closeScrcpySession,
   ScrcpyStreamError,
@@ -755,11 +756,7 @@ export async function startServer(
     return result;
   };
 
-  const shouldRecord = (value: unknown) =>
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    (value as Record<string, unknown>).record !== false;
+  const shouldRecord = shouldRecordPayload;
 
   const readAccessibilitySnapshot = async (
     context: DeviceContext,

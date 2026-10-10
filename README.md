@@ -404,7 +404,8 @@ one-second status poll does not force the map center back onto the route.
 ### Sessions
 
 REST and WebSocket input events are recorded by default. Add `"record":false`
-to supported input payloads when an event should not be saved. History uses a
+to a tap, swipe, text, key, or `/api/location` payload when an event should not
+be saved. History uses a
 2,000-event, 1 MiB circular retention budget; `/health` contains only its
 compact count/byte/replay summary. Text is normalized to scrcpy's 300-byte
 UTF-8 control limit before both dispatch and recording.
