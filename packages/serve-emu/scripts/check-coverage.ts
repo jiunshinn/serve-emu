@@ -1,5 +1,7 @@
 // Floors apply to executed lines, not merely LCOV file presence. Browser-only
-// Worker/React wiring is covered separately by the required browser CI job.
+// Worker/React code has no line floors here; the browser CI job runs it
+// (tests/browser): a real H.264 GOP with delta frames, cached SPS/PPS for a
+// late joiner, reset-video recovery, scrcpy v4 framing, and the token cookie.
 const CRITICAL_SOURCE_FILES = {
   "src/server.ts": 80,
   "src/api/router.ts": 85,
