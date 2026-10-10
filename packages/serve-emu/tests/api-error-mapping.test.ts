@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { ApiError } from "../src/api/api-error.ts";
 import { toApiError } from "../src/api/error-mapping.ts";
 import { AppManagementError } from "../src/app-management.ts";
+import { CommandFailureError } from "../src/command-failure.ts";
 import { ControlInputError } from "../src/control-input-queue.ts";
 import { SessionChangedError } from "../src/device-session-context.ts";
 import { MultipartUploadError } from "../src/multipart-upload.ts";
@@ -32,7 +33,8 @@ const rows: Row[] = [
   ["adb failure", new AppManagementError("adb-failed", "Failure [INSTALL_FAILED_X] /data/app/..."), 502, "downstream_failure", "adb-failed", "adb command failed"],
   ["adb timeout", new AppManagementError("adb-timeout", "adb shell pm clear x timed out"), 502, "downstream_failure", "adb-timeout", "adb command timed out"],
   ["route conflict", new RoutePlaybackConflictError("route playback is closed"), 409, "conflict", undefined, "route playback is closed"],
-  ["route location failure", new RoutePlaybackApplyError("geo fix: KO: bad", { cause: new Error("x") }), 502, "downstream_failure", undefined, "route location update failed"],
+  ["route location failure", new RoutePlaybackApplyError("location control is currently supported for Android Emulator serials only", { cause: new Error("x") }), 502, "downstream_failure", undefined, "location control is currently supported for Android Emulator serials only"],
+  ["wrapped command failure", new RoutePlaybackApplyError("adb emu geo fix timed out", { cause: new CommandFailureError("adb-timeout", "adb emu geo fix timed out", "KO: /home/me/token") }), 502, "downstream_failure", "adb-timeout", "adb emu geo fix timed out"],
   ["replay validation", new SessionReplayValidationError("multiplier must be a number"), 400, "invalid_request", undefined, "multiplier must be a number"],
   ["replay conflict", new SessionReplayConflictError("session replay is already running"), 409, "conflict", undefined, "session replay is already running"],
   ["plain validation error", new Error("x must be between 0 and 1"), 400, "invalid_request", undefined, "x must be between 0 and 1"],

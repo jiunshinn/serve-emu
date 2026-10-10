@@ -235,7 +235,7 @@ describe("RoutePlayback lifecycle", () => {
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({
       ok: false,
-      error: { code: "downstream_failure", message: "route location update failed" },
+      error: { code: "downstream_failure", message: "geo fix failed" },
     });
     expect(playback.snapshot()).toMatchObject({
       status: "error",

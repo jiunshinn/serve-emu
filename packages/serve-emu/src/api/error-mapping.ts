@@ -106,7 +106,9 @@ export function toApiError(
     return api("downstream_failure", failure.publicMessage, err, failure.code);
   }
   if (err instanceof RoutePlaybackApplyError) {
-    return api("downstream_failure", "route location update failed", err);
+    // Route playback builds this message with publicErrorMessage, so it is
+    // safe to send (for example, that location needs an emulator).
+    return api("downstream_failure", message(err), err);
   }
   if (err instanceof SessionReplayValidationError) {
     return api("invalid_request", message(err), err);
