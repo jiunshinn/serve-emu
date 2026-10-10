@@ -364,6 +364,7 @@ export type SwipeRequest = {
   record?: boolean;
 };
 export type TextRequest = { text: string; record?: boolean };
+export type LocationRequest = GeoFix & { record?: boolean };
 export type KeyRequest =
   | { key: "back" | "home" | "recents" | "power"; record?: boolean }
   | { keycode: number; action?: "down" | "up"; metaState?: number; record?: boolean };
@@ -450,7 +451,7 @@ export type ApiContractMap = {
   };
   "/api/location": {
     GET: EndpointContract<undefined, LocationResponse>;
-    POST: EndpointContract<GeoFix, LocationUpdateResponse>;
+    POST: EndpointContract<LocationRequest, LocationUpdateResponse>;
   };
   "/api/route": {
     GET: EndpointContract<undefined, RoutePlaybackSnapshot>;
