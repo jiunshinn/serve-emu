@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Capture comparison · serve-emu</title>
+    <style>
+      :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #e7edf2; background: #101417; font-synthesis: none; }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      main { max-width: 1260px; margin: 0 auto; padding: 32px; }
+      header, .toolbar, .player-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+      header { margin-bottom: 28px; }
+      h1 { font-size: 25px; font-weight: 600; letter-spacing: -.7px; margin: 8px 0; }
+      p { color: #929fa9; font-size: 13px; line-height: 1.6; margin: 0; }
+      .eyebrow { color: #a5cfbd; font-size: 11px; font-weight: 600; letter-spacing: .13em; text-transform: uppercase; }
+      .badge { color: #bdc7ce; border: 1px solid #344047; border-radius: 20px; padding: 6px 10px; font-size: 11px; white-space: nowrap; }
+      .toolbar { padding: 16px 0; border-top: 1px solid #283138; margin-bottom: 20px; flex-wrap: wrap; }
+      .source-choice { display: flex; gap: 6px; border-radius: 10px; background: #080d10; padding: 4px; margin: 0; border: 1px solid #283138; }
+      .source-choice label { position: relative; cursor: pointer; }
+      .source-choice input { position: absolute; opacity: 0; }
+      .source-choice span { display: block; padding: 9px 14px; border-radius: 6px; color: #9eabb4; font-size: 13px; }
+      .source-choice input:checked + span { background: #28382f; color: #d0f1df; }
+      .source-choice input:disabled + span { opacity: .45; cursor: not-allowed; }
+      .source-choice input:focus-visible + span { outline: 2px solid #9dccb5; outline-offset: 2px; }
+      button { font: inherit; font-size: 12px; padding: 9px 13px; border-radius: 7px; border: 1px solid #344047; color: #d1dbe2; background: #1a2227; cursor: pointer; }
+      button:hover { background: #263239; }
+      button:disabled { opacity: .45; cursor: not-allowed; }
+      button:focus-visible { outline: 2px solid #9dccb5; outline-offset: 3px; }
+      .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+      .layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 24px; align-items: start; }
+      .player { border: 1px solid #2b353d; border-radius: 14px; overflow: hidden; background: #0b1013; }
+      .viewport { display: flex; justify-content: center; align-items: center; min-height: 430px; padding: 20px; background: radial-gradient(ellipse at center, #18232a, #0b1013 75%); }
+      canvas { display: block; max-width: 100%; max-height: 68vh; width: auto; height: auto; touch-action: none; background: #030606; border-radius: 3px; }
+      .player-footer { padding: 13px 16px; border-top: 1px solid #273138; font-size: 12px; color: #9eabb4; }
+      #status { display: flex; align-items: center; gap: 7px; }
+      #status::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #829797; }
+      #status[data-ready="true"]::before { background: #8dccab; }
+      .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+      .metric { background: #192126; border: 1px solid #2c363d; border-radius: 9px; padding: 14px 12px; }
+      .metric span { display: block; color: #94a3ad; font-size: 10px; margin-bottom: 10px; }
+      .metric strong { font-size: 24px; font-weight: 500; letter-spacing: -.7px; font-variant-numeric: tabular-nums; }
+      .metric small { font-size: 11px; font-weight: 400; color: #8a9ba6; margin-left: 3px; }
+      .detail { padding: 16px 0; border-top: 1px solid #2b353d; }
+      .detail h2 { font-size: 11px; font-weight: 500; color: #c1ccd3; margin: 0 0 9px; }
+      #pipeline { color: #a4c5b4; }
+      #policy { color: #c1ccd3; margin-bottom: 5px; }
+      #policy-reason { font-size: 12px; }
+      #error { white-space: pre-wrap; color: #efb7ae; background: #302321; border: 1px solid #593c37; border-radius: 8px; padding: 12px; font-size: 12px; margin-top: 16px; overflow-wrap: anywhere; }
+      #error[hidden] { display: none; }
+      .footnote { margin-top: 22px; font-size: 11px; }
+      @media (max-width: 780px) { main { padding: 20px 14px; } header { align-items: start; } .layout { grid-template-columns: 1fr; } .metrics { grid-template-columns: repeat(3, 1fr); } .viewport { min-height: 300px; } canvas { max-height: 58vh; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div><div class="eyebrow">serve-emu / capture lab</div><h1>Find the faster frame.</h1><p>Compare two capture sources through the same production video player.</p></div>
+        <span class="badge">Experimental</span>
+      </header>
+      <div class="toolbar">
+        <fieldset class="source-choice" aria-label="Capture source">
+          <label><input type="radio" name="backend" value="scrcpy" disabled /><span>scrcpy · baseline</span></label>
+          <label><input type="radio" name="backend" value="native" disabled /><span>Native · gRPC</span></label>
+        </fieldset>
+        <div class="actions"><button id="reconnect" type="button" disabled>Reconnect</button><button id="download" type="button">Download results</button></div>
+      </div>
+      <div class="layout">
+        <section class="player" aria-label="Device stream">
+          <div class="viewport" id="viewport"></div>
+          <div class="player-footer"><span id="status" role="status">Loading backend policy…</span><div class="actions"><button id="back" type="button" disabled>Back</button><button id="home" type="button" disabled>Home</button></div></div>
+        </section>
+        <aside aria-label="Capture statistics">
+          <div class="metrics">
+            <div class="metric"><span>Rendered FPS</span><strong id="rendered-fps">—</strong></div>
+            <div class="metric"><span>Source FPS</span><strong id="source-fps">—</strong></div>
+            <div class="metric"><span>Encoded FPS</span><strong id="encoded-fps">—</strong></div>
+            <div class="metric"><span>Decode p95</span><strong id="decode-p95">—</strong><small>ms</small></div>
+            <div class="metric"><span>Present wait p95</span><strong id="present-p95">—</strong><small>ms</small></div>
+            <div class="metric"><span>Source drops</span><strong id="drops">—</strong></div>
+          </div>
+          <div class="detail"><h2>Backend policy</h2><p id="policy">Loading server configuration…</p><p id="policy-reason"></p></div>
+          <div class="detail"><h2>Source pipeline</h2><p id="pipeline"></p></div>
+          <div class="detail"><h2>Session</h2><p id="session-detail">Waiting for the first frame.</p><p id="sample-detail">0 samples collected</p></div>
+          <div class="detail"><h2>Compare under motion</h2><p>Use the same screen and resolution for both sources. Let each stream warm up, then compare during continuous animation or scrolling.</p></div>
+          <div id="error" role="alert" hidden></div>
+        </aside>
+      </div>
+      <p class="footnote">Both sources use the existing WebSocket → WebCodecs → OffscreenCanvas worker. This experiment compares capture and encoding; it does not use WebRTC transport.</p>
+    </main>
+    <script type="module" src="/client.js"></script>
+  </body>
+</html>
