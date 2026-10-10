@@ -522,7 +522,7 @@ async function waitForBoot(
 }
 
 /** The booted emulator on the launch's port is another AVD, which is left running. */
-export class EmulatorIdentityError extends Error {
+class EmulatorIdentityError extends Error {
   constructor(serial: string, expected: string, actual: string) {
     super(
       `${serial} is running AVD "${actual}", not "${expected}"; ` +
