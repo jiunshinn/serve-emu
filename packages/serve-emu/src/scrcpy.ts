@@ -375,6 +375,10 @@ async function forwardAbstractSocket(
     }
   }
 
+  // A lost device fails every fixed port the same way: report it at once.
+  if (isDeviceUnavailable(dynamic)) {
+    throw commandFailure(serial, dynamicArgs, dynamic);
+  }
   let lastError =
     dynamic.stderr?.trim() ||
     dynamic.error?.message ||
@@ -396,6 +400,9 @@ async function forwardAbstractSocket(
       signal,
     );
     if (fixed.status === 0) return port;
+    if (isDeviceUnavailable(fixed)) {
+      throw commandFailure(serial, fixedArgs, fixed);
+    }
     lastError = fixed.stderr?.trim() || fixed.error?.message || lastError;
   }
   throw new CommandFailureError(

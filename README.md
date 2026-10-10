@@ -255,15 +255,25 @@ matches its `code`:
 `method_not_allowed` (`405`), `conflict` (`409`, for example a device switch
 during the request), `payload_too_large` (`413`), `rate_limited` (`429`),
 `internal_error` (`500`), `downstream_failure` (`502`: an adb or emulator
-command failed), `service_unavailable` (`503`), or `downstream_timeout`
-(`504`: an adb command timed out). The optional `reason` names a
-finer-grained cause within the code, such as `control-queue-overloaded`.
+command failed), `service_unavailable` (`503`, including an adb command that
+could not reach the device), or `downstream_timeout` (`504`: an adb command
+timed out). The optional `reason` names a finer-grained cause within the code,
+such as `control-queue-overloaded`.
 
-A `downstream_failure` or `downstream_timeout` names only the failed
-operation, such as `screencap failed` or `adb install timed out`. For a command,
-`reason` is `adb-failed`, `adb-timeout`, `adb-cleanup-failed`, or
-`emulator-failed`, and the command's output goes to the server log with the
-request's method and path.
+A failed command names only the operation, such as `screencap failed`,
+`adb install timed out`, or `cmd uimode night failed: the device is
+unavailable`, and its output goes to the server log with the request's method
+and path. Its `reason` says why it failed:
+
+| `reason` | `code` | When |
+| --- | --- | --- |
+| `adb-device-unavailable` | `service_unavailable` | adb says the device is offline, unauthorized, not found, or its connection closed |
+| `adb-timeout` | `downstream_timeout` | the command ran past its deadline |
+| `adb-failed` | `downstream_failure` | the command failed on a reachable device |
+| `adb-aborted` | `downstream_failure` | the command was cancelled |
+| `adb-output-limit` | `downstream_failure` | the command printed more output than allowed |
+| `adb-cleanup-failed` | `downstream_failure` | a temporary file on the device could not be removed |
+| `emulator-failed` | `downstream_failure` | the emulator binary failed |
 An `internal_error` has a fixed message, such as `Internal server error`.
 
 ### Health And Discovery

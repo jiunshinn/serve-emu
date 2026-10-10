@@ -733,6 +733,32 @@ describe("scrcpy async lifecycle", () => {
     expect((error as Error).message).toEndWith("timed out after 20ms");
   });
 
+  test.each<[string, HarnessOptions, number]>([
+    ["the dynamic forward", { dynamicResult: failed("adb: device offline") }, 0],
+    [
+      "a fixed-port forward",
+      {
+        dynamicResult: failed("dynamic forwards unsupported"),
+        fixedResults: [failed("adb: error: device 'emulator-5554' not found")],
+      },
+      1,
+    ],
+  ])("a lost device during %s fails at once as unavailable", async (_, options, fixedAttempts) => {
+    const harness = createHarness(options);
+
+    const error = await startWith(harness).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-device-unavailable",
+      publicMessage: "adb forward failed: the device is unavailable",
+    });
+    expect(harness.state.fixedAttempt).toBe(fixedAttempts);
+    expect(harness.state.spawnCalls).toHaveLength(0);
+  });
+
   test("fixed-port fallback always uses --no-rebind", async () => {
     const harness = createHarness({
       dynamicResult: failed("dynamic forwards unsupported"),

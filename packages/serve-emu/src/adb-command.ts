@@ -121,11 +121,13 @@ export function spawnAdb(
 }
 
 // adb's own client messages for a device it cannot reach, printed on stderr
-// behind an "adb: " or "error: " prefix. Matched as whole phrases so a device
-// command's output ("sh: pidof: not found", "package com.foo not found") never
-// reads as a lost device.
+// at the start of a line behind an "adb: " or "error: " prefix, sometimes
+// after a step name ("adb: error: failed to get feature set: device
+// offline"). The prefix is required, so a device command's output ("sh:
+// pidof: not found", "Error: package com.foo.device not found") never reads
+// as a lost device: this decides a 503.
 const DEVICE_UNAVAILABLE_RE =
-  /\bdevice offline\b|\bdevice unauthorized\b|\bdevice (?:'[^'\n]*' )?not found\b|\bno (?:devices\/emulators|devices|emulators) found\b/i;
+  /^(?:adb: (?:error: )?|error: )(?:[^\n]*?: )?(?:device offline|device unauthorized|device (?:'[^'\n]*' )?not found|no (?:devices\/emulators|devices|emulators) found)\b/m;
 // adb's "error: closed": the server dropped the connection to the device.
 const CONNECTION_CLOSED_RE = /^(?:adb: )?error: closed\s*$/im;
 
@@ -188,7 +190,7 @@ function execErrorCode(result: AdbOutcome): ExecError["code"] | null {
  * reached. The executor's own errors decide the first three; adb's stderr
  * decides whether the device was unavailable.
  */
-export function adbFailureCode(result: AdbOutcome): CommandFailureCode {
+function adbFailureCode(result: AdbOutcome): CommandFailureCode {
   const execCode = execErrorCode(result);
   if (result.timedOut || execCode === "deadline-exceeded") return "adb-timeout";
   if (execCode === "aborted") return "adb-aborted";
@@ -254,7 +256,8 @@ export type TerminateChildOptions<Timer = ReturnType<typeof setTimeout>> = {
 
 /**
  * Stops a child process: SIGTERM, wait up to `graceMs` for it to exit, then
- * SIGKILL and wait up to `graceMs` again. Rejects if it still has not exited.
+ * SIGKILL and wait up to `killGraceMs` (default `graceMs`). Rejects if it
+ * still has not exited.
  * SIGTERM is sent synchronously, before the returned promise first awaits.
  */
 export async function terminateChild<Timer = ReturnType<typeof setTimeout>>(

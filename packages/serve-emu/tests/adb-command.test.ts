@@ -3,7 +3,6 @@ import { EventEmitter } from "node:events";
 import type { spawn } from "node:child_process";
 import {
   adbCommandFailure,
-  adbFailureCode,
   adbOperation,
   adbSucceeded,
   isConnectionClosed,
@@ -63,6 +62,12 @@ describe("isDeviceUnavailable", () => {
     ["adb: error: listener 'tcp:27183' not found", false],
     ["/system/bin/sh: pidof: not found", false],
     ["Error: package com.foo not found", false],
+    // A package or service whose name ends in "device" is not adb's message.
+    ["Error: package com.acme.device not found", false],
+    ["Exception: input device not found", false],
+    ["java.lang.IllegalStateException: device offline", false],
+    ["adb: error: connect failed: device offline", true],
+    ["* daemon started successfully\nerror: device offline", true],
     ["00000000: 00000002 00000000 00010000 0001 01 12345 @android.net.wifi.closed", false],
     ["Error: the connection was closed by the app", false],
     ["rm: /data/local/tmp/x: Permission denied", false],
@@ -124,7 +129,6 @@ describe("adb command failures", () => {
     ["command error", failed({ stderr: "Error: unknown command 'frobnicate'\n" }), "adb-failed", 502, "failed"],
   ] as const)("classifies a %s", (_, result, code, status, outcome) => {
     expect(adbSucceeded(result)).toBe(false);
-    expect(adbFailureCode(result)).toBe(code);
     const error = adbCommandFailure("adb shell cmd", result);
     expect(error).toBeInstanceOf(CommandFailureError);
     expect(error.code).toBe(code);
