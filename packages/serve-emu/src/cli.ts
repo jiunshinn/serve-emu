@@ -70,15 +70,16 @@ function displayHost(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
-async function checkForUpdate() {
+async function checkForUpdate(signal: AbortSignal) {
   if (process.env.SERVE_EMU_UPDATE_CHECK === "0") return;
 
   const notice = await getUpdateNotice({
     packageName: packageJson.name,
     currentVersion: packageJson.version,
     cachePath: process.env.SERVE_EMU_UPDATE_CHECK_CACHE,
+    signal,
   });
-  if (notice) console.error(notice);
+  if (notice && !signal.aborted) console.error(notice);
 }
 
 if (values.help) {
@@ -158,8 +159,8 @@ Options:
 }
 
 async function main() {
-  await checkForUpdate().catch(() => {});
-
+  // The listing commands below never contact the registry; the server path
+  // checks in the background once it is listening.
   if (values["avd-list"]) {
     console.log((await listAvds(values.emulator)).join("\n"));
     return;
@@ -322,6 +323,10 @@ async function main() {
       );
     }
   }
+
+  // In the background, after the startup URL: a slow or unreachable registry
+  // never delays the server, and a notice prints to stderr when it settles.
+  void checkForUpdate(lifecycleController.signal).catch(() => {});
 }
 
 await main().catch((err) => {
