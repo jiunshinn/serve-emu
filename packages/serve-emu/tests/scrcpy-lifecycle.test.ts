@@ -188,6 +188,7 @@ type HarnessOptions = {
   childIgnoresKill?: boolean;
   /** Result of `adb push`; "hang" never settles until aborted. */
   pushResult?: AdbCommandResult | "hang";
+  syncResult?: AdbCommandResult;
 };
 
 function createHarness(options: HarnessOptions = {}) {
@@ -251,7 +252,7 @@ function createHarness(options: HarnessOptions = {}) {
         ? failed(`sha256sum: ${args[2]}: No such file or directory`)
         : ok(`${state.cacheDigest}  ${args[2]}\n`);
     }
-    if (args[0] === "shell" && args[1] === "sync") return ok();
+    if (args[0] === "shell" && args[1] === "sync") return options.syncResult ?? ok();
     if (args[0] === "push") {
       state.pushCount++;
       if (options.pushResult === "hang") {
@@ -864,6 +865,17 @@ describe("device server jar cache", () => {
     }
   });
 
+  test("a failed sync does not fail a start whose push succeeded", async () => {
+    const harness = createHarness({
+      cacheDigest: EMPTY_SHA256,
+      syncResult: failed("sync: I/O error"),
+    });
+    await (await startWith(harness)).close();
+    expect(harness.state.pushCount).toBe(1);
+    expect(jarCommands(harness)).toContain(`shell mv -f ${CACHE}.tmp ${CACHE}`);
+    expect(harness.state.cacheDigest).toBe(JAR_FINGERPRINT);
+  });
+
   test("re-pushes on every start when the device has no sha256sum", async () => {
     const harness = createHarness({ sha256Missing: true });
     await (await startWith(harness)).close();
@@ -878,7 +890,7 @@ describe("device server jar cache", () => {
     const probe = await harness.probeReached.promise;
 
     await expect(startup).rejects.toThrow(
-      `adb shell sha256sum ${CACHE} timed out after 20ms`,
+      `shell sha256sum ${CACHE} timed out after 20ms`,
     );
     expect(probe.signal.aborted).toBe(true);
     expect(harness.state.pushCount).toBe(0);

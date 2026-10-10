@@ -515,14 +515,20 @@ async function prepareDeviceServerJar(
       signal,
     );
     // Flush the pushed bytes before the rename publishes them under the
-    // cache name.
-    await runAdbChecked(
-      runtime,
-      serial,
-      ["shell", "sync"],
-      timeouts.copyMs,
-      signal,
-    );
+    // cache name. Best effort: a slow or failed sync must not fail a start
+    // whose push succeeded, and the sha256 check repairs a bad cache entry on
+    // the next start. An abort still stops startup.
+    try {
+      await runAdbChecked(
+        runtime,
+        serial,
+        ["shell", "sync"],
+        timeouts.copyMs,
+        signal,
+      );
+    } catch (error) {
+      if (signal?.aborted) throw error;
+    }
     await runAdbChecked(
       runtime,
       serial,
