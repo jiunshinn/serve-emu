@@ -171,7 +171,7 @@ function boolAttr(value: string | undefined): boolean {
 
 export type AccessibilityDependencies = {
   execText?: typeof execText;
-  /** Rejects with the signal's reason when it aborts. */
+  /** Rejects when the signal aborts; the dump then rethrows the signal's reason. */
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 };
 

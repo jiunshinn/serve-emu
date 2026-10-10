@@ -58,8 +58,8 @@ describe("accessibility dumps", () => {
     expect(adb.steps()).toEqual([`uiautomator dump ${path}`, `cat ${path}`, `rm -f ${path}`]);
     expect(cat).toBe(`cat ${path}`);
     expect(rm).toBe(`rm -f ${path}`);
-    // Cleanup runs on the interactive lane (never queue-full) without the
-    // session signal, so an abort cannot skip it.
+    // Cleanup runs on the interactive lane without the session signal, so an
+    // abort cannot skip it.
     expect(adb.calls[2]!.opts).toMatchObject({ lane: "interactive", timeout: 2_000 });
     expect(adb.calls[2]!.opts.signal).toBeUndefined();
   });
@@ -71,7 +71,7 @@ describe("accessibility dumps", () => {
       const reason = new Error(`session ended ${stage}`);
       const adb = fakeAdb((step) => {
         if (step === "dump") {
-          controller.abort(reason);
+          if (stage !== "during cat") controller.abort(reason);
           return result(stage === "during the dump" ? { status: null, signal: "SIGTERM", error: reason } : {});
         }
         if (step === "cat") {
@@ -90,6 +90,9 @@ describe("accessibility dumps", () => {
       expect(steps.filter((step) => step.startsWith("rm"))).toEqual([`rm -f ${path}`]);
       expect(steps.at(-1)).toBe(`rm -f ${path}`);
       expect(steps.filter((step) => step.startsWith("uiautomator"))).toHaveLength(1);
+      expect(steps.filter((step) => step.startsWith("cat"))).toHaveLength(
+        stage === "during cat" ? 1 : 0,
+      );
     },
   );
 
