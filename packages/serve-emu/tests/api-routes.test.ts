@@ -2,6 +2,10 @@ import { describe, expect, spyOn, test } from "bun:test";
 import type { ApiMethod } from "../src/api/router.ts";
 import { createApiRoutes } from "../src/api/routes/index.ts";
 import { CommandFailureError } from "../src/command-failure.ts";
+import {
+  parseApiFailure,
+  type ApiErrorCode,
+} from "../src/shared/api-contracts.ts";
 import { createHarness, response } from "./helpers/server-harness.ts";
 
 const EXPECTED_ROUTES = [
@@ -48,6 +52,11 @@ const EXPECTED_ROUTES = [
   ["POST", "/api/session/replay/stop"],
 ] as const satisfies readonly (readonly [ApiMethod, string])[];
 
+/** The failure's code, after checking the body is a shared ApiFailure. */
+async function failureCode(res: Response): Promise<ApiErrorCode> {
+  return parseApiFailure(await res.json()).error.code;
+}
+
 describe("production API routing", () => {
   test("registers every production route including paginated session export", () => {
     const actual = createApiRoutes()
@@ -64,6 +73,7 @@ describe("production API routing", () => {
     for (const [method, path] of EXPECTED_ROUTES) {
       const denied = await response(h.request(path, { method }));
       expect(denied.status, `${method} ${path}`).toBe(401);
+      expect(await failureCode(denied), `${method} ${path}`).toBe("unauthorized");
       if (method !== "GET") {
         const forbidden = await response(
           h.request(path, {
@@ -75,6 +85,7 @@ describe("production API routing", () => {
           }),
         );
         expect(forbidden.status, path).toBe(403);
+        expect(await failureCode(forbidden), path).toBe("forbidden");
       }
     }
   });
@@ -89,10 +100,7 @@ describe("production API routing", () => {
       );
       expect(res.status, path).toBe(405);
       expect(res.headers.get("allow"), path).toBe(methods.join(", "));
-      expect(await res.json()).toMatchObject({
-        ok: false,
-        error: { code: "method_not_allowed" },
-      });
+      expect(await failureCode(res), path).toBe("method_not_allowed");
     }
   });
 
@@ -120,7 +128,7 @@ describe("production API routing", () => {
         h.request(path, { method: "POST", body: JSON.stringify(body) }),
       );
       expect(res.status, path).toBe(400);
-      expect(await res.json(), path).toMatchObject({ ok: false });
+      expect(await failureCode(res), path).toBe("invalid_request");
     }
   });
 
@@ -135,10 +143,12 @@ describe("production API routing", () => {
         h.request(path, { method: "POST", body: " ".repeat(8193) }),
       );
       expect(large.status, path).toBe(413);
+      expect(await failureCode(large), path).toBe("payload_too_large");
       const malformed = await response(
         h.request(path, { method: "POST", body: "{" }),
       );
       expect(malformed.status, path).toBe(400);
+      expect(await failureCode(malformed), path).toBe("invalid_json");
     }
   });
 
