@@ -398,7 +398,11 @@ export async function stageMultipartUpload(
     parserDone.reject(failure);
     fileDone.reject(failure);
     if (!processing.signal.aborted) processing.abort(failure);
+    // Before ingestion takes a reader (an abort during mkdtemp, or an early
+    // validation failure) the body is still unlocked and must be cancelled
+    // directly, or the client keeps sending into a request nobody reads.
     if (reader) void reader.cancel(failure).catch(() => {});
+    else void cancelUnlockedBody(request.body, failure);
     activeFile?.destroy();
     activeWriter?.destroy();
     parser?.destroy();

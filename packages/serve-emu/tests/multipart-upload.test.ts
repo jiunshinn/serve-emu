@@ -407,6 +407,61 @@ describe("stageMultipartUpload", () => {
     }
   });
 
+  test("cancels the request body when aborted before ingestion starts", async () => {
+    const root = await tempRoot();
+    try {
+      const controller = new AbortController();
+      let cancelled = false;
+      const request = new Request("http://localhost/upload", {
+        method: "POST",
+        headers: { "content-type": "multipart/form-data; boundary=early" },
+        body: new ReadableStream<Uint8Array>({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      });
+      const staging = stageMultipartUpload(request, {
+        ...baseOptions(root, 1024, 512),
+        signal: controller.signal,
+      });
+      // The function is now awaiting mkdtemp, before it takes a reader.
+      controller.abort(new Error("client disconnected"));
+      const error = await captureError(staging);
+
+      expect((error as HttpBodyError).code).toBe("request-aborted");
+      expect(cancelled).toBe(true);
+      await expectNoUploads(root);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("cancels the request body when validation fails before ingestion", async () => {
+    const root = await tempRoot();
+    try {
+      let cancelled = false;
+      const request = new Request("http://localhost/upload", {
+        method: "POST",
+        body: new ReadableStream<Uint8Array>({
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      });
+      request.headers.delete("content-type");
+      const error = await captureError(
+        stageMultipartUpload(request, baseOptions(root, 1024, 512)),
+      );
+
+      expect(error).toBeInstanceOf(MultipartUploadError);
+      expect(cancelled).toBe(true);
+      await expectNoUploads(root);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("aborts a pending upload and removes the partial file", async () => {
     const root = await tempRoot();
     try {
@@ -419,6 +474,10 @@ describe("stageMultipartUpload", () => {
           "Content-Type: application/octet-stream\r\n\r\npartial",
       );
       let cancelled = false;
+      let reading!: () => void;
+      const readingStarted = new Promise<void>((resolve) => {
+        reading = resolve;
+      });
       const request = new Request("http://localhost/upload", {
         method: "POST",
         headers: {
@@ -427,6 +486,10 @@ describe("stageMultipartUpload", () => {
         body: new ReadableStream<Uint8Array>({
           start(stream) {
             stream.enqueue(prefix);
+          },
+          // Called once ingestion has read the prefix and waits for more.
+          pull() {
+            reading();
           },
           cancel() {
             cancelled = true;
@@ -437,7 +500,7 @@ describe("stageMultipartUpload", () => {
         ...baseOptions(root, 1024, 512),
         signal: controller.signal,
       });
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      await readingStarted;
       controller.abort(reason);
       const error = await captureError(staging);
 
