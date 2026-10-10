@@ -7,6 +7,7 @@ import type { DeviceContext, DeviceGridResponse, WsData } from "../server.ts";
 
 /** Session-bound services consumed by the production HTTP routes. */
 export type ApiDependencies = {
+  elementTapEndpoint: (request: Request) => Promise<Response>;
   requestContext: DeviceContext;
   runForPublishedContext: <T>(
     context: DeviceContext,

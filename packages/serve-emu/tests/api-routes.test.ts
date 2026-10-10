@@ -8,6 +8,7 @@ const EXPECTED_ROUTES = [
   ["GET", "/api/devices"],
   ["GET", "/api/device-grid"],
   ["POST", "/api/devices/select"],
+  ["POST", "/api/devices/tap-element"],
   ["POST", "/api/avds/start"],
   ["POST", "/api/avds/stop"],
   ["GET", "/api/orientation"],

@@ -4,7 +4,7 @@ import { usePoll } from "../lib/use-poll";
 
 type GridDeviceKind = "physical" | "emulator" | "avd";
 
-type GridDevice = {
+export type GridDevice = {
   id: string;
   kind: GridDeviceKind;
   serial: string | null;
@@ -17,7 +17,7 @@ type GridDevice = {
   canStop: boolean;
 };
 
-type DeviceGridResponse = {
+export type DeviceGridResponse = {
   ok?: boolean;
   currentSerial?: string;
   sessionStatus?: "streaming" | "stopped" | "error";

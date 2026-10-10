@@ -68,7 +68,7 @@ export type StreamWorkerEvent = StreamWorkerEventPayload & {
 
 type WorkerCommand =
   | { type: "init"; clientEpoch: number; canvas: OffscreenCanvas; url: string }
-  | { type: "connect"; clientEpoch: number }
+  | { type: "connect"; clientEpoch: number; url: string }
   | { type: "send"; clientEpoch: number; text: string }
   | { type: "stop"; clientEpoch: number };
 
@@ -705,6 +705,7 @@ workerPort.addEventListener("message", (e: MessageEvent) => {
       )
         return;
       activeClientEpoch = msg.clientEpoch;
+      url = msg.url;
       if (initFailureStatus && isStreamFatalStatus(initFailureStatus)) {
         publishInitFailure(initFailureStatus);
         return;

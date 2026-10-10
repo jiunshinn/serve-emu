@@ -166,6 +166,44 @@ payloads. A PTS larger than JavaScript's safe integer range is exposed as
 
 ## WebSocket JSON control and timing
 
+Add a URL-encoded `serial` query parameter to open a read-only device preview,
+for example `/ws?serial=emulator-5556&frame-meta=1`. A preview sends a
+`video-session` JSON message with its `size` on open and on size changes. It uses
+the same binary framing, keyframe recovery, and backpressure handling as `/ws`.
+By default only `clock-sync` and `reset-video` messages are accepted; input is rejected with
+`code: "preview_read_only"`. Authentication and Origin checks remain identical.
+
+Preview streams are independent of the selected control device. Subscribers
+watching the same serial share one preview encoder, up to 16 different preview
+devices per server. The final subscriber leaving releases that encoder, and
+server shutdown cancels pending starts. Unknown, unavailable, and excess devices
+return JSON errors with HTTP 404, 409, and 429 during the upgrade, respectively.
+`/health` includes a `previews` summary alongside the selected device's status.
+
+Explicitly opt into serial-scoped input with `control=1`. A controller can use
+`/ws?serial=emulator-5556&control=1&video=0` to share the device's pooled session
+without receiving binary video or taking part in keyframe recovery. It still
+receives `video-session` dimensions. Omitting `video=0` retains video delivery.
+An opted-in controller first receives
+`{ "type": "control-ready", "serial": "emulator-5556" }`. Clients must verify
+this acknowledgement matches their target before enabling input; a connected
+socket alone does not establish that the running server supports scoped control.
+The controller accepts normal gesture messages and always targets that serial,
+independently of the active device selected for REST and ordinary `/ws` clients.
+
+To synchronize QA input, send the same normalized gesture to each chosen
+serial's controller. Each socket preserves input order and reports its own
+correlated success or failure; different screen sizes scale coordinates
+independently. Admission is bounded by the existing device input queues, and
+actions record on their device session by default unless `record: false`.
+
+`{ "type": "release-input", "requestId": "selection-changed" }` releases only
+that socket's held touch pointers and acknowledges when those releases complete.
+Send it when changing the target selection. Disconnection also releases owned
+pointers. The final controller's pool lease waits up to one second for admitted
+input and release packets to drain before closing its writer. Viewer and
+controller subscriptions share the same 16-device pool limit.
+
 Gesture messages accept an optional `requestId` (1–128 characters); success and
 failure acknowledgements echo it. `ack: false` suppresses gesture acknowledgements.
 The bundled UI requests acknowledgements for touch down/up and keyboard input,
@@ -186,6 +224,31 @@ local clock and need no synchronization.
 The worker sheds queued decode work by waiting for a keyframe when pending decode
 age exceeds 250 ms (with a hard cap of 48 queued operations). An idle hardware
 pipeline with no queued decode work does not trigger recovery.
+
+## Matching a tap across device layouts
+
+`POST /api/devices/tap-element` accepts
+`{ "sourceSerial": "emulator-5554", "serials": ["emulator-5554", "emulator-5556"], "x": 0.125, "y": 0.9475 }`
+and optional `record: false`. Source coordinates use the normalized source screen.
+Fresh accessibility hierarchies and verified display geometry are read for every
+participating device before input is admitted. The source may be excluded from
+the targets. Local accessibility IDs are used only for parent relationships,
+never as cross-device element selectors.
+
+Matching uses an enabled clickable control's package, its resource ID when
+present, and its accessible name. Unnamed controls may use all distinguishing
+descendant labels. A resource-ID mismatch never falls back to a same-text action.
+Duplicate matches and unrelated overlapping controls are rejected. The actual
+default logical display is resolved to a physical panel before a PNG capture;
+folded-display switches, changed dimensions, pending input, held pointers, and
+input arriving during capture invalidate the group.
+
+The response includes `results: [{ serial, ok, error?, code? }]` and, when known,
+`element: { text, contentDescription, resourceId, packageName }`. HTTP 409 means
+preflight failed and no target was tapped. HTTP 200 means every tap completed;
+207 reports a per-device dispatch failure after admission. Requests are limited
+to 16 participating devices, an 8 KiB body, one concurrent group, and 20 seconds.
+Cancellation is checked before dispatch; already-admitted taps may finish.
 
 ## Golden byte sequences
 

@@ -28,6 +28,7 @@ Working:
 - Tap, swipe, text, keyevent, Back, Home, Recents, and Power input
 - Keyboard passthrough in the browser UI: editing/navigation keys, Ctrl/Cmd shortcuts (select all, copy, paste, cut, undo, redo), and IME composition for CJK text
 - Multi-client streaming, so multiple browser tabs can share one device
+- Live multi-device overview with synchronized QA input for all or selected devices
 - SPS/PPS replay and metadata headers for clients joining mid-stream
 - Device discovery, current-device switching, and AVD start/stop controls
 - Screenshot, foreground app, accessibility tree, and logcat APIs for agent inspection
@@ -217,6 +218,46 @@ Open `http://localhost:3300` after starting the CLI. The UI streams the device i
 - Orientation, night mode, font scale, network, GPS location, and route playback
 - Logcat filtering, pause/copy controls, app management, file import, and session replay
 
+After updating server code, restart the CLI and refresh the browser. Rebuilding
+the UI alone does not update an already-running server process. QA controls wait
+for the server to confirm control support; an older server prompts you to restart.
+
+Choose **All devices** in the header to monitor connected devices side by side.
+Each card shows its own live video, connection status, resolution, and frame
+rate. The QA input modes let you repeat the same actions across devices:
+
+- **This device** (default): tapping or swiping a screen controls that device.
+  Keyboard input and hardware buttons follow the last screen you touched.
+- **All devices**: input on any screen goes to every connected device.
+- **Selected devices**: check the target devices, then interact with any screen.
+  Only checked devices receive the input, including targets on other pages.
+
+Shared taps default to **Match elements**. The server reads fresh Android
+accessibility data to identify the clicked control and find its equivalent on
+each target, using labels and resource IDs within the same app. For example,
+YouTube's Home tab can be tapped on both phones and unfolded devices even when
+the navigation bars have different layouts. Every target must have a unique
+match before any tap is sent. Missing or ambiguous controls produce an error,
+with no automatic fallback to coordinates. Matching takes longer than direct
+input; progress and a cancel button appear while controls are being located.
+
+Choose **Screen positions** for matching layouts, unlabeled controls, or long
+presses. This mode scales tap coordinates to each device's resolution. Swipes
+always use relative screen positions, including in Match elements mode. Typing,
+IME composition, **Send text**, and Back/Home/Recents/Power follow the same target
+set. Device-specific input failures are reported in the overview. Disconnected
+input is not replayed. Changing targets releases held touches and cancels pending
+element lookup; leaving the overview closes its control connections.
+
+Use search to find a device and **Control** to open its full tools. Offline devices
+and stopped AVDs remain visible with their current status. The device list
+refreshes every five seconds, and the overview stays open on page refresh. Up to
+eight devices are shown per page and 16 connected devices can participate at once.
+Changing pages releases unused video previews while target controls stay connected.
+Overview inputs do not change the selected device used by REST APIs or other tabs;
+**Control** explicitly selects that device. Target mode and selection reset on
+page reload.
+
 The browser decoder treats every WebSocket reconnect, device video session, and
 hard decoder recovery as a new stream generation. Codec, latency, frame counts,
 and rendered state are cleared at each boundary; the UI reports `streaming`
@@ -244,7 +285,22 @@ curl "$BASE/api/device-grid"
 curl -X POST "$BASE/api/devices/select" \
   -H 'Content-Type: application/json' \
   -d '{"serial":"emulator-5554"}'
+curl -X POST "$BASE/api/devices/tap-element" \
+  -H 'Content-Type: application/json' \
+  -d '{"sourceSerial":"emulator-5554","serials":["emulator-5554","emulator-5556"],"x":0.125,"y":0.9475}'
 ```
+
+`/api/devices/tap-element` identifies the accessibility control under a normalized
+source position and taps the matching control on each target, including devices
+with different layouts. It requires unique package, label, and resource-ID matches
+where available; local node indexes and screen positions never serve as matching
+fallbacks. Every device is checked before any tap. Missing, ambiguous, obscured,
+busy, or changed screens return HTTP 409 with per-device errors and no taps.
+Successful groups return HTTP 200; a failure after input admission returns HTTP
+207 with each device's result. `record: false` disables recording. The source may
+be excluded from `serials`; source and targets together are limited to 16 devices.
+One group can match at a time, with a 20-second deadline. Cancellation stops
+preflight; already-admitted taps finish their release packets.
 
 `/health` includes bounded subprocess executor activity, queue depth, lane
 counts, deadlines, overload rejections, and output-limit totals. Device-grid
@@ -464,6 +520,22 @@ Connect to `/ws` for the raw Annex-B H.264 stream. Send JSON control messages ov
 ```
 
 Use `/ws?frame-meta=1` to receive a 24-byte `SEMU` v2 frame metadata header before each H.264 access unit: magic `SEMU` (4B), version=2 (1B), flags (1B, bit 0 = keyframe), reserved (2B), PTS (8B BE, µs), and the server send time (8B BE, epoch µs). Same-host clients can compare the send time against their own clock to measure transit and glass-to-glass latency. The bundled UI uses this mode to avoid per-frame NAL scans and to track PTS/keyframe/latency state.
+
+Use `/ws?serial=<URL-encoded-serial>&frame-meta=1` for an independent, read-only
+device preview. It sends `video-session` dimensions on open and accepts only
+`clock-sync` and `reset-video` messages. Preview subscribers share one stream per
+serial, up to 16 preview devices per server; the last subscriber disconnecting
+releases the stream. Device selection continues to affect only the regular
+control socket and REST APIs. `/health` includes preview status and client counts.
+
+Opt into input for a specific device with
+`/ws?serial=<URL-encoded-serial>&control=1&video=0`. This shares its pooled stream
+while omitting video delivery. Send normal gesture messages to each desired
+device's control socket to synchronize input; normalized positions scale to each
+screen, and acknowledgements report each device's result. Send
+`{"type":"release-input"}` when changing targets to release that socket's held
+touches. Disconnecting also releases owned touches. Serial controllers remain
+independent of the selected REST device, and share the 16-device preview limit.
 
 See the [protocol reference](packages/serve-emu/docs/protocol.md) for the complete scrcpy v3/v4 framing, control packet, and `SEMU` v1/v2 wire formats.
 

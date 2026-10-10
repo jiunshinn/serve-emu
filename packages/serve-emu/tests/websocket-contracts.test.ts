@@ -21,6 +21,11 @@ describe("WebSocket contracts", () => {
       type: "reset-video",
       ack: false,
     });
+    expect(parseWsClientMessage({ type: "release-input", requestId: "release", ack: true })).toEqual({
+      type: "release-input",
+      requestId: "release",
+      ack: true,
+    });
   });
 
   test("validates JSON and option types", () => {
@@ -40,6 +45,10 @@ describe("WebSocket contracts", () => {
     expect(() =>
       parseWsServerMessage({ type: "video-session", size: { width: 0, height: 2400 } }),
     ).toThrow("positive finite");
+    expect(parseWsServerMessage({ type: "control-ready", serial: "emulator-5554" })).toEqual({ type: "control-ready", serial: "emulator-5554" });
+    for (const serial of ["", 42, "a".repeat(257)]) {
+      expect(() => parseWsServerMessage({ type: "control-ready", serial })).toThrow("controller serial");
+    }
   });
 });
 
