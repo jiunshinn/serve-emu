@@ -2,6 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { InvalidTokenError, startupUrl } from "../src/access-policy.ts";
 import { ScrcpyStreamError } from "../src/scrcpy.ts";
 import { startServer } from "../src/server.ts";
 import { parseFramePacket } from "../src/shared/frame-meta.ts";
@@ -87,6 +88,33 @@ describe("server request gates", () => {
       serial: "emulator-5554",
       status: "streaming",
     });
+  });
+
+  test("a token with every allowed character class round-trips through URL, cookie, and bearer", async () => {
+    const token = "AZaz09._~-";
+    const harness = await createHarness({ token });
+    const printed = new URL(startupUrl("http://127.0.0.1:3300", token));
+    const bootstrap = await response(
+      harness.request(`${printed.pathname}${printed.search}`, {
+        headers: { accept: "text/html" },
+      }),
+    );
+    expect(bootstrap.status).toBe(303);
+    // What a browser stores: the cookie value up to the first ';'.
+    const stored = bootstrap.headers.get("set-cookie")!.split(";")[0]!;
+    expect(stored).toBe(`semu_session=${token}`);
+    expect((await response(harness.request("/api", { headers: { cookie: stored } }))).status).toBe(200);
+    expect(
+      (await response(harness.request("/api", { headers: { authorization: `Bearer ${token}` } }))).status,
+    ).toBe(200);
+  });
+
+  test("refuses to start with a token the cookie or URL would corrupt", async () => {
+    for (const token of ["abc;def", "a+b", "a b"]) {
+      await expect(
+        startServer({ serial: "emulator-5554", port: 0, token }, { openScrcpy: async () => fakeScrcpy() }),
+      ).rejects.toThrow(InvalidTokenError);
+    }
   });
 
   test("rejects cross-origin mutations and upgrades before routing", async () => {

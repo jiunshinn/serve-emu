@@ -1,6 +1,12 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import { randomBytes } from "node:crypto";
+import {
+  displayHost,
+  resolveAccessPolicy,
+  startupUrl,
+  TOKEN_CHARACTERS,
+} from "./access-policy.ts";
 import { pickDevice } from "./adb.ts";
 import { CliLifecycle } from "./cli-lifecycle.ts";
 import { listAvds, listRunningAvds, listWebcams, startEmulator } from "./emulator.ts";
@@ -17,58 +23,52 @@ import {
 import { getUpdateNotice } from "./update-check.ts";
 import packageJson from "../package.json";
 
-const argv = Bun.argv.slice(2);
-const { values } = parseArgs({
-  args: argv,
-  options: {
-    port: { type: "string", short: "p", default: "3300" },
-    host: { type: "string" },
-    token: { type: "string" },
-    "unsafe-no-auth": { type: "boolean" },
-    "allowed-host": { type: "string", multiple: true },
-    serial: { type: "string", short: "s" },
-    "max-fps": { type: "string", default: String(SCRCPY_DEFAULTS.maxFps) },
-    "bit-rate": { type: "string", default: String(SCRCPY_DEFAULTS.bitRate) },
-    "max-size": { type: "string", default: String(SCRCPY_DEFAULTS.maxSize) },
-    "key-frame-interval": { type: "string", default: String(SCRCPY_DEFAULTS.keyFrameInterval) },
-    "repeat-frame-ms": { type: "string", default: String(SCRCPY_DEFAULTS.repeatFrameMs) },
-    "max-apk-upload-bytes": { type: "string", default: String(DEFAULT_MAX_APK_UPLOAD_BYTES) },
-    "max-media-upload-bytes": { type: "string", default: String(DEFAULT_MAX_MEDIA_UPLOAD_BYTES) },
-    "max-active-uploads": { type: "string", default: String(DEFAULT_MAX_ACTIVE_UPLOADS) },
-    "max-queued-uploads": { type: "string", default: String(DEFAULT_MAX_QUEUED_UPLOADS) },
-    "upload-queue-timeout-ms": { type: "string", default: String(DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS) },
-    avd: { type: "string" },
-    "avd-list": { type: "boolean" },
-    "running-avds": { type: "boolean" },
-    "restart-avd": { type: "boolean" },
-    emulator: { type: "string" },
-    "emulator-port": { type: "string" },
-    gpu: { type: "string", default: "host" },
-    "camera-back": { type: "string" },
-    "camera-front": { type: "string" },
-    "webcam-list": { type: "boolean" },
-    help: { type: "boolean", short: "h" },
-  },
-  allowPositionals: true,
-});
+/** Parses CLI flags; throws a TypeError with an ERR_PARSE_ARGS_* code on bad input. */
+export function parseCliArgs(argv: string[]) {
+  const { values } = parseArgs({
+    args: argv,
+    options: {
+      port: { type: "string", short: "p", default: "3300" },
+      host: { type: "string" },
+      token: { type: "string" },
+      "unsafe-no-auth": { type: "boolean" },
+      "allowed-host": { type: "string", multiple: true },
+      serial: { type: "string", short: "s" },
+      "max-fps": { type: "string", default: String(SCRCPY_DEFAULTS.maxFps) },
+      "bit-rate": { type: "string", default: String(SCRCPY_DEFAULTS.bitRate) },
+      "max-size": { type: "string", default: String(SCRCPY_DEFAULTS.maxSize) },
+      "key-frame-interval": { type: "string", default: String(SCRCPY_DEFAULTS.keyFrameInterval) },
+      "repeat-frame-ms": { type: "string", default: String(SCRCPY_DEFAULTS.repeatFrameMs) },
+      "max-apk-upload-bytes": { type: "string", default: String(DEFAULT_MAX_APK_UPLOAD_BYTES) },
+      "max-media-upload-bytes": { type: "string", default: String(DEFAULT_MAX_MEDIA_UPLOAD_BYTES) },
+      "max-active-uploads": { type: "string", default: String(DEFAULT_MAX_ACTIVE_UPLOADS) },
+      "max-queued-uploads": { type: "string", default: String(DEFAULT_MAX_QUEUED_UPLOADS) },
+      "upload-queue-timeout-ms": { type: "string", default: String(DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS) },
+      avd: { type: "string" },
+      "avd-list": { type: "boolean" },
+      "running-avds": { type: "boolean" },
+      "restart-avd": { type: "boolean" },
+      emulator: { type: "string" },
+      "emulator-port": { type: "string" },
+      gpu: { type: "string", default: "host" },
+      "camera-back": { type: "string" },
+      "camera-front": { type: "string" },
+      "webcam-list": { type: "boolean" },
+      help: { type: "boolean", short: "h" },
+    },
+    allowPositionals: true,
+  });
+  return values;
+}
 
-function numberOption(name: string, fallback: number): number {
-  const value = values[name as keyof typeof values];
+export type CliValues = ReturnType<typeof parseCliArgs>;
+
+function numberOption(values: CliValues, name: string, fallback: number): number {
+  const value = values[name as keyof CliValues];
   if (typeof value !== "string") return fallback;
   const n = Number(value);
   if (!Number.isFinite(n)) throw new Error(`--${name} must be a number.`);
   return n;
-}
-
-function isLoopbackHost(host: string): boolean {
-  const h = host.toLowerCase();
-  return h === "localhost" || h === "::1" || h === "[::1]" || h.startsWith("127.");
-}
-
-/** Address to show in the clickable startup URL (wildcard binds → localhost). */
-function displayHost(host: string): string {
-  if (host === "0.0.0.0" || host === "::" || host === "[::]") return "localhost";
-  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 }
 
 async function checkForUpdate(signal: AbortSignal) {
@@ -83,7 +83,7 @@ async function checkForUpdate(signal: AbortSignal) {
   if (notice && !signal.aborted) console.error(notice);
 }
 
-if (values.help) {
+function printHelp() {
   console.log(`serve-emu — host an Android device over scrcpy + WebSocket
 
 Usage:
@@ -103,6 +103,7 @@ Options:
                          (exchanged for an HttpOnly cookie); agents send
                          'Authorization: Bearer <secret>'. On a non-loopback
                          bind a token is generated automatically if omitted.
+                         Allowed characters: ${TOKEN_CHARACTERS}.
       --unsafe-no-auth   Allow a non-loopback bind with NO authentication.
                          Anyone who can reach the port can control the device.
       --allowed-host <name>
@@ -156,12 +157,12 @@ Options:
                          Emulator console port for --avd (even 5554-5682)
   -h, --help             Show this help
 `);
-  process.exit(0);
 }
 
-async function main() {
+async function main(values: CliValues) {
   // The listing commands below never contact the registry; the server path
   // checks in the background once it is listening.
+
   if (values["avd-list"]) {
     console.log((await listAvds(values.emulator)).join("\n"));
     return;
@@ -200,6 +201,16 @@ async function main() {
         "Known limitations: https://github.com/jiunshinn/serve-emu#camera",
     );
   }
+
+  // Access-control policy, settled before an emulator is launched or a device
+  // picked so a bad --token fails fast. See resolveAccessPolicy.
+  const host = values.host ?? DEFAULT_HOST;
+  const { token, warnings } = resolveAccessPolicy({
+    host,
+    token: values.token,
+    unsafeNoAuth: Boolean(values["unsafe-no-auth"]),
+    generateToken: () => randomBytes(24).toString("base64url"),
+  });
 
   type ActiveServer = Awaited<ReturnType<typeof startServer>>;
   // Installed before the emulator boots: a signal during the boot wait must
@@ -243,34 +254,17 @@ async function main() {
     throw err;
   }
   const port = Number(values.port);
-  const maxFps = numberOption("max-fps", SCRCPY_DEFAULTS.maxFps);
-  const bitRate = numberOption("bit-rate", SCRCPY_DEFAULTS.bitRate);
-  const maxSize = numberOption("max-size", SCRCPY_DEFAULTS.maxSize);
-  const keyFrameInterval = numberOption("key-frame-interval", SCRCPY_DEFAULTS.keyFrameInterval);
-  const repeatFrameMs = numberOption("repeat-frame-ms", SCRCPY_DEFAULTS.repeatFrameMs);
-  const maxApkUploadBytes = numberOption("max-apk-upload-bytes", DEFAULT_MAX_APK_UPLOAD_BYTES);
-  const maxMediaUploadBytes = numberOption("max-media-upload-bytes", DEFAULT_MAX_MEDIA_UPLOAD_BYTES);
-  const maxActiveUploads = numberOption("max-active-uploads", DEFAULT_MAX_ACTIVE_UPLOADS);
-  const maxQueuedUploads = numberOption("max-queued-uploads", DEFAULT_MAX_QUEUED_UPLOADS);
-  const uploadQueueTimeoutMs = numberOption("upload-queue-timeout-ms", DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS);
+  const maxFps = numberOption(values, "max-fps", SCRCPY_DEFAULTS.maxFps);
+  const bitRate = numberOption(values, "bit-rate", SCRCPY_DEFAULTS.bitRate);
+  const maxSize = numberOption(values, "max-size", SCRCPY_DEFAULTS.maxSize);
+  const keyFrameInterval = numberOption(values, "key-frame-interval", SCRCPY_DEFAULTS.keyFrameInterval);
+  const repeatFrameMs = numberOption(values, "repeat-frame-ms", SCRCPY_DEFAULTS.repeatFrameMs);
+  const maxApkUploadBytes = numberOption(values, "max-apk-upload-bytes", DEFAULT_MAX_APK_UPLOAD_BYTES);
+  const maxMediaUploadBytes = numberOption(values, "max-media-upload-bytes", DEFAULT_MAX_MEDIA_UPLOAD_BYTES);
+  const maxActiveUploads = numberOption(values, "max-active-uploads", DEFAULT_MAX_ACTIVE_UPLOADS);
+  const maxQueuedUploads = numberOption(values, "max-queued-uploads", DEFAULT_MAX_QUEUED_UPLOADS);
+  const uploadQueueTimeoutMs = numberOption(values, "upload-queue-timeout-ms", DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS);
 
-  const host = values.host ?? DEFAULT_HOST;
-  const loopback = isLoopbackHost(host);
-  const unsafeNoAuth = Boolean(values["unsafe-no-auth"]);
-
-  // Access-control policy:
-  //  - loopback (default): auth off unless the user opts in with --token.
-  //  - non-loopback: auth required. Use --token if given, otherwise generate a
-  //    token so the bind is never exposed unauthenticated. --unsafe-no-auth is
-  //    the explicit override that turns auth off on a non-loopback bind.
-  let token: string | undefined = values.token || undefined;
-  if (!loopback) {
-    if (unsafeNoAuth) {
-      token = undefined;
-    } else if (!token) {
-      token = randomBytes(24).toString("base64url");
-    }
-  }
 
   const startupTask = lifecycle.trackServer(startServer({
     serial,
@@ -308,29 +302,49 @@ async function main() {
   const { server } = activeServer;
 
   const base = `http://${displayHost(host)}:${server.port}`;
+  console.log(`serve-emu → ${startupUrl(base, token)}  (device: ${serial})`);
   if (token) {
-    console.log(`serve-emu → ${base}/?token=${token}  (device: ${serial})`);
     console.error(
       "Authentication is ON. Open the URL above once to authenticate this browser " +
         "(the token is exchanged for an HttpOnly cookie). Agents send " +
         "'Authorization: Bearer <token>' or append ?token=<token>.",
     );
-  } else {
-    console.log(`serve-emu → ${base}/  (device: ${serial})`);
-    if (!loopback) {
-      console.error(
-        `WARNING: bound to non-loopback address ${host} with --unsafe-no-auth. ` +
-          "The device is reachable and controllable without authentication.",
-      );
-    }
   }
+  for (const warning of warnings) console.error(warning);
 
   // In the background, after the startup URL: a slow or unreachable registry
   // never delays the server, and a notice prints to stderr when it settles.
   void checkForUpdate(lifecycle.signal).catch(() => {});
 }
 
-await main().catch((err) => {
-  console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-});
+function isParseArgsError(err: unknown): err is TypeError & { code: string } {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && code.startsWith("ERR_PARSE_ARGS_");
+}
+
+/** Runs the CLI for `argv`; errors carry a one-line, user-facing message. */
+export async function runCli(argv: string[]): Promise<void> {
+  let values: CliValues;
+  try {
+    values = parseCliArgs(argv);
+  } catch (err) {
+    if (isParseArgsError(err)) {
+      // Drop parseArgs' hint about '-'-prefixed positionals; the CLI takes none.
+      const message = err.message.replace(/\. To specify a positional argument.*$/s, "");
+      throw new Error(`${message}. Run 'serve-emu --help' for usage.`, { cause: err });
+    }
+    throw err;
+  }
+  if (values.help) {
+    printHelp();
+    return;
+  }
+  await main(values);
+}
+
+if (import.meta.main) {
+  await runCli(Bun.argv.slice(2)).catch((err) => {
+    console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}
