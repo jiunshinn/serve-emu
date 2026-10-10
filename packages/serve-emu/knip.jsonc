@@ -14,11 +14,6 @@
     "scripts/**/*.ts",
     "tests/**/*.test.ts"
   ],
-  // Production code does not load these yet; each has an open issue to wire
-  // it in or delete it. Remove the line when that lands.
-  "ignore": [
-    "src/device-grid.ts" // #108
-  ],
   // A type its own module uses (a union member in a shared wire contract,
   // say) may stay exported to document the contract. Values may not: export
   // a constant or function only when another module imports it.

@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, spyOn, test } from "bun:test";
 import { startServer } from "../src/server.ts";
+import { parseDeviceGridResponse } from "../src/shared/api-contracts.ts";
 import type { EmulatorLaunch } from "../src/emulator.ts";
 import type { GeoFix } from "../src/location.ts";
 import type { ScrcpySession, VideoPacket } from "../src/scrcpy.ts";
@@ -616,5 +617,57 @@ describe("startServer device session lifecycle", () => {
     expect(bootSignal?.aborted).toBe(true);
     expect(events).toEqual(["boot cleaned up", "server stopped"]);
     expect((await start).status).toBeGreaterThanOrEqual(400);
+  });
+
+  test("the device grid lists adb devices once per request and resolves AVDs from that list", async () => {
+    const captured: CapturedServer = { options: null, stopCalls: 0 };
+    const devices = [
+      { serial: "emulator-5554", state: "device" },
+      { serial: "emulator-5556", state: "offline" },
+    ];
+    let listings = 0;
+    const snapshots: unknown[] = [];
+    const started = await startServer(
+      { serial: "emulator-5554", port: 3300 },
+      {
+        openScrcpy: async (serial) => fakeScrcpy(serial).session,
+        listDevices: async () => {
+          listings++;
+          return devices;
+        },
+        listRunningAvds: async (snapshot) => {
+          snapshots.push(snapshot);
+          return [
+            { serial: "emulator-5554", avd: "Pixel_A", state: "device" },
+            { serial: "emulator-5556", avd: "Pixel_B", state: "offline" },
+          ];
+        },
+        listAvds: async () => ["Pixel_A", "Pixel_B", "Pixel_C"],
+        serve: capturingServe(captured),
+      },
+    );
+    try {
+      listings = 0;
+      const response = await invokeFetch(captured, "/api/device-grid");
+      expect(response.status).toBe(200);
+      const grid = parseDeviceGridResponse(await response.json());
+      expect(listings).toBe(1);
+      expect(snapshots).toHaveLength(1);
+      expect(snapshots[0]).toBe(devices);
+      expect(
+        grid.devices.map((row) => [row.id, row.kind, row.avd, row.state, row.current, row.canSelect, row.canStart, row.canStop]),
+      ).toEqual([
+        ["emulator-5554", "emulator", "Pixel_A", "device", true, true, false, true],
+        // A running but offline AVD stays one row, not a second "stopped" one.
+        ["emulator-5556", "emulator", "Pixel_B", "offline", false, false, false, true],
+        ["avd:Pixel_C", "avd", "Pixel_C", "stopped", false, false, true, false],
+      ]);
+
+      await invokeFetch(captured, "/api/device-grid");
+      expect(listings).toBe(2);
+      expect(snapshots).toHaveLength(2);
+    } finally {
+      await started.stop();
+    }
   });
 });

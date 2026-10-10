@@ -10,6 +10,7 @@ import {
   type AccessibilitySnapshot,
 } from "./accessibility.ts";
 import { listAllDevices } from "./adb.ts";
+import { loadDeviceGrid } from "./device-grid.ts";
 import { createApiRouter } from "./api/router.ts";
 import { createApiRoutes } from "./api/routes/index.ts";
 import { importMediaFile, installApk } from "./app-management.ts";
@@ -76,6 +77,7 @@ import {
   FRAME_META_HEADER_BYTES,
   writeFrameMetaHeader,
 } from "./shared/frame-meta.ts";
+import type { DeviceGridResponse } from "./shared/api-contracts.ts";
 import {
   parseWsClientMessage,
   parseWsRequestId,
@@ -149,28 +151,6 @@ function parseCookies(header: string | null): Record<string, string> {
   }
   return out;
 }
-
-type GridDeviceKind = "physical" | "emulator" | "avd";
-
-type GridDevice = {
-  id: string;
-  kind: GridDeviceKind;
-  serial: string | null;
-  avd: string | null;
-  name: string;
-  state: string;
-  current: boolean;
-  canSelect: boolean;
-  canStart: boolean;
-  canStop: boolean;
-};
-
-export type DeviceGridResponse = {
-  ok: true;
-  currentSerial: string;
-  sessionStatus: SessionStatus;
-  devices: GridDevice[];
-};
 
 export type WsData = {
   id: number;
@@ -579,61 +559,15 @@ export async function startServer(
   const deviceGrid = async (
     context: DeviceContext,
   ): Promise<DeviceGridResponse> => {
-    const [adbDevices, runningAvds, avds] = await Promise.all([
-      listDevices(),
-      listActiveAvds(),
-      availableAvds(),
-    ]);
-    sessions.assertPublished(context);
-    const runningBySerial = new Map(
-      runningAvds.map((running) => [running.serial, running]),
-    );
-    const runningByAvd = new Map(
-      runningAvds.map((running) => [running.avd, running]),
-    );
-    const rows: GridDevice[] = adbDevices.map((device) => {
-      const running = runningBySerial.get(device.serial);
-      const isEmulator = /^emulator-\d+$/.test(device.serial);
-      return {
-        id: device.serial,
-        kind: isEmulator ? "emulator" : "physical",
-        serial: device.serial,
-        avd: running?.avd ?? null,
-        name: running?.avd ?? device.serial,
-        state: device.state,
-        current: device.serial === context.serial,
-        canSelect: device.state === "device",
-        canStart: false,
-        canStop: isEmulator,
-      };
+    // One `adb devices` snapshot per request: running-AVD names resolve from
+    // that same list, so the rows cannot disagree with each other.
+    const grid = await loadDeviceGrid(context.serial, context.status, {
+      listAllDevices: () => listDevices(),
+      listAvds: () => availableAvds(),
+      resolveRunningAvds: (devices) => listActiveAvds(devices),
     });
-
-    const knownAvdSerials = new Set(
-      runningAvds.map((running) => running.serial),
-    );
-    for (const avd of avds) {
-      const running = runningByAvd.get(avd);
-      if (running && knownAvdSerials.has(running.serial)) continue;
-      rows.push({
-        id: `avd:${avd}`,
-        kind: "avd",
-        serial: running?.serial ?? null,
-        avd,
-        name: avd,
-        state: running?.state ?? "stopped",
-        current: running?.serial === context.serial,
-        canSelect: running?.state === "device",
-        canStart: !running,
-        canStop: Boolean(running),
-      });
-    }
-
-    return {
-      ok: true,
-      currentSerial: context.serial,
-      sessionStatus: context.status,
-      devices: rows,
-    };
+    sessions.assertPublished(context);
+    return grid;
   };
 
   const markTerminal = (

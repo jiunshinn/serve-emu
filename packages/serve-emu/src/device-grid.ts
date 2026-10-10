@@ -1,33 +1,10 @@
-import { listAllDevices } from "./adb.ts";
-import type { Device } from "./shared/api-contracts.ts";
-import {
-  listAvds,
-  resolveRunningAvds,
-  type RunningAvd,
-} from "./emulator.ts";
-import type { SessionStatus } from "./session-status.ts";
-
-export type GridDeviceKind = "physical" | "emulator" | "avd";
-
-export type GridDevice = {
-  id: string;
-  kind: GridDeviceKind;
-  serial: string | null;
-  avd: string | null;
-  name: string;
-  state: string;
-  current: boolean;
-  canSelect: boolean;
-  canStart: boolean;
-  canStop: boolean;
-};
-
-export type DeviceGridResponse = {
-  ok: true;
-  currentSerial: string;
-  sessionStatus: SessionStatus;
-  devices: GridDevice[];
-};
+import type { RunningAvd } from "./emulator.ts";
+import type {
+  Device,
+  DeviceGridResponse,
+  GridDevice,
+  SessionStatus,
+} from "./shared/api-contracts.ts";
 
 export type DeviceGridDependencies = {
   listAllDevices: () => Promise<Device[]>;
@@ -35,12 +12,6 @@ export type DeviceGridDependencies = {
   resolveRunningAvds: (
     devices: readonly Device[],
   ) => Promise<RunningAvd[]>;
-};
-
-const DEFAULT_DEPENDENCIES: DeviceGridDependencies = {
-  listAllDevices,
-  listAvds: () => listAvds(),
-  resolveRunningAvds: (devices) => resolveRunningAvds(devices),
 };
 
 /**
@@ -51,7 +22,7 @@ const DEFAULT_DEPENDENCIES: DeviceGridDependencies = {
 export async function loadDeviceGrid(
   currentSerial: string,
   sessionStatus: SessionStatus,
-  dependencies: DeviceGridDependencies = DEFAULT_DEPENDENCIES,
+  dependencies: DeviceGridDependencies,
 ): Promise<DeviceGridResponse> {
   const devicesPromise = dependencies.listAllDevices();
   const avdsPromise = dependencies.listAvds();
