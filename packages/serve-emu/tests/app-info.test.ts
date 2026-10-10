@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { CommandFailureError } from "../src/command-failure.ts";
 import { getForegroundApp } from "../src/app-info.ts";
 import type { execText } from "../src/exec.ts";
 
@@ -190,22 +191,22 @@ describe("getForegroundApp", () => {
           stderr: " stderr detail ",
           error: spawnError,
         }),
-        message: "stderr detail",
+        message: "adb shell dumpsys failed: stderr detail",
         cause: spawnError,
       },
       {
         result: textResult("stdout detail", { status: null, error: spawnError }),
-        message: "spawn failed",
+        message: "adb shell dumpsys failed: spawn failed",
         cause: spawnError,
       },
       {
         result: textResult(" stdout detail ", { status: 1 }),
-        message: "stdout detail",
+        message: "adb shell dumpsys failed: stdout detail",
         cause: undefined,
       },
       {
         result: textResult("", { status: 1 }),
-        message: "adb shell dumpsys window failed",
+        message: "adb shell dumpsys failed: unknown error",
         cause: undefined,
       },
     ];
@@ -216,9 +217,14 @@ describe("getForegroundApp", () => {
         await getForegroundApp("device-1", runExec);
         throw new Error("expected getForegroundApp to reject");
       } catch (error) {
-        expect(error).toBeInstanceOf(Error);
+        expect(error).toBeInstanceOf(CommandFailureError);
         expect((error as Error).message).toBe(entry.message);
         expect((error as Error).cause).toBe(entry.cause);
+        // Clients only ever see the operation, never adb's output.
+        expect(error).toMatchObject({
+          code: "adb-failed",
+          publicMessage: "adb shell dumpsys failed",
+        });
       }
     }
   });

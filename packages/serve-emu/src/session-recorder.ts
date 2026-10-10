@@ -1,3 +1,4 @@
+import { publicErrorMessage } from "./command-failure.ts";
 import { normalizeTextForControl, type Gesture } from "./input.ts";
 import type { GeoFix } from "./location.ts";
 
@@ -350,7 +351,7 @@ export class SessionRecorder {
       this.#replaying = false;
       return this.summary();
     } catch (err) {
-      this.#lastError = err instanceof Error ? err.message : String(err);
+      this.#lastError = publicErrorMessage(err);
       throw err;
     } finally {
       this.#replaying = false;
@@ -437,7 +438,7 @@ export class SessionRecorder {
         outcome = "cancelled";
       } else {
         outcome = "error";
-        this.#lastError = err instanceof Error ? err.message : String(err);
+        this.#lastError = publicErrorMessage(err);
       }
     } finally {
       if (this.#activeReplay?.id === replay.id) {

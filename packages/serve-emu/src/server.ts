@@ -11,11 +11,8 @@ import {
 import { listAllDevices } from "./adb.ts";
 import { createApiRouter } from "./api/router.ts";
 import { createApiRoutes } from "./api/routes/index.ts";
-import {
-  AppManagementError,
-  importMediaFile,
-  installApk,
-} from "./app-management.ts";
+import { importMediaFile, installApk } from "./app-management.ts";
+import { CommandFailureError } from "./command-failure.ts";
 import { ControlInputError, ControlInputQueue } from "./control-input-queue.ts";
 import {
   ActiveDeviceSession,
@@ -688,9 +685,14 @@ export async function startServer(
       } as const;
       status = mapped[err.code].status;
       code = mapped[err.code].code;
-    } else if (err instanceof AppManagementError) {
-      status = err.code === "adb-timeout" ? 504 : 502;
-      code = err.code;
+    } else if (err instanceof CommandFailureError) {
+      // Command output can carry device paths, argument lists, and stack
+      // traces: log it here and send only the operation name.
+      console.error(`[api] ${err.publicMessage}:`, err);
+      return Response.json(
+        { ok: false, code: err.code, error: err.publicMessage },
+        { status: err.code === "adb-timeout" ? 504 : 502 },
+      );
     }
     return Response.json(
       { ok: false, ...(code ? { code } : {}), error },

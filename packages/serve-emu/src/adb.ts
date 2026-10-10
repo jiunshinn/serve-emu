@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { adbCommandFailure, CommandFailureError } from "./command-failure.ts";
 import { execBuffer, execText, type ExecResult } from "./exec.ts";
 
 const ADB_QUERY_TIMEOUT_MS = 2_000;
@@ -37,14 +38,11 @@ function execFailed(result: ExecResult<string | Buffer>): boolean {
   return result.status !== 0 || result.error !== null;
 }
 
-function execFailure(result: ExecResult<string | Buffer>): string {
-  const stdout =
-    typeof result.stdout === "string" ? result.stdout.trim() : "";
-  return (
-    result.stderr.trim() ||
-    result.error?.message ||
-    stdout ||
-    "unknown error"
+function unexpectedOutput(operation: string, output: string): CommandFailureError {
+  return new CommandFailureError(
+    "adb-failed",
+    `Could not parse ${operation} output`,
+    output.trim(),
   );
 }
 
@@ -52,7 +50,7 @@ export async function listAllDevices(
   runExec: typeof execText = execText,
 ): Promise<Device[]> {
   const r = await runExec("adb", ["devices"], { timeout: ADB_QUERY_TIMEOUT_MS });
-  if (execFailed(r)) throw new Error(`adb devices failed: ${execFailure(r)}`);
+  if (execFailed(r)) throw adbCommandFailure("adb devices", r);
   return r.stdout
     .split("\n")
     .slice(1)
@@ -92,7 +90,7 @@ export async function screencapPng(
     maxBuffer: 64 * 1024 * 1024,
     timeout: ADB_SCREENSHOT_TIMEOUT_MS,
   });
-  if (execFailed(r)) throw new Error(`screencap failed: ${execFailure(r)}`);
+  if (execFailed(r)) throw adbCommandFailure("screencap", r);
   return r.stdout;
 }
 
@@ -104,11 +102,7 @@ export async function shell(
   const r = await runExec("adb", ["-s", serial, "shell", ...cmd], {
     timeout: ADB_MUTATION_TIMEOUT_MS,
   });
-  if (execFailed(r)) {
-    throw new Error(
-      `adb shell ${cmd.join(" ")} failed: ${execFailure(r)}`,
-    );
-  }
+  if (execFailed(r)) throw adbCommandFailure("adb shell", r);
 }
 
 export function shellSpawn(
@@ -126,9 +120,9 @@ export async function getDeviceSize(
   const r = await runExec("adb", ["-s", serial, "shell", "wm", "size"], {
     timeout: ADB_QUERY_TIMEOUT_MS,
   });
-  if (execFailed(r)) throw new Error(`wm size failed: ${execFailure(r)}`);
+  if (execFailed(r)) throw adbCommandFailure("wm size", r);
   const m = r.stdout.match(/(\d+)x(\d+)/);
-  if (!m) throw new Error(`Could not parse wm size output: ${r.stdout}`);
+  if (!m) throw unexpectedOutput("wm size", r.stdout);
   return { width: Number(m[1]), height: Number(m[2]) };
 }
 
@@ -146,11 +140,7 @@ export async function getUserRotation(
   const r = await runExec("adb", ["-s", serial, "shell", "cmd", "window", "user-rotation"], {
     timeout: ADB_QUERY_TIMEOUT_MS,
   });
-  if (execFailed(r)) {
-    throw new Error(
-      `cmd window user-rotation failed: ${execFailure(r)}`,
-    );
-  }
+  if (execFailed(r)) throw adbCommandFailure("cmd window user-rotation", r);
   const raw = r.stdout.trim();
   const match = raw.match(/^(free|lock)(?:\s+(\d+))?$/);
   if (!match) {
@@ -173,11 +163,7 @@ export async function setUserRotation(
   const r = await runExec("adb", ["-s", serial, "shell", ...args], {
     timeout: ADB_MUTATION_TIMEOUT_MS,
   });
-  if (execFailed(r)) {
-    throw new Error(
-      `adb shell ${args.join(" ")} failed: ${execFailure(r)}`,
-    );
-  }
+  if (execFailed(r)) throw adbCommandFailure("cmd window user-rotation", r);
   return getUserRotation(serial, runExec);
 }
 
@@ -188,15 +174,11 @@ export async function getFontScale(
   const r = await runExec("adb", ["-s", serial, "shell", "settings", "get", "system", "font_scale"], {
     timeout: ADB_QUERY_TIMEOUT_MS,
   });
-  if (execFailed(r)) {
-    throw new Error(
-      `settings get system font_scale failed: ${execFailure(r)}`,
-    );
-  }
+  if (execFailed(r)) throw adbCommandFailure("settings get system font_scale", r);
   const raw = r.stdout.trim();
   const scale = Number(raw);
   if (!Number.isFinite(scale) || scale <= 0) {
-    throw new Error(`Could not parse font_scale output: ${r.stdout}`);
+    throw unexpectedOutput("font_scale", r.stdout);
   }
   return { scale, raw };
 }
@@ -214,11 +196,7 @@ export async function setFontScale(
   const r = await runExec("adb", ["-s", serial, "shell", ...args], {
     timeout: ADB_MUTATION_TIMEOUT_MS,
   });
-  if (execFailed(r)) {
-    throw new Error(
-      `adb shell ${args.join(" ")} failed: ${execFailure(r)}`,
-    );
-  }
+  if (execFailed(r)) throw adbCommandFailure("settings put system font_scale", r);
   return getFontScale(serial, runExec);
 }
 
@@ -238,9 +216,7 @@ export async function getNightMode(
   const r = await runExec("adb", ["-s", serial, "shell", "cmd", "uimode", "night"], {
     timeout: ADB_QUERY_TIMEOUT_MS,
   });
-  if (execFailed(r)) {
-    throw new Error(`cmd uimode night failed: ${execFailure(r)}`);
-  }
+  if (execFailed(r)) throw adbCommandFailure("cmd uimode night", r);
   const raw = r.stdout.trim();
   return { mode: nightModeFromRaw(raw), raw };
 }
@@ -255,11 +231,7 @@ export async function setNightMode(
   const r = await runExec("adb", ["-s", serial, "shell", ...args], {
     timeout: ADB_MUTATION_TIMEOUT_MS,
   });
-  if (execFailed(r)) {
-    throw new Error(
-      `adb shell ${args.join(" ")} failed: ${execFailure(r)}`,
-    );
-  }
+  if (execFailed(r)) throw adbCommandFailure("cmd uimode night", r);
   return getNightMode(serial, runExec);
 }
 
@@ -275,12 +247,7 @@ async function globalSetting(
       timeout: ADB_QUERY_TIMEOUT_MS,
     },
   );
-  if (execFailed(r)) {
-    throw new Error(
-      `settings get global ${name} failed: ${execFailure(r)}`,
-      { cause: r.error ?? undefined },
-    );
-  }
+  if (execFailed(r)) throw adbCommandFailure(`settings get global ${name}`, r);
   return r.stdout.trim();
 }
 
@@ -325,11 +292,7 @@ export async function setNetworkEnabled(
     const r = await runExec("adb", ["-s", serial, "shell", ...args], {
       timeout: ADB_MUTATION_TIMEOUT_MS,
     });
-    if (execFailed(r)) {
-      throw new Error(
-        `adb shell ${args.join(" ")} failed: ${execFailure(r)}`,
-      );
-    }
+    if (execFailed(r)) throw adbCommandFailure(`svc ${service} ${action}`, r);
   }
   return getNetworkStatus(serial, runExec);
 }

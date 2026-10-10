@@ -1,3 +1,4 @@
+import { publicErrorMessage } from "./command-failure.ts";
 import type { GeoFix } from "./location.ts";
 
 export type {
@@ -410,7 +411,7 @@ export class RoutePlayback {
           if (propagateError) throw err;
           return false;
         }
-        const message = err instanceof Error ? err.message : String(err);
+        const message = publicErrorMessage(err);
         this.#status = "error";
         this.#lastError = message;
         this.#clearTimer(runId);

@@ -401,7 +401,7 @@ describe("emulator lifecycle", () => {
     const failed = (async () =>
       result("", { status: 1, stderr: "console unavailable" })) as typeof execText;
     await expect(stopEmulator("emulator-5554", failed)).rejects.toThrow(
-      "Failed to stop emulator-5554: console unavailable",
+      "adb emu kill failed: console unavailable",
     );
   });
 });
