@@ -348,10 +348,11 @@ describe("DeviceSessionManager", () => {
     expect(initial.signal.aborted).toBe(false);
     expect(initial.disposeCalls).toEqual([]);
 
-    const recovered = managedSession("device-b", 5);
+    // The failed attempt used generation 5, so the next one gets 6.
+    const recovered = managedSession("device-b", 6);
     await expect(
       manager.switch("device-b", async (serial, generation) => {
-        expect({ serial, generation }).toEqual({ serial: "device-b", generation: 5 });
+        expect({ serial, generation }).toEqual({ serial: "device-b", generation: 6 });
         return recovered;
       }),
     ).resolves.toBe(recovered);
@@ -449,5 +450,28 @@ describe("DeviceSessionManager", () => {
     expect(candidate.disposeCalls).toEqual([
       { reason: "device session activation failed", opts: undefined },
     ]);
+  });
+
+  test("never hands out a generation again after its candidate was disposed (#167)", async () => {
+    const manager = new DeviceSessionManager(managedSession("device-a", 1));
+    const generations: number[] = [];
+    await expect(
+      manager.switch(
+        "device-b",
+        async (serial, generation) => {
+          generations.push(generation);
+          return managedSession(serial, generation);
+        },
+        () => {
+          throw new Error("activation failed");
+        },
+      ),
+    ).rejects.toThrow("activation failed");
+    const next = await manager.switch("device-b", async (serial, generation) => {
+      generations.push(generation);
+      return managedSession(serial, generation);
+    });
+    expect(generations).toEqual([2, 3]);
+    expect(next.generation).toBe(3);
   });
 });

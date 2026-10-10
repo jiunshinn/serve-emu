@@ -287,6 +287,11 @@ export type ManagedDeviceSession = {
 /** Serializes every transition and owns the single published active context. */
 export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
   #current: TContext;
+  // The last generation handed to a candidate. Numbers are never reused: a
+  // candidate that failed may already have been disposed, and its cleanup
+  // marked its generation cancelled (for uploads), so the next candidate
+  // must not inherit that number (#167).
+  #lastGeneration: number;
   #tail: Promise<void> = Promise.resolve();
   #transitionController: AbortController | null = null;
   #closing = false;
@@ -294,6 +299,7 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
 
   constructor(initial: TContext) {
     this.#current = initial;
+    this.#lastGeneration = initial.generation;
   }
 
   get current(): TContext {
@@ -349,11 +355,7 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
       this.#transitionController = transition;
       let next: TContext;
       try {
-        next = await prepare(
-          serial,
-          previous.generation + 1,
-          transition.signal,
-        );
+        next = await prepare(serial, ++this.#lastGeneration, transition.signal);
       } finally {
         if (this.#transitionController === transition) {
           this.#transitionController = null;
