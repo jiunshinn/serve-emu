@@ -170,8 +170,10 @@ emulator 37.2.12, whose only H.264 encoder is the software
   `interval × 60` frames. The frame rate is variable, so the wall-clock gap is
   `interval × 60 / fps`. With `--key-frame-interval 2`, IDRs arrived every 119
   frames: 9.4 s apart at 12.4 fps on AVD `dev`, and 15 s apart at 7.2 fps on AVD
-  `serve-emu-e2e`. The default of 10 s means 600 frames, which is minutes at the
-  3–12 fps an emulator usually produces.
+  `serve-emu-e2e`. The default of 10 s means 600 frames, nearly a minute or more
+  at the 3–12 fps an emulator usually produces. scrcpy itself sets the same
+  10 s (`DEFAULT_I_FRAME_INTERVAL` in its `SurfaceEncoder`), so
+  `--key-frame-interval 0`, which omits the option, behaves like the default.
 - **Repeats stop after 10 frames.** After the last screen change, the surface
   input repeats the previous frame at most 10 times, whatever the repeat delay,
   so a static screen sends no frames about a second later (see #165).
@@ -186,7 +188,7 @@ requests one with a rate-limited `reset-video`:
 
 | Who waits | Retry |
 | --- | --- |
-| Server: a new client, or one that fell behind (`awaitingKeyFrame`) | `SessionRecoveryWatchdog` requests a reset every 2.5 s while any client waits. Retries are coalesced while a restart awaits its key frame, and back off for restarts that produce no frames. |
+| Server: a new client, or one that fell behind (`awaitingKeyFrame`) | `SessionRecoveryWatchdog` requests a reset about every 2.5–3 s (it checks once a second) while any client waits. Retries are coalesced while a restart awaits its key frame, and back off for restarts that produce no frames. |
 | Worker: a delta frame with no configured decoder, or before the first key frame | requests a key frame on that delta frame, at most every 400 ms |
 | Worker: soft or hard recovery dropping until a key frame | requests a key frame on every dropped delta frame, at most every 400 ms (#128), so a reset the server coalesced is retried |
 

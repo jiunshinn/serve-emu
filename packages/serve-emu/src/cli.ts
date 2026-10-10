@@ -119,11 +119,12 @@ Options:
                          sustains 60fps only below ~1 megapixel, so this
                          defaults to ${SCRCPY_DEFAULTS.maxSize}.
       --key-frame-interval <sec>
-                         Advisory keyframe interval; 0 omits this codec option
-                         (default: ${SCRCPY_DEFAULTS.keyFrameInterval}). The emulator's encoder counts it
-                         in frames at a nominal 60fps, so keyframes arrive later
-                         at lower frame rates. Clients get keyframes on demand
-                         via reset-video and never wait for a periodic one.
+                         Advisory keyframe interval; 0 omits this codec option,
+                         leaving scrcpy's own 10s default (default: ${SCRCPY_DEFAULTS.keyFrameInterval}).
+                         The emulator's encoder counts it in frames at a nominal
+                         60fps, so keyframes arrive later at lower frame rates.
+                         Clients get keyframes on demand via reset-video and
+                         never wait for a periodic one.
       --repeat-frame-ms <ms>
                          Re-encode the previous frame after this many ms with no
                          screen change (0 keeps the encoder default of 100ms).
