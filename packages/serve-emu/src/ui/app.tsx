@@ -240,7 +240,10 @@ const AppShell = memo(function AppShell() {
           />
         </div>
         <aside className="side-panel">
-          <SideTools key={deviceSession.revision}
+          {/* Not keyed by the session: remounting on every store publish
+              collapsed open sections and dropped panel input. Panels refresh
+              their own device data when the session changes. */}
+          <SideTools
             accessibilityEnabled={accessibilityEnabled}
             accessibilityNodes={accessibilityNodes}
             highlightedAccessibilityId={highlightedAccessibilityId}
