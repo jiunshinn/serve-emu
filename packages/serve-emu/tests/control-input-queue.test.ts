@@ -8,24 +8,9 @@ import {
   type ControlBinaryWriter,
   type ControlInputClock,
 } from "../src/control-input-queue.ts";
+import { deferred, type Deferred } from "./helpers/deferred.ts";
 
 const SCREEN = { width: 1080, height: 1920 };
-
-type Deferred = {
-  promise: Promise<void>;
-  resolve: () => void;
-  reject: (reason: unknown) => void;
-};
-
-function deferred(): Deferred {
-  let resolve!: () => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<void>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 8; i++) await Promise.resolve();

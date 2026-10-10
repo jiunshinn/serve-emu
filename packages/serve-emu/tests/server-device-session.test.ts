@@ -5,19 +5,7 @@ import { parseDeviceGridResponse } from "../src/shared/api-contracts.ts";
 import type { EmulatorLaunch } from "../src/emulator.ts";
 import type { GeoFix } from "../src/location.ts";
 import type { ScrcpySession, VideoPacket } from "../src/scrcpy.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: Deferred<T>["resolve"];
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
+import { deferred } from "./helpers/deferred.ts";
 
 type FakeScrcpy = {
   session: ScrcpySession;

@@ -9,14 +9,9 @@ import {
   type ServerDependencies,
   type ServerOpts,
 } from "../src/server.ts";
+import { deferred } from "./helpers/deferred.ts";
 
 type StartedServer = Awaited<ReturnType<typeof startServer>>;
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
-};
 
 type CapturedServeOptions = {
   maxRequestBodySize?: number;
@@ -40,16 +35,6 @@ type ServerHarness = {
 };
 
 const activeServers: StartedServer[] = [];
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
 
 function fakeSession(serial: string, onClose?: () => void): FakeSession {
   const proc = new EventEmitter();

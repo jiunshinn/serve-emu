@@ -7,16 +7,7 @@ import {
   type VisibilitySource,
 } from "../src/ui/lib/polling.ts";
 import { createDeviceSessionStore } from "../src/ui/lib/device-session-store.ts";
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((onResolve, onReject) => {
-    resolve = onResolve;
-    reject = onReject;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred } from "./helpers/deferred.ts";
 
 async function flushPromises() {
   await Promise.resolve();
@@ -344,7 +335,6 @@ describe("device session store", () => {
     expect(store.getSnapshot()).toMatchObject({ serial: "second", transitioning: false });
   });
 });
-
 
 test("canonical health generation refreshes other tabs without a local transition", () => {
   const store = createDeviceSessionStore();

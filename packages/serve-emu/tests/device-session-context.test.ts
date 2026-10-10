@@ -8,22 +8,7 @@ import {
   type ManagedDeviceSession,
 } from "../src/device-session-context.ts";
 import type { ScrcpySession } from "../src/scrcpy.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: Deferred<T>["resolve"];
-  let reject!: Deferred<T>["reject"];
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred, type Deferred } from "./helpers/deferred.ts";
 
 function snapshot(capturedAt: string): AccessibilitySnapshot {
   return { ok: true, capturedAt, nodes: [] };

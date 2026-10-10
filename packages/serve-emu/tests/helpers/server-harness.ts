@@ -7,22 +7,7 @@ import {
   type ServerOpts,
 } from "../../src/server.ts";
 import type { RecoveryWatchdogClock } from "../../src/session-recovery-watchdog.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred, type Deferred } from "./deferred.ts";
 
 type FrameFeedEntry =
   | { type: "value"; value: VideoPacket | null }
