@@ -107,6 +107,8 @@ export type ScrcpyRuntime = {
 };
 
 export type ScrcpyTimeouts = {
+  bootMs: number;
+  bootPollMs: number;
   pushMs: number;
   copyMs: number;
   forwardMs: number;
@@ -123,6 +125,9 @@ export type ScrcpyDependencies = Partial<ScrcpyRuntime> & {
 };
 
 const DEFAULT_TIMEOUTS: ScrcpyTimeouts = {
+  // The same limit as a launched emulator's boot (startEmulator).
+  bootMs: 120_000,
+  bootPollMs: 5_000,
   pushMs: 30_000,
   copyMs: 5_000,
   forwardMs: 5_000,
@@ -575,6 +580,64 @@ async function removeWorkingJars(
     if (isDeviceUnavailable(result)) return;
     throw commandFailure(serial, args, result);
   }
+}
+
+const BOOT_POLL_INTERVAL_MS = 500;
+
+/**
+ * adb lists a device as soon as adbd runs, seconds before Android starts its
+ * system services. A scrcpy server started in that window crashes: its
+ * Controller finds no input service (a NullPointerException in
+ * KeyCharacterMap.load), or the server exits after sending the device name.
+ * Wait until the device reports `sys.boot_completed=1`.
+ */
+async function waitForBootCompleted(
+  runtime: ScrcpyRuntime,
+  timeouts: ScrcpyTimeouts,
+  serial: string,
+  signal: AbortSignal,
+): Promise<void> {
+  const args = ["shell", "getprop", "sys.boot_completed"];
+  let reported = false;
+  await withDeadline(
+    runtime,
+    signal,
+    timeouts.bootMs,
+    `waiting for ${serial} to boot`,
+    async (bootSignal) => {
+      while (true) {
+        const result = await runAdbRaw(
+          runtime,
+          serial,
+          args,
+          timeouts.bootPollMs,
+          bootSignal,
+        );
+        if (result.status === 0 && result.stdout.trim() === "1") return;
+        // A closed shell channel is a transport race while the device boots;
+        // any other unavailable device fails the start at once.
+        if (
+          result.status !== 0 &&
+          isDeviceUnavailable(result) &&
+          !isConnectionClosed(result)
+        ) {
+          throw commandFailure(serial, args, result);
+        }
+        if (!reported) {
+          reported = true;
+          console.log(`[scrcpy] ${serial} is still booting; waiting to start scrcpy`);
+        }
+        await runtime.sleep(BOOT_POLL_INTERVAL_MS, bootSignal);
+      }
+    },
+    0,
+    () =>
+      new CommandFailureError(
+        "adb-timeout",
+        "waiting for the device to finish booting timed out",
+        `${serial} did not report sys.boot_completed=1 within ${timeouts.bootMs}ms`,
+      ),
+  );
 }
 
 async function waitForAbstractSocketAsync(
@@ -1058,6 +1121,12 @@ export async function startScrcpy(
 
   try {
     throwIfAborted(startupController.signal, "scrcpy startup aborted");
+    await waitForBootCompleted(
+      runtime,
+      timeouts,
+      serial,
+      startupController.signal,
+    );
     const jar = await withDeadline(
       runtime,
       startupController.signal,
