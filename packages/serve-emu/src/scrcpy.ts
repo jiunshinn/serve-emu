@@ -612,11 +612,17 @@ async function waitForBootCompleted(
           args,
           timeouts.bootPollMs,
           bootSignal,
-        );
-        if (result.status === 0 && result.stdout.trim() === "1") return;
+        ).catch((error: unknown) => {
+          // One probe can hang past its own deadline while adbd restarts during
+          // boot. Try again; only the boot deadline or an abort ends the wait.
+          if (bootSignal.aborted) throw error;
+          return null;
+        });
+        if (result?.status === 0 && result.stdout.trim() === "1") return;
         // A closed shell channel is a transport race while the device boots;
         // any other unavailable device fails the start at once.
         if (
+          result &&
           result.status !== 0 &&
           isDeviceUnavailable(result) &&
           !isConnectionClosed(result)

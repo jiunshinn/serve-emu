@@ -165,8 +165,11 @@ const EMPTY_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 type HarnessOptions = {
-  /** `getprop sys.boot_completed` results returned, in order, before "1". */
-  bootResults?: AdbCommandResult[];
+  /**
+   * `getprop sys.boot_completed` results returned, in order, before "1". A
+   * "hang" probe never settles until aborted.
+   */
+  bootResults?: (AdbCommandResult | "hang")[];
   /** `getprop sys.boot_completed` never settles until aborted. */
   bootHangs?: boolean;
   /**
@@ -247,10 +250,13 @@ function createHarness(options: HarnessOptions = {}) {
     state.events.push(`adb:${args.join(" ")}`);
 
     if (args[0] === "shell" && args[1] === "getprop" && args[2] === "sys.boot_completed") {
-      if (options.bootHangs) {
+      const next = options.bootHangs
+        ? "hang"
+        : (options.bootResults?.[state.bootAttempt++] ?? ok("1\n"));
+      if (next === "hang") {
         return waitForDeferred(deferred<AdbCommandResult>(), commandOptions.signal);
       }
-      return options.bootResults?.[state.bootAttempt++] ?? ok("1\n");
+      return next;
     }
     if (args[0] === "shell" && args[1] === "sha256sum") {
       if (options.deferProbe) {
@@ -1006,6 +1012,20 @@ describe("waiting for the device to boot", () => {
       await (await startWith(harness)).close();
       expect(harness.state.events.filter((event) => event === BOOT_PROBE)).toHaveLength(1);
       expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("a probe that hangs past its deadline is tried again", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createHarness({ bootResults: ["hang"] });
+      harness.deps.timeouts!.bootPollMs = 1;
+      await (await startWith(harness)).close();
+      expect(harness.state.events.filter((event) => event === BOOT_PROBE)).toHaveLength(2);
+      expect(harness.state.spawnCalls).toHaveLength(1);
+      expect(log).toHaveBeenCalledTimes(1);
     } finally {
       log.mockRestore();
     }
