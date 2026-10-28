@@ -4,7 +4,9 @@ Host your Android emulator or attached Android device for agent workflows like C
 
 
 
-https://github.com/user-attachments/assets/5646d44c-7fd1-4e97-8705-b44b47c7fdc6
+https://github.com/user-attachments/assets/f8e930cc-13db-4ab2-836e-2b82a47636d1
+
+An agent drives a real Android emulator through the HTTP API: it opens Settings, turns on dark theme, changes the font scale, and searches Google Maps. The footage plays at 1.25× speed.
 
 
 
@@ -247,6 +249,10 @@ Open `http://localhost:3300` after starting the CLI. The UI streams the device i
 - Device selection plus AVD start/stop
 - Orientation, night mode, font scale, network, GPS location, and route playback
 - Logcat filtering, pause/copy controls, app management, file import, and session replay
+
+A screen recording of the browser UI:
+
+https://github.com/user-attachments/assets/5646d44c-7fd1-4e97-8705-b44b47c7fdc6
 
 The browser decoder treats every WebSocket reconnect, device video session, and
 hard decoder recovery as a new stream generation. Codec, latency, frame counts,
