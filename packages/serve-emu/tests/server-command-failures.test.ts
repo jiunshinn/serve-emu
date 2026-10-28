@@ -151,7 +151,7 @@ describe("API responses for a failing scrcpy startup", () => {
       const failed = args[0] === "push" || args[1] === "test";
       return {
         status: failed ? 1 : 0,
-        stdout: "",
+        stdout: args[1] === "getprop" ? "1\n" : "",
         stderr:
           args[0] === "push" ? `adb: error: failed to copy '${jar}'` : "",
         timedOut: false,

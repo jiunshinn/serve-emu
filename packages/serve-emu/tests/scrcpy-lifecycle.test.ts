@@ -165,6 +165,10 @@ const EMPTY_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 type HarnessOptions = {
+  /** `getprop sys.boot_completed` results returned, in order, before "1". */
+  bootResults?: AdbCommandResult[];
+  /** `getprop sys.boot_completed` never settles until aborted. */
+  bootHangs?: boolean;
   /**
    * The video bytes arrive while the control socket connects, on a socket
    * that drops data without a listener (as Bun's node:net does).
@@ -223,6 +227,7 @@ function createHarness(options: HarnessOptions = {}) {
     removeWasDeferred: false,
     rmAttempt: 0,
     socketPollAttempt: 0,
+    bootAttempt: 0,
     scidIndex: 0,
   };
 
@@ -241,6 +246,12 @@ function createHarness(options: HarnessOptions = {}) {
     state.adbCalls.push(call);
     state.events.push(`adb:${args.join(" ")}`);
 
+    if (args[0] === "shell" && args[1] === "getprop" && args[2] === "sys.boot_completed") {
+      if (options.bootHangs) {
+        return waitForDeferred(deferred<AdbCommandResult>(), commandOptions.signal);
+      }
+      return options.bootResults?.[state.bootAttempt++] ?? ok("1\n");
+    }
     if (args[0] === "shell" && args[1] === "sha256sum") {
       if (options.deferProbe) {
         probeReached.resolve(call);
@@ -376,6 +387,8 @@ function createHarness(options: HarnessOptions = {}) {
     },
     clearTimer: (timer) => clearTimeout(timer),
     timeouts: {
+      bootMs: 500,
+      bootPollMs: 500,
       pushMs: 500,
       copyMs: 500,
       forwardMs: 500,
@@ -956,6 +969,81 @@ describe("device server jar cache", () => {
     controller.abort(new Error("cancelled during the cache probe"));
     await expect(startup).rejects.toThrow("cancelled during the cache probe");
     expect(probe.signal.aborted).toBe(true);
+    expect(harness.state.pushCount).toBe(0);
+    expect(harness.state.spawnCalls).toHaveLength(0);
+  });
+});
+
+describe("waiting for the device to boot", () => {
+  const BOOT_PROBE = "adb:shell getprop sys.boot_completed";
+
+  test("starts scrcpy only after the device reports sys.boot_completed=1", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createHarness({
+        bootResults: [ok(""), failed("error: closed"), ok("0\n")],
+      });
+      const session = await startWith(harness);
+
+      const firstOther = harness.state.events.findIndex((event) => event !== BOOT_PROBE);
+      expect(harness.state.events.slice(0, firstOther)).toEqual(Array(4).fill(BOOT_PROBE));
+      expect(harness.state.events.lastIndexOf(BOOT_PROBE)).toBe(3);
+      expect(harness.state.sleepCalls.slice(0, 3).map((call) => call.ms)).toEqual([500, 500, 500]);
+      expect(harness.state.spawnCalls).toHaveLength(1);
+      expect(log.mock.calls).toEqual([
+        [`[scrcpy] ${SERIAL} is still booting; waiting to start scrcpy`],
+      ]);
+      await session.close();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("a booted device starts without waiting or logging", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createHarness();
+      await (await startWith(harness)).close();
+      expect(harness.state.events.filter((event) => event === BOOT_PROBE)).toHaveLength(1);
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("a device that never finishes booting times out before the jar is pushed", async () => {
+    const harness = createHarness({ bootHangs: true });
+    harness.deps.timeouts!.bootMs = 20;
+
+    const error = await startWith(harness).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect((error as CommandFailureError).code).toBe("adb-timeout");
+    expect((error as CommandFailureError).publicMessage).toBe(
+      "waiting for the device to finish booting timed out",
+    );
+    expect(harness.state.pushCount).toBe(0);
+    expect(harness.state.spawnCalls).toHaveLength(0);
+  });
+
+  test("a device adb cannot reach fails at once instead of waiting", async () => {
+    const harness = createHarness({
+      bootResults: [failed("adb: device offline")],
+    });
+
+    const error = await startWith(harness).catch((err: unknown) => err);
+    expect((error as CommandFailureError).code).toBe("adb-device-unavailable");
+    expect(harness.state.events.filter((event) => event === BOOT_PROBE)).toHaveLength(1);
+    expect(harness.state.pushCount).toBe(0);
+  });
+
+  test("aborting startup while the device boots stops before pushing", async () => {
+    const harness = createHarness({ bootHangs: true });
+    const controller = new AbortController();
+    const startup = startWith(harness, { signal: controller.signal });
+    await Promise.resolve();
+
+    controller.abort(new Error("cancelled while booting"));
+    await expect(startup).rejects.toThrow("cancelled while booting");
     expect(harness.state.pushCount).toBe(0);
     expect(harness.state.spawnCalls).toHaveLength(0);
   });
