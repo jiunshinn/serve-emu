@@ -31,7 +31,9 @@ Working:
 - Keyboard passthrough in the browser UI: editing/navigation keys, Ctrl/Cmd shortcuts (select all, copy, paste, cut, undo, redo), and IME composition for CJK text
 - Multi-client streaming, so multiple browser tabs can share one device
 - SPS/PPS replay and metadata headers for clients joining mid-stream
-- Device discovery, current-device switching, and AVD start/stop controls
+- Device discovery, current-device switching, and AVD create/start/stop controls
+- Headless emulator launch (`--no-emulator-window`) for servers, SSH sessions, and CI
+- Fold, half-open, and unfold postures for foldable emulator profiles
 - Screenshot, foreground app, accessibility tree, and logcat APIs for agent inspection
 - Orientation, dark/light mode, font scale, and network on/off controls
 - Emulator GPS location control and route playback from GPX, GeoJSON, KML, or waypoint JSON
@@ -96,7 +98,7 @@ bun run packages/serve-emu/src/cli.ts
 
 ```text
 serve-emu [-p <port>] [--host <addr>] [--token <secret>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms] [--max-apk-upload-bytes N] [--max-media-upload-bytes N]
-serve-emu --avd <name> [--gpu <mode>] [--restart-avd] [--camera-back <mode>] [--camera-front <mode>]
+serve-emu --avd <name> [--gpu <mode>] [--restart-avd] [--no-emulator-window] [--camera-back <mode>] [--camera-front <mode>]
 serve-emu --avd-list
 serve-emu --running-avds
 serve-emu --webcam-list
@@ -133,6 +135,8 @@ serve-emu --webcam-list
 | `--emulator-window`, `--no-emulator-window` | auto | Show or hide the window of emulators `serve-emu` launches (`--avd` and `/api/avds/start`); see [Emulator Window](#emulator-window) |
 
 By default, `serve-emu` attaches to the only online device. If more than one device is online, pass `-s <serial>` or select another running device later through the HTTP API/UI.
+
+`serve-emu` starts scrcpy only after the device finishes booting. adb lists a device as soon as `adbd` runs, seconds before Android starts the system services that scrcpy needs. At startup, on a device switch, and on session recovery, `serve-emu` polls `getprop sys.boot_completed` until it reports `1`, for up to 120 s. A device that adb cannot reach fails at once. A boot that does not finish in time fails with the `adb-timeout` reason, and nothing is pushed to the device.
 
 ## Access control
 
@@ -230,7 +234,7 @@ Open a camera app in the stream and its preview shows the webcam. Use `--camera-
 
 The emulator picks its cameras at boot, so the camera flags require `--avd` and don't apply to devices attached with `-s`. If the AVD is already running, add `--restart-avd`; without it, `serve-emu` exits with an error instead of attaching to an emulator that lacks the camera. Changing an AVD's cameras invalidates its Quick Boot snapshot, so that launch cold-boots.
 
-The flags also accept the emulator's other camera modes, listed by `emulator -help-camera-back`: `emulated`, `virtualscene` (back only), `none`, and `imagefile:<path>` to show a still image, such as a QR code for a scanner test.
+The flags also accept the emulator's other camera modes, listed by `emulator -help-camera-back`: `emulated`, `environment`, `virtualscene` (back only), `none`, `imagefile:<path>` to show a still image (such as a QR code for a scanner test), `videofile:<path>` to play a video, and `image360:<path>` to show a panoramic image.
 
 On macOS, the first time an Android app opens the webcam, macOS asks whether the app that launched `serve-emu` (usually your terminal) may use the camera. If you denied it, turn it back on under **System Settings → Privacy & Security → Camera**. The emulator can't open a webcam that another app is using.
 
@@ -246,8 +250,9 @@ Known limitations:
 Open `http://localhost:3300` after starting the CLI. The UI streams the device into a canvas and exposes controls for:
 
 - Pointer input, keyboard passthrough (typing, navigation keys, shortcuts, IME composition), hardware buttons, and screenshots
-- Device selection plus AVD start/stop
-- Orientation, night mode, font scale, network, GPS location, and route playback
+- Device selection plus AVD create/start/stop
+- Foldable postures, orientation, night mode, font scale, network, GPS location, and route playback
+- An accessibility tree browser
 - Logcat filtering, pause/copy controls, app management, file import, and session replay
 
 A screen recording of the browser UI:
@@ -311,6 +316,7 @@ and path. Its `reason` says why it failed:
 | `adb-output-limit` | `downstream_failure` | the command printed more output than allowed |
 | `adb-cleanup-failed` | `downstream_failure` | a temporary file on the device could not be removed |
 | `emulator-failed` | `downstream_failure` | the emulator binary failed |
+
 An `internal_error` has a fixed message, such as `Internal server error`.
 
 ### Health And Discovery
@@ -361,6 +367,8 @@ device's `/proc/net/unix` 2 s after it starts and every 10 s after that, with
 one bounded `adb shell` call. `/health` reports the last answer and never
 waits for a probe. `contention` is `null` until the first probe answers. The
 UI shows a warning in the status bar while the count is above zero.
+
+### Emulators
 
 Create an emulator from **Add emulator** in the Devices panel. Choose a name,
 SDK hardware profile (including Fold-in, Flip-style and
