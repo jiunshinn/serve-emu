@@ -98,6 +98,24 @@ export function applicationRoutes(): ApiRoute<ApiDependencies>[] {
     },
     {
       method: "POST",
+      path: "/api/deep-link",
+      handler: async ({ request: req, deps }) => {
+        const { requestContext, device } = deps;
+        return appAction(deps, req, (payload, signal) =>
+          device.openDeepLink(
+            requestContext.serial,
+            String(payload.url ?? ""),
+            typeof payload.packageName === "string" &&
+              payload.packageName.trim()
+              ? payload.packageName
+              : undefined,
+            signal,
+          ),
+        );
+      },
+    },
+    {
+      method: "POST",
       path: "/api/apps/clear",
       handler: async ({ request: req, deps }) => {
         const { requestContext, device } = deps;

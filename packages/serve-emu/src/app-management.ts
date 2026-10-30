@@ -62,6 +62,11 @@ export class AppManagementError extends CommandFailureError {
 const PACKAGE_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 const PERMISSION_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 const ACTIVITY_RE = /^([A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+|\.?[A-Za-z][A-Za-z0-9_.$]*)(\/[A-Za-z0-9_.$]+)?$/;
+// An RFC 3986 scheme and a non-empty rest. Control characters are rejected so
+// a link stays one argument on the device shell line.
+const DEEP_LINK_RE = /^[A-Za-z][A-Za-z0-9+.-]*:[^\x00-\x1f\x7f]+$/;
+const MAX_DEEP_LINK_LENGTH = 4096;
+const UNRESOLVED_INTENT_RE = /unable to resolve Intent/;
 
 function output(stdout: string, stderr: string): string {
   return `${stdout}${stderr}`.trim();
@@ -113,6 +118,13 @@ export function activityName(value: unknown): string {
 
 export function permissionName(value: unknown): string {
   return validate(value, "permission", PERMISSION_RE);
+}
+
+function deepLinkUrl(value: unknown): string {
+  if (typeof value === "string" && value.trim().length > MAX_DEEP_LINK_LENGTH) {
+    throw new Error(`url must be at most ${MAX_DEEP_LINK_LENGTH} characters`);
+  }
+  return validate(value, "url", DEEP_LINK_RE);
 }
 
 export async function installApk(
@@ -247,6 +259,61 @@ export function launchApp(
     30_000,
     dependencies,
   );
+}
+
+/** A failed VIEW intent; a link no activity takes gets its own public message. */
+function deepLinkFailure(output: string, cause?: unknown): AppManagementError {
+  return new AppManagementError("adb-failed", output, {
+    cause,
+    publicMessage: UNRESOLVED_INTENT_RE.test(output)
+      ? "no app on the device handles the link"
+      : "adb shell am failed",
+  });
+}
+
+/**
+ * Opens `url` with a VIEW intent, the command Android's deep-link testing docs
+ * use. `-W` waits for the launch, so `output` names the activity that took the
+ * link and a following screenshot shows it. With `packageName`, only that app
+ * can take the link and the app chooser does not open.
+ */
+export async function openDeepLink(
+  serial: string,
+  urlValue: string,
+  packageNameValue?: string,
+  dependencies: AppManagementDependencies = {},
+): Promise<AppActionResult> {
+  const url = deepLinkUrl(urlValue);
+  const pkg =
+    packageNameValue === undefined ? undefined : packageName(packageNameValue);
+  const args = [
+    "shell",
+    "am",
+    "start",
+    "-W",
+    "-a",
+    "android.intent.action.VIEW",
+    "-d",
+    shellQuote(url),
+    ...(pkg ? [shellQuote(pkg)] : []),
+  ];
+  let result: AppActionResult;
+  try {
+    result = await adb(serial, args, 30_000, dependencies);
+  } catch (error) {
+    if (
+      error instanceof AppManagementError &&
+      error.code === "adb-failed" &&
+      UNRESOLVED_INTENT_RE.test(error.message)
+    ) {
+      throw deepLinkFailure(error.message, error);
+    }
+    throw error;
+  }
+  // Devices without adb's shell protocol always exit 0, so the activity
+  // manager's own error line also means the launch failed.
+  if (/^Error:/m.test(result.output)) throw deepLinkFailure(result.output);
+  return result;
 }
 
 export function clearAppData(

@@ -16,6 +16,7 @@ import {
   forceStopApp,
   grantPermission,
   launchApp,
+  openDeepLink,
 } from "./app-management.ts";
 import type { AdbDeps } from "./adb-command.ts";
 import { getFoldableState, setFoldPosture } from "./foldable.ts";
@@ -48,6 +49,7 @@ export type DeviceService = {
   network(serial: string, signal: AbortSignal): Promise<NetworkStatus>;
   setNetwork(serial: string, enabled: boolean, signal: AbortSignal): Promise<NetworkStatus>;
   launchApp(serial: string, packageName: string, activity: string | undefined, signal: AbortSignal): Promise<AppActionResponse>;
+  openDeepLink(serial: string, url: string, packageName: string | undefined, signal: AbortSignal): Promise<AppActionResponse>;
   clearAppData(serial: string, packageName: string, signal: AbortSignal): Promise<AppActionResponse>;
   forceStopApp(serial: string, packageName: string, signal: AbortSignal): Promise<AppActionResponse>;
   grantPermission(serial: string, packageName: string, permission: string, signal: AbortSignal): Promise<AppActionResponse>;
@@ -75,6 +77,8 @@ export function createDeviceService(runners: DeviceServiceRunners = {}): DeviceS
     setNetwork: (serial, enabled, signal) => setNetworkEnabled(serial, enabled, deps(signal)),
     launchApp: (serial, packageName, activity, signal) =>
       launchApp(serial, packageName, activity, deps(signal)),
+    openDeepLink: (serial, url, packageName, signal) =>
+      openDeepLink(serial, url, packageName, deps(signal)),
     clearAppData: (serial, packageName, signal) =>
       clearAppData(serial, packageName, deps(signal)),
     forceStopApp: (serial, packageName, signal) =>

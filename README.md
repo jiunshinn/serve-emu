@@ -626,6 +626,14 @@ curl -X POST "$BASE/api/apps/launch" \
   -H 'Content-Type: application/json' \
   -d '{"packageName":"com.example.app","activity":".MainActivity"}'
 
+curl -X POST "$BASE/api/deep-link" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"myapp://profile/42?tab=posts"}'
+
+curl -X POST "$BASE/api/deep-link" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com/products/7","packageName":"com.example.app"}'
+
 curl -X POST "$BASE/api/apps/clear" \
   -H 'Content-Type: application/json' \
   -d '{"packageName":"com.example.app"}'
@@ -641,6 +649,13 @@ curl -X POST "$BASE/api/apps/grant" \
 curl -X POST "$BASE/api/files/import" \
   -F file=@/path/to/image.png
 ```
+
+`/api/deep-link` opens a `scheme:` URL (at most 4096 characters) with an
+`android.intent.action.VIEW` intent and waits for the launch, so `output`
+names the activity that took the link. Add `packageName` to send the link to
+that app only, without the app chooser. A link that no app on the device takes
+returns `502` with `reason: "adb-failed"` and the message `no app on the
+device handles the link`.
 
 Uploads stream to private asynchronous temporary files and are removed after
 ADB completes. Actual bytes are enforced even without `Content-Length`; a
