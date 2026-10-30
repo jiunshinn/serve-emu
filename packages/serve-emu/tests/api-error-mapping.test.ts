@@ -6,6 +6,7 @@ import { CommandFailureError } from "../src/command-failure.ts";
 import { ControlInputError } from "../src/control-input-queue.ts";
 import { SessionChangedError } from "../src/device-session-context.ts";
 import { MultipartUploadError } from "../src/multipart-upload.ts";
+import { PushNotificationError } from "../src/push-notification.ts";
 import { HttpBodyError } from "../src/request-body.ts";
 import { RoutePlaybackApplyError, RoutePlaybackConflictError } from "../src/route-playback.ts";
 import { SessionReplayConflictError, SessionReplayValidationError } from "../src/session-recorder.ts";
@@ -35,6 +36,8 @@ const rows: Row[] = [
   ["adb cleanup failure", new CommandFailureError("adb-cleanup-failed", "adb shell rm failed", "rm: /sdcard/x"), 502, "downstream_failure", "adb-cleanup-failed", "adb shell rm failed"],
   // An emulator that does not boot in time is an emulator failure, not an adb timeout.
   ["emulator boot timeout", new CommandFailureError("emulator-failed", "Timed out waiting for emulator-5554 to boot."), 502, "downstream_failure", "emulator-failed", "Timed out waiting for emulator-5554 to boot."],
+  ["push without root", new PushNotificationError("root-unavailable", "a simulated push needs root"), 400, "invalid_request", "push-root-unavailable", "a simulated push needs root"],
+  ["push not taken", new PushNotificationError("not-delivered", "the app did not take the push"), 502, "downstream_failure", "push-not-delivered", "the app did not take the push"],
   ["route conflict", new RoutePlaybackConflictError("route playback is closed"), 409, "conflict", undefined, "route playback is closed"],
   ["route location failure", new RoutePlaybackApplyError("location control is currently supported for Android Emulator serials only", { cause: new Error("x") }), 502, "downstream_failure", undefined, "location control is currently supported for Android Emulator serials only"],
   ["wrapped command timeout", new RoutePlaybackApplyError("adb emu geo fix timed out", { cause: new CommandFailureError("adb-timeout", "adb emu geo fix timed out", "KO: /home/me/token") }), 504, "downstream_timeout", "adb-timeout", "adb emu geo fix timed out"],

@@ -120,11 +120,12 @@ export function permissionName(value: unknown): string {
   return validate(value, "permission", PERMISSION_RE);
 }
 
-function deepLinkUrl(value: unknown): string {
+/** A `scheme:` URL; `name` is the request field errors name. */
+export function deepLinkUrl(value: unknown, name = "url"): string {
   if (typeof value === "string" && value.trim().length > MAX_DEEP_LINK_LENGTH) {
-    throw new Error(`url must be at most ${MAX_DEEP_LINK_LENGTH} characters`);
+    throw new Error(`${name} must be at most ${MAX_DEEP_LINK_LENGTH} characters`);
   }
-  return validate(value, "url", DEEP_LINK_RE);
+  return validate(value, name, DEEP_LINK_RE);
 }
 
 export async function installApk(

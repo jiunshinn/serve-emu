@@ -157,5 +157,15 @@ export function applicationRoutes(): ApiRoute<ApiDependencies>[] {
         );
       },
     },
+    {
+      method: "POST",
+      path: "/api/apps/push",
+      handler: async ({ request: req, deps }) => {
+        const { requestContext, device } = deps;
+        return appAction(deps, req, (payload, signal) =>
+          device.sendPushNotification(requestContext.serial, payload, signal),
+        );
+      },
+    },
   ];
 }

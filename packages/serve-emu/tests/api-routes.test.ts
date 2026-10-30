@@ -44,6 +44,7 @@ const EXPECTED_ROUTES = [
   ["POST", "/api/apps/clear"],
   ["POST", "/api/apps/force-stop"],
   ["POST", "/api/apps/grant"],
+  ["POST", "/api/apps/push"],
   ["GET", "/api/location"],
   ["POST", "/api/location"],
   ["GET", "/api/route"],

@@ -42,7 +42,10 @@ async function fakeAdb(_cmd: string, args: string[]): Promise<ExecResult<string>
   const stdout = shell.startsWith("shell am start -W")
     ? "Starting: Intent { act=android.intent.action.VIEW }\nStatus: ok\n" +
       "LaunchState: WARM\nActivity: com.example.app/.LinkActivity\nComplete\n"
-    : "";
+    : shell.startsWith("shell su 0 am broadcast")
+      ? "Broadcasting: Intent { act=com.google.android.c2dm.intent.RECEIVE }\n" +
+        "Broadcast completed: result=-1\n"
+      : "";
   return { status: 0, signal: null, stdout, stderr: "", timedOut: false, error: null };
 }
 
@@ -184,6 +187,14 @@ describe("shared API contracts against real server responses", () => {
         packageName: "com.example.app",
       }),
     ).toMatchObject({ ok: true, output: expect.stringContaining("Activity: com.example.app/.LinkActivity") });
+    expect(
+      await call("/api/apps/push", "POST", {
+        packageName: "com.example.app",
+        title: "Order shipped",
+        link: "myapp://orders/42",
+        data: { orderId: "42" },
+      }),
+    ).toMatchObject({ ok: true, messageId: expect.stringMatching(/^serve-emu-/) });
 
     expect(
       await call("/api/avds/start", "POST", { avd: "Background_AVD", select: false }),

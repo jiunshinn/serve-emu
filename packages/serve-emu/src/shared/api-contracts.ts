@@ -281,6 +281,8 @@ export type SessionMutationResponse = ApiSuccess<{ session: SessionSnapshot }>;
 export type SessionClearResponse = ApiSuccess<{ session: SessionSummary }>;
 
 export type AppActionResponse = ApiSuccess<{ output: string }>;
+/** `POST /api/apps/push`: `messageId` is the app's `RemoteMessage.getMessageId()`. */
+export type PushNotificationResponse = ApiSuccess<{ output: string; messageId: string }>;
 export type FileImportResponse = ApiSuccess<{
   output: string;
   path: string;
@@ -490,6 +492,20 @@ export type ApiContractMap = {
   };
   "/api/apps/grant": {
     POST: EndpointContract<{ packageName: string; permission: string }, AppActionResponse>;
+  };
+  "/api/apps/push": {
+    POST: EndpointContract<
+      {
+        packageName: string;
+        title?: string;
+        body?: string;
+        image?: string;
+        channelId?: string;
+        link?: string;
+        data?: Record<string, string>;
+      },
+      PushNotificationResponse
+    >;
   };
   "/api/location": {
     GET: EndpointContract<undefined, LocationResponse>;
@@ -1095,6 +1111,16 @@ export function parseAppActionResponse(value: unknown): AppActionResponse {
   return { ok: true, output: string(root.output, "app action response.output") };
 }
 
+export function parsePushNotificationResponse(value: unknown): PushNotificationResponse {
+  const root = record(value, "push notification response");
+  if (root.ok !== true) fail("push notification response.ok must be true");
+  return {
+    ok: true,
+    output: string(root.output, "push notification response.output"),
+    messageId: string(root.messageId, "push notification response.messageId"),
+  };
+}
+
 export function parseFileImportResponse(value: unknown): FileImportResponse {
   const root = record(value, "file import response");
   if (root.ok !== true) fail("file import response.ok must be true");
@@ -1352,6 +1378,7 @@ export const API_SUCCESS_PARSERS = {
   "/api/apps/clear": { POST: parseAppActionResponse },
   "/api/apps/force-stop": { POST: parseAppActionResponse },
   "/api/apps/grant": { POST: parseAppActionResponse },
+  "/api/apps/push": { POST: parsePushNotificationResponse },
   "/api/location": { GET: parseLocationResponse, POST: parseLocationUpdateResponse },
   "/api/route": {
     GET: parseRoutePlaybackSnapshot,

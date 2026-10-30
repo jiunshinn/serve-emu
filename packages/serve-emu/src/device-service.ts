@@ -20,6 +20,7 @@ import {
 } from "./app-management.ts";
 import type { AdbDeps } from "./adb-command.ts";
 import { getFoldableState, setFoldPosture } from "./foldable.ts";
+import { sendPushNotification } from "./push-notification.ts";
 import type { FoldPosture, FoldableState } from "./shared/foldable-contracts.ts";
 import type {
   AppActionResponse,
@@ -30,6 +31,7 @@ import type {
   NightModeStatus,
   OrientationMode,
   OrientationStatus,
+  PushNotificationResponse,
 } from "./shared/api-contracts.ts";
 
 /**
@@ -53,6 +55,8 @@ export type DeviceService = {
   clearAppData(serial: string, packageName: string, signal: AbortSignal): Promise<AppActionResponse>;
   forceStopApp(serial: string, packageName: string, signal: AbortSignal): Promise<AppActionResponse>;
   grantPermission(serial: string, packageName: string, permission: string, signal: AbortSignal): Promise<AppActionResponse>;
+  /** Simulates an FCM message; `payload` is the unchecked request body. */
+  sendPushNotification(serial: string, payload: Record<string, unknown>, signal: AbortSignal): Promise<PushNotificationResponse>;
   foldable(serial: string, signal: AbortSignal): Promise<FoldableState>;
   setFoldPosture(serial: string, posture: FoldPosture, signal: AbortSignal): Promise<FoldableState>;
   /** Abstract socket names of the scrcpy sessions on the device, this server's included. */
@@ -85,6 +89,8 @@ export function createDeviceService(runners: DeviceServiceRunners = {}): DeviceS
       forceStopApp(serial, packageName, deps(signal)),
     grantPermission: (serial, packageName, permission, signal) =>
       grantPermission(serial, packageName, permission, deps(signal)),
+    sendPushNotification: (serial, payload, signal) =>
+      sendPushNotification(serial, payload, deps(signal)),
     foldable: (serial, signal) => getFoldableState(serial, deps(signal)),
     setFoldPosture: (serial, posture, signal) =>
       setFoldPosture(serial, posture, deps(signal)),

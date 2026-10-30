@@ -22,6 +22,7 @@ import {
   parseNetworkResponse,
   parseNightModeResponse,
   parseOrientationResponse,
+  parsePushNotificationResponse,
   parseRouteMutationResponse,
   parseRoutePlaybackSnapshot,
   parseScreenshotBase64Response,
@@ -353,6 +354,12 @@ describe("complete API success contracts", () => {
     expect(
       parseScreenshotBase64Response({ ok: true, mimeType: "image/png", data: "iVBORw==" }),
     ).toEqual({ ok: true, mimeType: "image/png", data: "iVBORw==" });
+    expect(
+      parsePushNotificationResponse({ ok: true, output: "Delivered", messageId: "serve-emu-1" }),
+    ).toEqual({ ok: true, output: "Delivered", messageId: "serve-emu-1" });
+    expect(() => parsePushNotificationResponse({ ok: true, output: "Delivered" })).toThrow(
+      "messageId",
+    );
 
     expect(
       parseLogcatEvent("ready", {
