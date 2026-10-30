@@ -665,6 +665,48 @@ device switch or server shutdown cancels work against the captured old device.
 Oversized requests receive `413`, and upload capacity errors are structured
 JSON responses. `/health` includes current upload queue metrics.
 
+### Push Notifications
+
+`/api/apps/push` simulates a Firebase Cloud Messaging (FCM) message for one
+app. serve-emu sends the broadcast that Google Play services sends when a real
+message arrives, so the app's own FCM code handles it. You need no Firebase
+project, credentials, or network.
+
+```sh
+curl -X POST "$BASE/api/apps/push" \
+  -H 'Content-Type: application/json' \
+  -d '{"packageName":"com.example.app","title":"Order shipped","body":"Tap to track it","link":"myapp://orders/42","data":{"orderId":"42"}}'
+```
+
+The response has a `messageId`, which the app reads as
+`RemoteMessage.getMessageId()`.
+
+| Field | Meaning |
+| --- | --- |
+| `packageName` | The app that gets the message. Required. |
+| `title`, `body` | Make a notification message. Without them, the push is a data message. |
+| `link` | A deep link that opens when the user taps the notification: a `VIEW` intent in the app, like `/api/deep-link`. |
+| `image` | An `http` or `https` image for the expanded notification. |
+| `channelId` | The Android notification channel. Without it, the app's default FCM channel. |
+| `data` | String key-value pairs. The app reads them as `RemoteMessage.getData()`, and a notification tap puts them on the intent as extras. |
+
+The app handles the push as it would handle a real FCM message:
+
+- While the app is in the background, the FCM SDK shows a notification message itself. A tap opens `link`, or the launcher activity when there is no link.
+- While the app is in the foreground, and for all data messages, the SDK calls the app's `onMessageReceived`.
+- On Android 13 and later, the app shows notifications only after it gets `android.permission.POST_NOTIFICATIONS` (use `/api/apps/grant`).
+
+The broadcast needs root. Use an emulator with a Google APIs system image, such
+as `system-images;android-36;google_apis;arm64-v8a`. Google Play images and
+most physical devices have no root, and the push returns `400` with
+`reason: "push-root-unavailable"`. The app must use FCM, and it must have been
+launched after its install or its last force-stop: Android does not deliver
+the broadcast to an app in the stopped state, and real FCM does not either.
+Otherwise the push returns `502` with `reason: "push-not-delivered"`. Like FCM,
+the text and data of one push are limited to 4096 bytes, data values must be
+strings, and the data keys `from`, `message_type`, `collapse_key`, and keys
+that start with `google` or `gcm` are reserved.
+
 ## WebSocket API
 
 Connect to `/ws` for the raw Annex-B H.264 stream. Send JSON control messages over the same socket:

@@ -18,6 +18,7 @@ test("every device command runs its adb processes with the caller's signal", asy
     if (shell.includes("uimode night")) return result("Night mode: yes\n");
     if (shell.includes("settings get global")) return result("1\n");
     if (shell.startsWith("dumpsys window")) return result("mCurrentFocus=Window{1 u0 com.example/.Main}");
+    if (shell.startsWith("su 0 am broadcast")) return result("Broadcast completed: result=-1\n");
     return result("Success\n");
   }) as never;
   const execBuffer = (async (_cmd: string, args: string[], opts: ExecOpts = {}) => {
@@ -43,8 +44,9 @@ test("every device command runs its adb processes with the caller's signal", asy
   await device.clearAppData(serial, "com.example.app", signal);
   await device.forceStopApp(serial, "com.example.app", signal);
   await device.grantPermission(serial, "com.example.app", "android.permission.CAMERA", signal);
+  await device.sendPushNotification(serial, { packageName: "com.example.app", title: "Hi" }, signal);
 
-  expect(calls.length).toBeGreaterThanOrEqual(15);
+  expect(calls.length).toBeGreaterThanOrEqual(16);
   expect(calls.every((call) => call.args[1] === serial)).toBe(true);
   // The point of the service: no adb process runs without the session signal.
   expect(calls.filter((call) => call.opts.signal !== signal)).toEqual([]);

@@ -67,6 +67,7 @@ describe("device routes use the injected device service", () => {
       ["/api/apps/clear", { packageName: "com.example.app" }],
       ["/api/apps/force-stop", { packageName: "com.example.app" }],
       ["/api/apps/grant", { packageName: "com.example.app", permission: "android.permission.CAMERA" }],
+      ["/api/apps/push", { packageName: "com.example.app", title: "Hi", link: "myapp://home" }],
     ] as const) {
       expect((await response(h.request(path, post(body)))).status, path).toBe(200);
     }
@@ -87,6 +88,7 @@ describe("device routes use the injected device service", () => {
       ["clearAppData", ["com.example.app"]],
       ["forceStopApp", ["com.example.app"]],
       ["grantPermission", ["com.example.app", "android.permission.CAMERA"]],
+      ["sendPushNotification", [{ packageName: "com.example.app", title: "Hi", link: "myapp://home" }]],
     ]);
     expect(device.calls.every((call) => call.serial === serial)).toBe(true);
     expect(device.calls.every((call) => call.signal instanceof AbortSignal && !call.signal.aborted)).toBe(true);

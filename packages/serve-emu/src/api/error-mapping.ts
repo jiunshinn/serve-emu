@@ -4,6 +4,7 @@ import { ControlInputError } from "../control-input-queue.ts";
 import { SessionChangedError } from "../device-session-context.ts";
 import { FoldableError } from "../foldable.ts";
 import { MultipartUploadError } from "../multipart-upload.ts";
+import { PushNotificationError } from "../push-notification.ts";
 import { HttpBodyError } from "../request-body.ts";
 import {
   RoutePlaybackApplyError,
@@ -52,6 +53,11 @@ const FOLDABLE_ERRORS: Record<FoldableError["code"], ApiErrorCode> = {
   busy: "conflict",
   unsupported: "invalid_request",
   unconfirmed: "downstream_failure",
+};
+
+const PUSH_NOTIFICATION_ERRORS: Record<PushNotificationError["code"], ApiErrorCode> = {
+  "root-unavailable": "invalid_request",
+  "not-delivered": "downstream_failure",
 };
 
 const message = (err: unknown) =>
@@ -118,6 +124,9 @@ export function toApiError(
   }
   if (err instanceof FoldableError) {
     return api(FOLDABLE_ERRORS[err.code], message(err), err, `foldable-${err.code}`);
+  }
+  if (err instanceof PushNotificationError) {
+    return api(PUSH_NOTIFICATION_ERRORS[err.code], message(err), err, `push-${err.code}`);
   }
   if (err instanceof RoutePlaybackConflictError) {
     return api("conflict", message(err), err);
