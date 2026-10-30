@@ -198,6 +198,18 @@ input {
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  background: #111116;
+  color: #f2f2f7;
+  border: 1px solid #2a2a32;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 13px;
+}
 input[type="file"] {
   color: #b8b8c0;
   padding: 7px;
@@ -465,6 +477,19 @@ input[type="checkbox"] {
 }
 .app-actions {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.push-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.field-with-action {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.panel-hint {
+  color: #8a8a93;
+  font-size: 11px;
+  line-height: 1.4;
 }
 .ax-actions {
   grid-template-columns: repeat(2, minmax(0, 1fr));

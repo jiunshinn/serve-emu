@@ -6,6 +6,7 @@ import { AppManagementPanel } from "./app-management-panel";
 import { FontScalePanel, NetworkPanel, NightModePanel, OrientationPanel } from "./device-panel";
 import { LocationPanel } from "./location-panel";
 import { LogcatPanel } from "./logcat-panel";
+import { PushNotificationPanel } from "./push-notification-panel";
 import { SessionPanel } from "./session-panel";
 import { ToolSection } from "./tool-section";
 
@@ -73,6 +74,7 @@ export const SideTools = memo(function SideTools({
       </ToolSection>
       <StaticTool id="location-tool" title="Location" panel={LocationPanel} />
       <StaticTool id="apps-tool" title="Apps" panel={AppManagementPanel} />
+      <StaticTool id="push-tool" title="Push & Deep Links" panel={PushNotificationPanel} />
       <StaticTool id="logcat-tool" title="Logcat" panel={LogcatPanel} />
       <StaticTool id="session-tool" title="Session" panel={SessionPanel} />
     </>
