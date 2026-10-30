@@ -254,6 +254,7 @@ Open `http://localhost:3300` after starting the CLI. The UI streams the device i
 - Foldable postures, orientation, night mode, font scale, network, GPS location, and route playback
 - An accessibility tree browser
 - Logcat filtering, pause/copy controls, app management, file import, and session replay
+- Simulated FCM push notifications and deep links, with a link that opens when you tap the notification
 
 A screen recording of the browser UI:
 
