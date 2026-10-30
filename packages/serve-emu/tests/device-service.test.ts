@@ -39,11 +39,12 @@ test("every device command runs its adb processes with the caller's signal", asy
   await device.network(serial, signal);
   await device.setNetwork(serial, true, signal);
   await device.launchApp(serial, "com.example.app", undefined, signal);
+  await device.openDeepLink(serial, "myapp://home", "com.example.app", signal);
   await device.clearAppData(serial, "com.example.app", signal);
   await device.forceStopApp(serial, "com.example.app", signal);
   await device.grantPermission(serial, "com.example.app", "android.permission.CAMERA", signal);
 
-  expect(calls.length).toBeGreaterThanOrEqual(14);
+  expect(calls.length).toBeGreaterThanOrEqual(15);
   expect(calls.every((call) => call.args[1] === serial)).toBe(true);
   // The point of the service: no adb process runs without the session signal.
   expect(calls.filter((call) => call.opts.signal !== signal)).toEqual([]);

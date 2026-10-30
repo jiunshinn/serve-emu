@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { createDeviceService } from "../src/device-service.ts";
+import type { ExecResult } from "../src/exec.ts";
 import { LogcatHub } from "../src/logcat.ts";
 import { RoutePlayback } from "../src/route-playback.ts";
 import {
@@ -34,9 +36,20 @@ const node = {
   bounds: { left: 100, top: 200, right: 300, bottom: 260 },
 };
 
+/** What adb prints for the device commands the live tests reach. */
+async function fakeAdb(_cmd: string, args: string[]): Promise<ExecResult<string>> {
+  const shell = args.slice(2).join(" ");
+  const stdout = shell.startsWith("shell am start -W")
+    ? "Starting: Intent { act=android.intent.action.VIEW }\nStatus: ok\n" +
+      "LaunchState: WARM\nActivity: com.example.app/.LinkActivity\nComplete\n"
+    : "";
+  return { status: 0, signal: null, stdout, stderr: "", timedOut: false, error: null };
+}
+
 async function liveHarness() {
   const stopped: string[] = [];
   const h = await createHarness({}, {
+    deviceService: createDeviceService({ execText: fakeAdb as never }),
     openScrcpy: async (serial) => fakeScrcpy(serial),
     listDevices: async () => [
       { serial: "emulator-5554", state: "device" },
@@ -164,6 +177,13 @@ describe("shared API contracts against real server responses", () => {
         await uploadPayload("/api/files/import"),
       ),
     ).toMatchObject({ kind: "image" });
+
+    expect(
+      await call("/api/deep-link", "POST", {
+        url: "myapp://profile/42",
+        packageName: "com.example.app",
+      }),
+    ).toMatchObject({ ok: true, output: expect.stringContaining("Activity: com.example.app/.LinkActivity") });
 
     expect(
       await call("/api/avds/start", "POST", { avd: "Background_AVD", select: false }),

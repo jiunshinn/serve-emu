@@ -62,6 +62,8 @@ describe("device routes use the injected device service", () => {
     });
     for (const [path, body] of [
       ["/api/apps/launch", { packageName: "com.example.app", activity: ".Main" }],
+      ["/api/deep-link", { url: "myapp://home" }],
+      ["/api/deep-link", { url: "https://example.com/p/7", packageName: "com.example.app" }],
       ["/api/apps/clear", { packageName: "com.example.app" }],
       ["/api/apps/force-stop", { packageName: "com.example.app" }],
       ["/api/apps/grant", { packageName: "com.example.app", permission: "android.permission.CAMERA" }],
@@ -80,6 +82,8 @@ describe("device routes use the injected device service", () => {
       ["screenshot", []],
       ["screenshot", []],
       ["launchApp", ["com.example.app", ".Main"]],
+      ["openDeepLink", ["myapp://home", undefined]],
+      ["openDeepLink", ["https://example.com/p/7", "com.example.app"]],
       ["clearAppData", ["com.example.app"]],
       ["forceStopApp", ["com.example.app"]],
       ["grantPermission", ["com.example.app", "android.permission.CAMERA"]],
