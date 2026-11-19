@@ -115,12 +115,3 @@ export function parseGesture(value: unknown): Gesture {
       throw new Error(`unsupported gesture type: ${value.type}`);
   }
 }
-
-export function isGesture(value: unknown): value is Gesture {
-  try {
-    parseGesture(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
