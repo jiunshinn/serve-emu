@@ -418,14 +418,18 @@ export async function startServer(
       // before the candidate is prepared, would strand the still-current
       // session's uploads whenever the switch fails.
       // Quality belongs to a device, so a newly selected one starts at defaults.
+      // Reselecting the streaming device opens nothing and keeps its quality.
       const next = { ...defaultQuality };
+      let reopened = false;
       const context = await sessions.switch(
         serial,
-        (target, generation, signal) =>
-          prepareSelection(target, generation, signal, undefined, next),
+        (target, generation, signal) => {
+          reopened = true;
+          return prepareSelection(target, generation, signal, undefined, next);
+        },
         activate,
       );
-      quality = next;
+      if (reopened) quality = next;
       logReady(context);
       // The selected device now streams here; one scrcpy per device.
       void closePinned(context.serial, "device selected");

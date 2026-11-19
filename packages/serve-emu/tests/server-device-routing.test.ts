@@ -245,6 +245,55 @@ describe("startServer multi-device routing", () => {
     expect(a.body).toMatchObject({ serial: "A", quality: { maxSize: 1280, maxFps: 60 } });
   });
 
+  test("reselecting the streaming device keeps its quality", async () => {
+    const h = await multiDeviceHarness();
+    const post = (path: string, body: unknown) =>
+      json(
+        h.request(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    expect((await post("/api/stream-quality", { maxSize: 480 })).status).toBe(200);
+    expect((await post("/api/devices/select", { serial: "A" })).status).toBe(200);
+    const read = await json(h.request("/api/stream-quality"));
+    expect(read.body.quality).toMatchObject({ maxSize: 480 });
+  });
+
+  test("a quality change queued behind a selection fails instead of reverting it", async () => {
+    let releaseB!: () => void;
+    const bGate = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    const h = await createHarness(
+      { serials: ["A", "B"] },
+      {
+        openScrcpy: async (serial) => {
+          if (serial === "B") await bGate;
+          return fakeScrcpy(serial);
+        },
+      },
+    );
+    const post = (path: string, body: unknown) =>
+      json(
+        h.request(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    const select = post("/api/devices/select", { serial: "B" });
+    await Bun.sleep(5);
+    const quality = post("/api/stream-quality", { maxFps: 15 });
+    await Bun.sleep(5);
+    releaseB();
+    expect((await select).status).toBe(200);
+    const res = await quality;
+    expect(res.status).toBe(409);
+    expect(h.started.deviceSerial).toBe("B");
+  });
+
   test("selecting a prefixed device closes its prefixed stream", async () => {
     const h = await multiDeviceHarness();
     await response(h.request("/d/B/health"));
