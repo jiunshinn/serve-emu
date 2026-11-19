@@ -94,15 +94,18 @@ type Server = { serial: string; port: number; base: string; proc: ReturnType<typ
 const servers: Server[] = [];
 
 async function startServer(serial: string, port: number): Promise<void> {
+  const base = `http://127.0.0.1:${port}`;
+  const occupied = await fetch(`${base}/health`).then(() => true, () => false);
+  if (occupied) throw new Error(`Port ${port} is already serving; pick another --base-port`);
   const proc = Bun.spawn(
     ["bun", "run", new URL("../src/cli.ts", import.meta.url).pathname, "-p", String(port), "-s", serial, ...extraServerArgs],
     { stdout: "ignore", stderr: "ignore", env: { ...process.env, SERVE_EMU_UPDATE_CHECK: "0" } },
   );
-  const base = `http://127.0.0.1:${port}`;
   const server = { serial, port, base, proc };
   servers.push(server);
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
+    if (proc.exitCode !== null) throw new Error(`serve-emu for ${serial} exited with code ${proc.exitCode}`);
     try {
       const health = (await (await fetch(`${base}/health`)).json()) as { status?: string; frames?: number };
       if (health.status === "streaming") return;
