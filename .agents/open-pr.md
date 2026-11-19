@@ -39,7 +39,8 @@
 ## Web
 
 - **Device**: the browser UI streams an Android emulator. Boot one first, in its own long-lived shell:
-  `sudo chmod 666 /dev/kvm; emulator -avd pixel -no-window -no-audio -gpu swiftshader_indirect` (boots in ~40 s; check with `adb devices`)
+  `emulator -avd pixel -no-window -no-audio -gpu swiftshader_indirect` (boots in ~40 s; check with `adb devices`).
+  If `/dev/kvm` is not accessible, add your user to the `kvm` group (`sudo usermod -aG kvm $USER`, then re-login). Use `sudo chmod 666 /dev/kvm` only on a single-user throwaway VM such as Devin's.
 - **Build UI**: `bun run --filter serve-emu setup` (fetches scrcpy server + builds the UI)
 - **Server**: `bun run packages/serve-emu/src/cli.ts` at `http://127.0.0.1:3300` (UI dev server with HMR: `bun run --filter serve-emu dev:ui` at `http://localhost:5173`, proxies to 3300)
 - **Login for captures**: none on loopback. With `--token <t>`, open `/?token=<t>` once; it sets the `semu_session` cookie. Never show the token in a capture.
