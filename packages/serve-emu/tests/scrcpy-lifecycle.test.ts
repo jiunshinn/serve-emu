@@ -165,6 +165,7 @@ const EMPTY_SHA256 =
   "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 type HarnessOptions = {
+  controlOnly?: boolean;
   /**
    * `getprop sys.boot_completed` results returned, in order, before "1". A
    * "hang" probe never settles until aborted.
@@ -375,7 +376,7 @@ function createHarness(options: HarnessOptions = {}) {
       const socket = new FakeSocket(
         index % 2 === 0 ? `video-${index / 2}` : `control-${(index - 1) / 2}`,
         index % 2 === 0 && !options.videoDataDuringControlConnect
-          ? v4Stream()
+          ? options.controlOnly ? v4Stream().subarray(0, 65) : v4Stream()
           : undefined,
       );
       state.sockets.push(socket);
@@ -429,6 +430,17 @@ function startWith(
 }
 
 describe("scrcpy async lifecycle", () => {
+  test("uses one control socket with dummy byte and device name when video is disabled", async () => {
+    const harness = createHarness({ controlOnly: true });
+    const session = await startScrcpy({ serial: SERIAL, video: false }, harness.deps);
+    expect(harness.state.spawnCalls[0]!.args).toContain("video=false");
+    expect(harness.state.connectCalls).toHaveLength(1);
+    expect(session.controlSocket as unknown).toBe(harness.state.sockets[0]);
+    expect(session.meta.deviceName).toBe("Lifecycle Device");
+    expect(await session.readFrame()).toBeNull();
+    await session.close();
+    expect(harness.state.sockets[0]!.destroyed).toBe(true);
+  });
   test("preserves the two-socket protocol, reuses the cached jar, and closes once", async () => {
     const harness = createHarness({ deferFirstRemove: true });
     const first = await startWith(harness);

@@ -35,6 +35,30 @@ blindly discard the first byte: `parseVideoPreamble()` accepts the video preambl
 at offset 0 or 1 and validates its codec and dimensions. The control socket is
 drained for any device-to-host events that this package does not consume.
 
+With `startScrcpy({ video: false, ... })`, audio and video are disabled and
+only the control connection is opened. That first socket receives the dummy
+byte followed by the 64-byte device name, with no codec metadata or video
+preamble. Its session has zero dimensions until a video provider supplies
+them, and `readFrame()` returns `null`.
+
+## Host encoder helper (not yet wired into capture)
+
+`native/host-encoder.swift` is compiled on demand using `xcrun swiftc -O`.
+The executable is cached under `~/.cache/serve-emu`, keyed by the source hash
+and host architecture. It accepts the mmap path, width, height, bit rate and
+maximum fps. The file contains tightly packed, bottom-up RGBA8888 pixels.
+The helper copies and converts pixels to top-down BGRA on an `f` stdin line.
+A `k` line requests a keyframe, immediately encoding the last copied frame
+when available. After 200 ms without an encode it repeats that frame.
+
+Stdout packets contain a `u32` payload length, `u8` flags (bit 0 keyframe,
+bit 1 configuration), `u64` presentation timestamp in microseconds and an
+Annex-B payload. An SPS/PPS configuration packet precedes every keyframe.
+The TypeScript reader rejects empty or over-32-MiB packets and truncated
+streams. Closing the wrapper kills the helper; stderr contains diagnostics.
+
+## Device server jar cache
+
 Before starting the server, the host prepares the jar on the device. The cache
 is content-addressed,
 `/data/local/tmp/serve-emu-scrcpy-server-v<version>.jar-<first 24 hex of its SHA-256>`,

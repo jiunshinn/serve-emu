@@ -69,6 +69,7 @@ export type ScrcpyErrorCode =
 
 export type StartOpts = {
   serial: string;
+  video?: boolean;
   signal?: AbortSignal;
   maxFps?: number;
   bitRate?: number;
@@ -1184,6 +1185,7 @@ export async function startScrcpy(
       `scid=${scid}`,
       "log_level=info",
       "audio=false",
+      ...(opts.video === false ? ["video=false"] : []),
       "tunnel_forward=true",
       "control=true",
       "send_dummy_byte=true",
@@ -1258,7 +1260,7 @@ export async function startScrcpy(
     // it accepts the control socket, which can be before this side resumes.
     const reader = new FramedReader(videoSock);
     throwIfAborted(startupController.signal, "scrcpy startup aborted");
-    controlSock = await withDeadline(
+    controlSock = opts.video === false ? videoSock : await withDeadline(
       runtime,
       startupController.signal,
       timeouts.connectMs,
@@ -1267,6 +1269,39 @@ export async function startScrcpy(
     );
     throwIfAborted(startupController.signal, "scrcpy startup aborted");
     controlSock.on("data", () => {});
+
+    if (opts.video === false) {
+      const deviceMeta = await withDeadline(
+        runtime,
+        startupController.signal,
+        timeouts.preambleMs,
+        "reading scrcpy control device metadata",
+        () => reader.read(65, "header"),
+      );
+      throwIfAborted(startupController.signal, "scrcpy startup aborted");
+      if (deviceMeta[0] !== 0) {
+        throw new ScrcpyStreamError("protocol-parse", "Invalid scrcpy dummy byte");
+      }
+      startupComplete = true;
+      return {
+        transport: "scrcpy",
+        meta: {
+          deviceName: deviceMeta.subarray(1).toString("utf8").replace(/\0+$/, ""),
+          codecId: "h264",
+          width: 0,
+          height: 0,
+        },
+        protocol: 4,
+        videoReader: reader,
+        controlSocket: controlSock,
+        proc,
+        scid,
+        localPort,
+        serial,
+        readFrame: async () => null,
+        close: () => closeWithReason(new Error("scrcpy session closed")),
+      };
+    }
 
     const preambleBytes = await withDeadline(
       runtime,

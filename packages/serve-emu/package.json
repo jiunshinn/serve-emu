@@ -58,6 +58,7 @@
     "bench:stream": "bun run scripts/bench-stream.ts"
   },
   "files": [
+    "native/host-encoder.swift",
     "src",
     "!src/ui",
     "scripts/fetch-scrcpy.ts",
