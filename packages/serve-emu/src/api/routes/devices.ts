@@ -4,10 +4,22 @@ import type {
   StreamQuality,
 } from "../../shared/api-contracts.ts";
 import type { ApiDependencies } from "../dependencies.ts";
+import { ApiError } from "../api-error.ts";
 import type { ApiRoute } from "../router.ts";
 
 export function deviceRoutes(): ApiRoute<ApiDependencies>[] {
   return [
+    {
+      method: "GET",
+      path: "/api/webcams",
+      handler: async ({ request, deps }) => {
+        try {
+          return Response.json({ ok: true, webcams: await deps.webcams(request.signal) });
+        } catch (err) {
+          return deps.errorResponse(err, "internal_error");
+        }
+      },
+    },
     {
       method: "GET",
       path: "/api",
@@ -133,12 +145,24 @@ export function deviceRoutes(): ApiRoute<ApiDependencies>[] {
           if (typeof avd !== "string" || !avd.trim())
             throw new Error("avd is required");
           const select = (payload as Record<string, unknown>).select !== false;
+          const cameras: { cameraBack?: string; cameraFront?: string } = {};
+          for (const key of ["cameraBack", "cameraFront"] as const) {
+            const value = (payload as Record<string, unknown>)[key];
+            if (value === undefined) continue;
+            if (typeof value !== "string") throw new ApiError(400, "invalid_request", `${key} must be a string`);
+            cameras[key] = value;
+          }
+          try {
+            deps.validateCameras(cameras);
+          } catch (cause) {
+            throw new ApiError(400, "invalid_request", cause instanceof Error ? cause.message : "Invalid camera mode", { cause });
+          }
           // Refuse before a cold boot that the switch would only throw away.
           if (select) assertCanSwitch();
           // A client that gives up during a long cold boot does not cancel it:
           // agents often time out first and pick the emulator up later. The
           // server owns the launch and stops it when it stops.
-          const launch = await launchEmulator({ avd: avd.trim() });
+          const launch = await launchEmulator({ avd: avd.trim(), ...cameras });
           try {
             sessions.assertPublished(requestContext);
           } catch (err) {

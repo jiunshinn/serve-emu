@@ -93,6 +93,7 @@ export type AvdStartResponse = ApiSuccess<{
 }>;
 
 export type AvdStopResponse = ApiSuccess<{ serial: string }>;
+export type WebcamsResponse = ApiSuccess<{ webcams: { name: string; device: string }[] }>;
 
 export type OrientationMode = "auto" | "portrait" | "landscape";
 export type OrientationStatus = {
@@ -431,7 +432,7 @@ export type ApiContractMap = {
     POST: EndpointContract<{ serial: string }, DeviceSelectionResponse>;
   };
   "/api/avds/start": {
-    POST: EndpointContract<{ avd: string; select?: boolean }, AvdStartResponse>;
+    POST: EndpointContract<{ avd: string; select?: boolean; cameraBack?: string; cameraFront?: string }, AvdStartResponse>;
   };
   "/api/stream-quality": {
     GET: EndpointContract<undefined, StreamQualityResponse>;
@@ -440,6 +441,7 @@ export type ApiContractMap = {
   "/api/avds/stop": {
     POST: EndpointContract<{ serial?: string; avd?: string }, AvdStopResponse>;
   };
+  "/api/webcams": { GET: EndpointContract<undefined, WebcamsResponse> };
   "/api/avds/catalog": { GET: EndpointContract<undefined, AvdCatalogResponse> };
   "/api/avds/create": {
     POST: EndpointContract<
@@ -712,6 +714,16 @@ function parseStreamQualityResponse(value: unknown): StreamQualityResponse {
 
 export function parseAvdStartResponse(value: unknown): AvdStartResponse {
   return parseOkDeviceResponse(value, "avd-start") as AvdStartResponse;
+}
+
+function parseWebcamsResponse(value: unknown): WebcamsResponse {
+  const root = record(value, "webcams response");
+  if (root.ok !== true) fail("webcams response.ok must be true");
+  if (!Array.isArray(root.webcams)) fail("webcams must be an array");
+  return { ok: true, webcams: root.webcams.map((value: unknown) => {
+    const webcam = record(value, "webcam");
+    return { name: string(webcam.name, "webcam.name"), device: string(webcam.device, "webcam.device") };
+  }) };
 }
 
 export function parseAvdStopResponse(value: unknown): AvdStopResponse {
@@ -1360,6 +1372,7 @@ export const API_SUCCESS_PARSERS = {
   "/api/device-grid": { GET: parseDeviceGridResponse },
   "/api/devices/select": { POST: parseDeviceSelectionResponse },
   "/api/avds/start": { POST: parseAvdStartResponse },
+  "/api/webcams": { GET: parseWebcamsResponse },
   "/api/stream-quality": { GET: parseStreamQualityResponse, POST: parseStreamQualityResponse },
   "/api/avds/stop": { POST: parseAvdStopResponse },
   "/api/avds/catalog": { GET: parseAvdCatalogResponse },
