@@ -1,7 +1,6 @@
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gzipSync } from "node:zlib";
-import { defineConfig, loadEnv, type Plugin, type ProxyOptions } from "vite";
+import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
 
 export const DEFAULT_BACKEND_ORIGIN = "http://localhost:3300";
@@ -57,32 +56,12 @@ export function createBackendProxy(backendOrigin?: string): BackendProxy {
 
 const packageDirectory = dirname(fileURLToPath(import.meta.url));
 
-function precompressUiAssets(): Plugin {
-  return {
-    name: "serve-emu:precompress-ui",
-    apply: "build",
-    generateBundle: {
-      order: "post",
-      handler(_options, bundle) {
-        for (const asset of Object.values(bundle)) {
-          if (!/^assets\/.*\.(js|css)$/.test(asset.fileName)) continue;
-          const source = asset.type === "chunk" ? asset.code : asset.source;
-          const gzipped = gzipSync(source);
-          const originalSize = typeof source === "string" ? Buffer.byteLength(source) : source.byteLength;
-          if (gzipped.byteLength >= originalSize) continue;
-          this.emitFile({ type: "asset", fileName: `${asset.fileName}.gz`, source: gzipped });
-        }
-      },
-    },
-  };
-}
-
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, packageDirectory, "");
 
   return {
     root: "src/ui",
-    plugins: [react(), precompressUiAssets()],
+    plugins: [react()],
     build: {
       outDir: "../../dist/ui",
       emptyOutDir: true,

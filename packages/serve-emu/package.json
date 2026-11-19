@@ -37,7 +37,7 @@
     "dev": "bun --watch run src/cli.ts",
     "dev:ui": "vite",
     "start": "bun run src/cli.ts",
-    "build:ui": "vite build",
+    "build:ui": "vite build && bun run scripts/precompress-ui.ts",
     "build": "bun run build:ui",
     "docs:sync": "bun run scripts/sync-readme.ts --write",
     "docs:check": "bun run scripts/sync-readme.ts --check",
