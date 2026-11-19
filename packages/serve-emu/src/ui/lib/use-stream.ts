@@ -1,4 +1,4 @@
-import { PAGE_BASE } from "./base-path";
+import { deviceBase, PAGE_BASE } from "./base-path";
 import { deviceSessionStore, type DeviceSessionHealthRequest } from "./device-session-store";
 import { bindPollVisibility, createPollController } from "./polling";
 import { parseStreamHealth, type StreamHealth } from "./stream-state";
@@ -45,6 +45,8 @@ export type Sender = (
   ack?: boolean,
 ) => void;
 
+type StreamOptions = { serial?: string };
+
 type ApiInfo = StreamHealth;
 
 /** postMessage, checked against the worker's command contract. */
@@ -61,11 +63,12 @@ function postCommand(
 const workerByCanvas = new WeakMap<HTMLCanvasElement, Worker>();
 const workerGenerationByCanvas = new WeakMap<HTMLCanvasElement, number>();
 const clientEpochByCanvas = new WeakMap<HTMLCanvasElement, number>();
+const workerCleanupByCanvas = new WeakMap<HTMLCanvasElement, ReturnType<typeof setTimeout>>();
 
 const HEALTH_POLL_INTERVAL_MS = 1_500;
 const HEALTH_REQUEST_TIMEOUT_MS = 5_000;
 
-export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
+export function useStream(canvasRef: RefObject<HTMLCanvasElement>, { serial }: StreamOptions = {}) {
   const [state, setState] = useState<StreamState>({
     status: "connecting…",
     controlError: null,
@@ -82,6 +85,8 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
   const clearControlError = useCallback(() => setState((s) => ({ ...s, controlError: null })), []);
 
   const send = useCallback<Sender>((msg, ack = true) => {
+    // Serial-scoped streams are previews; controls belong to the active device.
+    if (serial !== undefined) return;
     const clientEpoch = clientEpochRef.current;
     if (clientEpoch < 1) return;
     const worker = workerRef.current;
@@ -91,7 +96,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       clientEpoch,
       text: JSON.stringify({ ...msg, requestId: `${clientEpoch}:${++requestSequenceRef.current}`, ...(!ack ? { ack: false } : {}) }),
     });
-  }, []);
+  }, [serial]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -110,7 +115,14 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     let lifecycleTimer: ReturnType<typeof setInterval> | null = null;
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${location.host}${PAGE_BASE}/ws?frame-meta=1`;
+    const healthBase = serial === undefined ? PAGE_BASE : deviceBase(serial);
+    const url = `${proto}//${location.host}${healthBase}/ws?frame-meta=1`;
+
+    const pendingCleanup = workerCleanupByCanvas.get(canvas);
+    if (pendingCleanup !== undefined) {
+      clearTimeout(pendingCleanup);
+      workerCleanupByCanvas.delete(canvas);
+    }
 
     let worker = workerByCanvas.get(canvas);
     const isNewWorker = !worker;
@@ -261,11 +273,13 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       setState((prev) => ({
         ...prev,
         status: "connecting",
+        controlError: null,
         lastRenderedAt: null,
         fps: 0,
+        deviceSize: null,
         stats: null,
       }));
-      postCommand(worker, { type: "connect", clientEpoch });
+      postCommand(worker, { type: "connect", clientEpoch, url });
     }
 
     lifecycleTimer = setInterval(() => {
@@ -305,7 +319,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
         signal.addEventListener("abort", abort, { once: true });
         const requestTimeout = setTimeout(abort, HEALTH_REQUEST_TIMEOUT_MS);
         try {
-          const response = await fetch(`${PAGE_BASE}/health`, { signal: controller.signal });
+          const response = await fetch(`${healthBase}/health`, { signal: controller.signal });
           return { data: parseStreamHealth(await response.json()), sessionRequest };
         } finally {
           clearTimeout(requestTimeout);
@@ -314,7 +328,9 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       },
       onResult: ({ data, sessionRequest }, { key: requestGeneration }) => {
         if (cancelled || requestGeneration !== currentGeneration) return;
-        if (!deviceSessionStore.applyHealth(data, sessionRequest)) return;
+        // A preview reads its own device's health without changing the page's
+        // selected-device session.
+        if (serial === undefined && !deviceSessionStore.applyHealth(data, sessionRequest)) return;
         applyServerStatus(data);
       },
       // The stream lifecycle remains authoritative when metadata is
@@ -338,8 +354,20 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
       postCommand(worker, { type: "stop", clientEpoch });
       if (clientEpochRef.current === clientEpoch) clientEpochRef.current = 0;
       workerRef.current = null;
+      // StrictMode replays the effect immediately on the same transferred
+      // canvas. Give that setup a chance to reuse its worker, but release the
+      // worker after real unmounts such as closing the multi-device grid.
+      const cleanup = setTimeout(() => {
+        if (workerCleanupByCanvas.get(canvas) !== cleanup) return;
+        worker.terminate();
+        workerCleanupByCanvas.delete(canvas);
+        workerByCanvas.delete(canvas);
+        workerGenerationByCanvas.delete(canvas);
+        clientEpochByCanvas.delete(canvas);
+      }, 0);
+      workerCleanupByCanvas.set(canvas, cleanup);
     };
-  }, [canvasRef]);
+  }, [canvasRef, serial]);
 
   return { state, send, clearControlError };
 }

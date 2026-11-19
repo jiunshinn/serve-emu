@@ -7,6 +7,7 @@ export type HardwareKey = Extract<
 
 type Props = {
   onPress: (key: HardwareKey) => void;
+  disabled?: boolean;
 };
 
 const BUTTONS: { key: HardwareKey; label: string }[] = [
@@ -16,11 +17,11 @@ const BUTTONS: { key: HardwareKey; label: string }[] = [
   { key: "power", label: "Power" },
 ];
 
-export function ControlBar({ onPress }: Props) {
+export function ControlBar({ onPress, disabled = false }: Props) {
   return (
     <footer>
       {BUTTONS.map((b) => (
-        <button key={b.key} onClick={() => onPress(b.key)}>
+        <button key={b.key} disabled={disabled} onClick={() => onPress(b.key)}>
           {b.label}
         </button>
       ))}

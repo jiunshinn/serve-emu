@@ -262,13 +262,23 @@ export async function getAccessibilitySnapshot(
 /** Parse a uiautomator XML dump without requiring a live Android device. */
 export function parseAccessibilityXml(xml: string): AccessibilityNode[] {
   const nodes: AccessibilityNode[] = [];
+  const parents: Array<string | undefined> = [];
   let index = 0;
-  for (const match of xml.matchAll(/<node\b[^>]*>/g)) {
+  for (const match of xml.matchAll(/<\/?node\b[^>]*>/g)) {
+    if (match[0].startsWith("</")) {
+      parents.pop();
+      continue;
+    }
     const attrs = attrsFor(match[0]);
     const bounds = parseBounds(attrs.bounds);
-    if (!bounds || bounds.right <= bounds.left || bounds.bottom <= bounds.top) continue;
+    const parentId = parents.at(-1);
+    const id = bounds && bounds.right > bounds.left && bounds.bottom > bounds.top
+      ? `${index++}` : undefined;
+    if (!match[0].endsWith("/>")) parents.push(id ?? parentId);
+    if (!bounds || id === undefined) continue;
     nodes.push({
-      id: `${index++}`,
+      id,
+      ...(parentId === undefined ? {} : { parentId }),
       text: attrs.text ?? "",
       contentDescription: attrs["content-desc"] ?? "",
       resourceId: attrs["resource-id"] ?? "",

@@ -125,14 +125,16 @@ export function createWebSocketEndpoint(deps: {
     return accepted;
   };
 
-  const releaseClientInputs = (client: Client) => {
+  const releaseClientInputs = (client: Client, source = "ws:disconnect") => {
     // The input queue reserves an UP slot for every admitted DOWN, even when full.
     // Never redirect a late disconnect's releases onto a replacement session.
+    const completions: Promise<unknown>[] = [];
     const release = (gesture: Gesture, record: boolean) => {
       if (!sessions.isCurrent(client.context)) return;
       try {
-        const accepted = enqueueGesture(client.context, gesture, "ws:disconnect", record);
+        const accepted = enqueueGesture(client.context, gesture, source, record);
         void accepted.completion.catch(() => {});
+        completions.push(accepted.completion);
       } catch {}
     };
     for (const { gesture, record } of client.touches.values()) {
@@ -140,12 +142,12 @@ export function createWebSocketEndpoint(deps: {
     }
     client.touches.clear();
     const keys = heldKeys.get(client.context);
-    if (!keys) return;
-    for (const [keycode, { owner, gesture, record }] of keys) {
+    for (const [keycode, { owner, gesture, record }] of keys ?? []) {
       if (owner !== client) continue;
-      keys.delete(keycode);
+      keys!.delete(keycode);
       release({ ...gesture, action: "up" }, record);
     }
+    return Promise.allSettled(completions);
   };
 
   const handlers: WebSocketHandler<WsData> = {
@@ -167,6 +169,7 @@ export function createWebSocketEndpoint(deps: {
         ws,
         context,
         frameMeta: ws.data.frameMeta,
+        video: ws.data.video,
         sentFrames: 0,
         droppedFrames: 0,
         backpressureEvents: 0,
@@ -176,7 +179,10 @@ export function createWebSocketEndpoint(deps: {
       };
       context.clients.add(handle);
       ws.data.handle = handle;
-      join(handle);
+      if (ws.data.control) {
+        sendJson(ws, { type: "control-ready", serial: context.serial });
+      }
+      if (handle.video) join(handle);
     },
     message(ws, raw) {
       const context = ws.data.context;
@@ -207,6 +213,14 @@ export function createWebSocketEndpoint(deps: {
         const msg = parseWsClientMessage(payload);
         if (msg.type === "clock-sync") {
           reply({ type: "clock-sync", clientTsMs: msg.clientTsMs, serverTsMs: epochNowMs() });
+          return;
+        }
+        if (msg.type === "release-input") {
+          const client = ws.data.handle;
+          if (!client) throw new Error("WebSocket client is not open");
+          void releaseClientInputs(client, "ws:release").then(() => {
+            if (acknowledge) reply({ ok: true, status: "completed" });
+          });
           return;
         }
         if (msg.type === "reset-video") {
@@ -253,7 +267,7 @@ export function createWebSocketEndpoint(deps: {
     },
     close(ws) {
       if (ws.data.handle) {
-        releaseClientInputs(ws.data.handle);
+        void releaseClientInputs(ws.data.handle);
         ws.data.context.clients.delete(ws.data.handle);
       }
     },
@@ -273,8 +287,10 @@ export function createWebSocketEndpoint(deps: {
       });
     }
     const frameMeta = url.searchParams.get("frame-meta") === "1";
+    const control = url.searchParams.get("control") === "1";
+    const video = url.searchParams.get("video") !== "0";
     const ok = srv.upgrade(req, {
-      data: { id: nextId++, frameMeta, context, handlers },
+      data: { id: nextId++, frameMeta, control, video, context, handlers },
     });
     if (ok) return undefined as unknown as Response;
     return new Response("upgrade failed", { status: 400 });

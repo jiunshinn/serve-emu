@@ -677,6 +677,7 @@ workerPort.addEventListener("message", (e: MessageEvent) => {
     case "connect": {
       if (msg.clientEpoch < activeClientEpoch) return;
       activeClientEpoch = msg.clientEpoch;
+      url = msg.url;
       if (initFailureStatus && isStreamFatalStatus(initFailureStatus)) {
         publishInitFailure(initFailureStatus);
         return;

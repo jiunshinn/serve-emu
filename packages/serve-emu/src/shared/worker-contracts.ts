@@ -78,7 +78,7 @@ export type StreamWorkerEvent = StreamWorkerEventPayload & {
 /** Canvas is generic so this contract does not require DOM or WebWorker types. */
 export type WorkerCommand<Canvas = unknown> =
   | { type: "init"; clientEpoch: number; canvas: Canvas; url: string }
-  | { type: "connect"; clientEpoch: number }
+  | { type: "connect"; clientEpoch: number; url: string }
   | { type: "send"; clientEpoch: number; text: string }
   | { type: "stop"; clientEpoch: number };
 
@@ -105,7 +105,7 @@ export function parseWorkerCommand<Canvas>(
       if (!isCanvas(item.canvas) || typeof item.url !== "string" || !item.url) return null;
       return { type: "init", clientEpoch, canvas: item.canvas, url: item.url };
     case "connect":
-      return { type: "connect", clientEpoch };
+      return typeof item.url === "string" && item.url ? { type: "connect", clientEpoch, url: item.url } : null;
     case "send":
       return typeof item.text === "string" ? { type: "send", clientEpoch, text: item.text } : null;
     case "stop":
