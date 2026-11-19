@@ -4,6 +4,7 @@ import { access, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { SCRCPY_DEFAULTS } from "./scrcpy.ts";
 
 type Packet = { data: Buffer; pts: bigint; isKey: boolean; isConfig: boolean };
 const MAX_PACKET_BYTES = 32 * 1024 * 1024;
@@ -59,14 +60,15 @@ async function buildEncoder(): Promise<string> {
 }
 
 export async function startHostEncoder(
-  options: { mmapPath: string; width: number; height: number; bitRate: number; maxFps: number },
+  options: { mmapPath: string; width: number; height: number; bitRate: number; maxFps: number; keyFrameInterval?: number },
   dependencies: { build?: () => Promise<string>; spawn?: typeof spawn } = {},
 ) {
   const { width, height, bitRate, maxFps } = options;
-  if (![width, height, bitRate, maxFps].every((value) => Number.isSafeInteger(value) && value > 0) || width > 16384 || height > 16384) {
+  const keyFrameInterval = options.keyFrameInterval === 0 ? SCRCPY_DEFAULTS.keyFrameInterval : (options.keyFrameInterval ?? SCRCPY_DEFAULTS.keyFrameInterval);
+  if (![width, height, bitRate, maxFps].every((value) => Number.isSafeInteger(value) && value > 0) || width > 16384 || height > 16384 || !Number.isFinite(keyFrameInterval) || keyFrameInterval <= 0) {
     throw new Error("Invalid host encoder options");
   }
-  const child = (dependencies.spawn ?? spawn)(await (dependencies.build ?? buildEncoder)(), [options.mmapPath, `${width}`, `${height}`, `${bitRate}`, `${maxFps}`], { stdio: ["pipe", "pipe", "pipe"] });
+  const child = (dependencies.spawn ?? spawn)(await (dependencies.build ?? buildEncoder)(), [options.mmapPath, `${width}`, `${height}`, `${bitRate}`, `${maxFps}`, `${keyFrameInterval}`], { stdio: ["pipe", "pipe", "pipe"] });
   if (!child.stdin || !child.stdout || !child.stderr) { child.kill(); throw new Error("Missing host encoder pipes"); }
   const input = child.stdin;
   const output = child.stdout;

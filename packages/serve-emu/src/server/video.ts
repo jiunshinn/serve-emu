@@ -116,7 +116,7 @@ export function createVideoPipeline(deps: {
     // Client requests share the watchdog's gate, so they cannot restart an
     // encoder whose key frame is still on its way.
     const recovery = recoveries.get(context);
-    if (hasHealthyViewer(context, client) || !canReceive(client)) {
+    if ((!context.scrcpy.requestKeyFrame && hasHealthyViewer(context, client)) || !canReceive(client)) {
       recovery?.markAwaiting(client);
       return { completion: Promise.resolve({ status: "coalesced" as const }) };
     }
@@ -154,7 +154,7 @@ export function createVideoPipeline(deps: {
       resetSettleMs: RESET_SETTLE_MS,
       maxResetSettleMs: MAX_RESET_SETTLE_MS,
       shouldRetryAwaiting: (client, sourceQuiet) =>
-        canReceive(client) && (!hasHealthyViewer(context) ||
+        canReceive(client) && (!!context.scrcpy.requestKeyFrame || !hasHealthyViewer(context) ||
           (sourceQuiet && client.sentFrames === 0 && client.backpressureEvents === 0)),
       requestReset: (reason, now) => {
         if (!sessions.isCurrent(context) || context.status !== "streaming") {
@@ -252,7 +252,7 @@ export function createVideoPipeline(deps: {
           : withConfig(frame.data, config), frame.isKey);
         if (!sent) break;
       }
-    } else if (canReceive(client) && !hasHealthyViewer(context, client)) {
+    } else if (canReceive(client) && (context.scrcpy.requestKeyFrame || !hasHealthyViewer(context, client))) {
       recovery?.requestVideoReset("client opened");
     }
   };

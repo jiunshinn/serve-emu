@@ -71,10 +71,12 @@ let callback: VTCompressionOutputCallback = { _, _, status, infoFlags, sample in
     packet(frame, key ? 1 : 0, pts)
 }
 
-guard CommandLine.arguments.count == 6,
+guard CommandLine.arguments.count == 7,
       let width = Int(CommandLine.arguments[2]), let height = Int(CommandLine.arguments[3]),
       let bitRate = Int(CommandLine.arguments[4]), let fps = Int(CommandLine.arguments[5]),
-      width > 0, height > 0, width <= 16384, height <= 16384, bitRate > 0, fps > 0 else { fail("Invalid encoder arguments") }
+      let keyFrameInterval = Double(CommandLine.arguments[6]),
+      width > 0, height > 0, width <= 16384, height <= 16384, bitRate > 0, fps > 0,
+      keyFrameInterval.isFinite, keyFrameInterval > 0 else { fail("Invalid encoder arguments") }
 let byteCount = width * height * 4
 let fd = open(CommandLine.arguments[1], O_RDONLY)
 guard fd >= 0 else { fail("Cannot open mmap file") }
@@ -98,6 +100,7 @@ for (key, value) in [
     kVTCompressionPropertyKey_AverageBitRate: bitRate as CFTypeRef,
     kVTCompressionPropertyKey_ExpectedFrameRate: fps as CFTypeRef,
     kVTCompressionPropertyKey_MaxKeyFrameInterval: Int32.max as CFTypeRef,
+    kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: keyFrameInterval as CFTypeRef,
     kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_Main_AutoLevel,
 ] { check(VTSessionSetProperty(session, key: key, value: value), "Set \(key)") }
 check(VTCompressionSessionPrepareToEncodeFrames(session), "Prepare encoder")

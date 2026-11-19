@@ -61,7 +61,12 @@ function harness(failure?: string) {
 
 test("native frames become session/config/video packets and size changes restart the encoder", async () => {
   const h = harness();
-  const session = await startHostCaptureSession({ serial: "emulator-5554", maxSize: 1 }, h.deps);
+  const startEncoder = h.deps.startEncoder!;
+  h.deps.startEncoder = async (opts) => {
+    expect(opts.keyFrameInterval).toBe(3);
+    return startEncoder(opts);
+  };
+  const session = await startHostCaptureSession({ serial: "emulator-5554", maxSize: 1, keyFrameInterval: 3 }, h.deps);
   try {
     expect(h.video).toBe(false);
     expect(session.meta).toMatchObject({ width: 64, height: 32 });

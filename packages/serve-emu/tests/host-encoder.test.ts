@@ -65,10 +65,10 @@ function ppsUsesCabac(config: Buffer): boolean {
   return bits[offset] === "1";
 }
 
-test("injects build and spawn, sends commands and closes the process", async () => {
+test.each([undefined, 0, 3])("injects build and spawn with keyframe interval %s, sends commands and closes the process", async (keyFrameInterval) => {
   const calls: string[] = [];
   const encoder = await startHostEncoder(
-    { mmapPath: "pixels", width: 64, height: 64, bitRate: 1000, maxFps: 60 },
+    { mmapPath: "pixels", width: 64, height: 64, bitRate: 1000, maxFps: 60, keyFrameInterval },
     {
       build: async () => { calls.push("build"); return "encoder"; },
       spawn: ((command, args) => {
@@ -80,8 +80,14 @@ test("injects build and spawn, sends commands and closes the process", async () 
   encoder.pushFrame();
   encoder.requestKeyFrame();
   await encoder.close();
-  expect(calls).toEqual(["build", "encoder", "pixels", "64", "64", "1000", "60"]);
+  expect(calls).toEqual(["build", "encoder", "pixels", "64", "64", "1000", "60", `${keyFrameInterval || 10}`]);
   expect(() => encoder.pushFrame()).toThrow("closed");
+});
+
+test.each([-1, NaN, Infinity])("rejects invalid keyframe interval %s before building", async (keyFrameInterval) => {
+  await expect(startHostEncoder({ mmapPath: "pixels", width: 64, height: 64, bitRate: 1000, maxFps: 60, keyFrameInterval }, {
+    build: async () => { throw new Error("unexpected build"); },
+  })).rejects.toThrow("Invalid host encoder options");
 });
 
 test("propagates build errors", async () => {
@@ -136,6 +142,27 @@ test.skipIf(process.platform !== "darwin")("real VideoToolbox encoder emits conf
 }, 60_000);
 
 const ffmpeg = Bun.which("ffmpeg");
+test.skipIf(process.platform !== "darwin")("real VideoToolbox encoder honours the periodic keyframe interval during idle repeats", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "host-encoder-periodic-"));
+  const path = join(directory, "pixels");
+  await writeFile(path, Buffer.alloc(64 * 64 * 4, 255));
+  const encoder = await startHostEncoder({ mmapPath: path, width: 64, height: 64, bitRate: 500_000, maxFps: 60, keyFrameInterval: 1 });
+  try {
+    const packets = encoder.packets();
+    encoder.pushFrame();
+    const config = (await packets.next()).value!;
+    const first = (await packets.next()).value!;
+    expect(config.isConfig).toBe(true);
+    expect(first.isKey).toBe(true);
+    let keyFrames = 1;
+    for await (const packet of packets) {
+      if (packet.isKey) { expect(nals(packet.data)).toContain(5); keyFrames++; }
+      if (packet.pts - first.pts >= 1_600_000n) break;
+    }
+    expect(keyFrames).toBeGreaterThanOrEqual(2);
+  } finally { await encoder.close(); await rm(directory, { recursive: true, force: true }); }
+}, 60_000);
+
 test.skipIf(process.platform !== "darwin" || !ffmpeg)("real VideoToolbox encoder preserves top-red bottom-blue MMAP orientation (requires ffmpeg)", async () => {
   const directory = await mkdtemp(join(tmpdir(), "host-encoder-orientation-"));
   const path = join(directory, "pixels");

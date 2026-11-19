@@ -81,6 +81,7 @@ export async function startHostCaptureSession(opts: StartOpts, deps: Dependencie
         mmapPath: stream!.mmapPath, width, height,
         maxFps: opts.maxFps ?? SCRCPY_DEFAULTS.maxFps,
         bitRate: opts.bitRate ?? SCRCPY_DEFAULTS.bitRate,
+        keyFrameInterval: opts.keyFrameInterval ?? SCRCPY_DEFAULTS.keyFrameInterval,
       });
       if (signal.aborted) await nextEncoder.close();
       signal.throwIfAborted();

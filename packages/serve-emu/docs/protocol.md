@@ -63,8 +63,13 @@ runtime failures follow the normal session terminal/recovery path.
 
 `native/host-encoder.swift` is compiled on demand using `xcrun swiftc -O`.
 The executable is cached under `~/.cache/serve-emu`, keyed by the source hash
-and host architecture. It accepts the mmap path, width, height, bit rate and
-maximum fps. The file contains tightly packed, top-down RGBA8888 pixels.
+and host architecture. It accepts the mmap path, width, height, bit rate,
+maximum fps and keyframe interval in seconds. The interval defaults to 10 s,
+including when `--key-frame-interval=0` selects the default. Periodic keyframes
+are based on elapsed presentation time, including idle repeats. Host keyframe
+requests do not restart the encoder and remain available to late viewers even
+while another viewer is healthy. The file contains tightly packed, top-down
+RGBA8888 pixels.
 The helper preserves the MMAP row order while converting RGBA to BGRA.
 The helper copies and converts pixels to top-down BGRA on an `f` stdin line.
 A `k` line requests a keyframe, immediately encoding the last copied frame
