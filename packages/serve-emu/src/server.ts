@@ -666,6 +666,15 @@ export async function startServer(
       let slot: DeviceSlot;
       try {
         slot = await resolveSlot(target.serial);
+        // The selected device may have switched away while this resolved.
+        if (slot.sessions.current.serial !== target.serial) {
+          slot = await resolveSlot(target.serial);
+        }
+        if (slot.sessions.current.serial !== target.serial) {
+          throw new ApiError(409, "conflict", "device session changed", {
+            reason: "session-changed",
+          });
+        }
       } catch (err) {
         return errorResponse(err, req, "internal_error");
       }
