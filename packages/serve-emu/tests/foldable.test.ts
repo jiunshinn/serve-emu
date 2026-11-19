@@ -68,12 +68,25 @@ describe("native foldable control", () => {
     expect(await setFoldPosture("emulator-5560", "folded", twoDisplays.deps)).toEqual({ supported: true, posture: "folded", displayChanged: true });
     const oneDisplay = fixture({ sizes: { OPENED: "Physical size: 1768x2208", CLOSED: "Physical size: 1768x2208" } });
     expect(await setFoldPosture("emulator-5560", "folded", oneDisplay.deps)).toEqual({ supported: true, posture: "folded", displayChanged: false });
-    expect(oneDisplay.calls.filter((args) => args.includes("wm"))).toHaveLength(2);
+    expect(oneDisplay.calls.filter((args) => args.includes("wm"))).toHaveLength(11);
+  });
+  test("waits for a display switch that lands after the posture commits", async () => {
+    const { deps } = fixture({ sizes: { OPENED: "Physical size: 1768x2208", CLOSED: "Physical size: 1768x2208" } });
+    let closedChecks = 0;
+    const execText: typeof deps.execText = async (command, args, opts) => {
+      const output = await deps.execText(command, args, opts);
+      if (args.includes("wm") && closedChecks++ >= 3) return { ...output, stdout: "Physical size: 884x2208" };
+      return output;
+    };
+    expect(await setFoldPosture("emulator-5564", "folded", { ...deps, execText })).toEqual({ supported: true, posture: "folded", displayChanged: true });
   });
   test("skips the display check when the posture cannot switch displays", async () => {
     const { deps, calls } = fixture({ sizes: { OPENED: "Physical size: 1768x2208", HALF_OPENED: "Physical size: 1768x2208" } });
     expect(await setFoldPosture("emulator-5562", "half-open", deps)).toEqual({ supported: true, posture: "half-open" });
     expect(await setFoldPosture("emulator-5562", "half-open", deps)).toEqual({ supported: true, posture: "half-open" });
-    expect(calls.filter((args) => args.includes("wm"))).toHaveLength(0);
+    await setFoldPosture("emulator-5562", "folded", deps);
+    expect(await setFoldPosture("emulator-5562", "half-open", deps)).toEqual({ supported: true, posture: "half-open" });
+    expect(await setFoldPosture("emulator-5562", "unfolded", deps)).toEqual({ supported: true, posture: "unfolded" });
+    expect(calls.filter((args) => args.includes("wm"))).toHaveLength(2);
   });
 });

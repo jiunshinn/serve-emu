@@ -5,7 +5,7 @@ export type FoldableState = {
   posture: FoldPosture | "unknown";
   reason?: string;
   /**
-   * Set after a change into or out of `folded`: whether the display size
+   * Set after folding: whether the display size
    * changed. `false` means Android switched posture on a single display.
    */
   displayChanged?: boolean;

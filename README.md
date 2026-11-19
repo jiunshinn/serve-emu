@@ -437,7 +437,7 @@ sidebar. **Fold**, **Half-open**, and **Unfold** use the emulator’s native
 hinge/posture controls, so Android receives actual device-state changes. The
 panel reads Android’s committed posture; non-foldable and physical devices show
 setup guidance. Video and touch coordinates follow the active display size.
-After a change into or out of **Fold**, the response's `displayChanged` says
+After **Fold**, the response's `displayChanged` says
 whether the screen size changed. Some emulator images keep one display when
 folded: Android reports the posture, but apps keep the inner screen. The panel
 then shows a warning.

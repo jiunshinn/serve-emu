@@ -25,6 +25,7 @@ export class FoldableError extends Error {
 const COMMAND = { timeout: 5_000, maxBuffer: 64 * 1024 };
 const CONFIRM_ATTEMPTS = 20;
 const CONFIRM_INTERVAL_MS = 100;
+const RESIZE_ATTEMPTS = 10;
 
 async function emulatorConsole(
   serial: string,
@@ -102,9 +103,7 @@ export async function setFoldPosture(
     if (!state.supported) throw new FoldableError("unsupported", state.reason!);
     // Folding switches to the cover display only when the image has one.
     const expectsResize =
-      state.posture !== "unknown" &&
-      state.posture !== posture &&
-      (state.posture === "folded" || posture === "folded");
+      posture === "folded" && state.posture !== "unknown" && state.posture !== "folded";
     const displaySize = () => getDisplaySize(serial, deps).catch(() => null);
     const before = expectsResize ? await displaySize() : null;
     const args =
@@ -115,13 +114,17 @@ export async function setFoldPosture(
     const wait = deps.sleep ?? ((ms, signal) => sleep(ms, undefined, { signal }));
     for (let attempt = 0; attempt < CONFIRM_ATTEMPTS; attempt++) {
       if (parseFoldPosture(await deviceState(serial, deps)) === posture) {
-        const after = before ? await displaySize() : null;
-        if (!before || !after) return { supported: true, posture };
-        return {
-          supported: true,
-          posture,
-          displayChanged: before.width !== after.width || before.height !== after.height,
-        };
+        if (!before) return { supported: true, posture };
+        // The display can switch after Android commits the posture.
+        for (let check = 0; check < RESIZE_ATTEMPTS; check++) {
+          const after = await displaySize();
+          if (!after) return { supported: true, posture };
+          if (after.width !== before.width || after.height !== before.height) {
+            return { supported: true, posture, displayChanged: true };
+          }
+          if (check < RESIZE_ATTEMPTS - 1) await wait(CONFIRM_INTERVAL_MS, deps.signal);
+        }
+        return { supported: true, posture, displayChanged: false };
       }
       await wait(CONFIRM_INTERVAL_MS, deps.signal);
     }
