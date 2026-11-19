@@ -105,25 +105,6 @@ export function parseWsClientMessage(value: unknown): WsClientMessage {
   } as WsGestureMessage;
 }
 
-export function parseWsClientJson(raw: string): WsClientMessage {
-  try {
-    return parseWsClientMessage(JSON.parse(raw) as unknown);
-  } catch (error) {
-    if (error instanceof SyntaxError)
-      throw new TypeError("WebSocket client message must be valid JSON");
-    throw error;
-  }
-}
-
-export function isWsClientMessage(value: unknown): value is WsClientMessage {
-  try {
-    parseWsClientMessage(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function parseWsServerMessage(value: unknown): WsServerMessage {
   const source = record(value, "WebSocket server message");
   if (source.type === "clock-sync")
@@ -167,14 +148,5 @@ export function parseWsServerJson(raw: string): WsServerMessage {
     if (error instanceof SyntaxError)
       throw new TypeError("WebSocket server message must be valid JSON");
     throw error;
-  }
-}
-
-export function isWsServerMessage(value: unknown): value is WsServerMessage {
-  try {
-    parseWsServerMessage(value);
-    return true;
-  } catch {
-    return false;
   }
 }
