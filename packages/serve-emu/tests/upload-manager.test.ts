@@ -5,63 +5,8 @@ import {
   type UploadManagerClock,
   type UploadManagerErrorCode,
 } from "../src/upload-manager.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(reason: unknown): void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
-type Timer = {
-  callback: () => void;
-  dueMs: number;
-  active: boolean;
-};
-
-class ManualClock implements UploadManagerClock {
-  nowMs = 0;
-  readonly timers: Timer[] = [];
-
-  now(): number {
-    return this.nowMs;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): unknown {
-    const timer = {
-      callback,
-      dueMs: this.nowMs + delayMs,
-      active: true,
-    };
-    this.timers.push(timer);
-    return timer;
-  }
-
-  clearTimeout(value: unknown): void {
-    (value as Timer).active = false;
-  }
-
-  advance(ms: number): void {
-    this.nowMs += ms;
-  }
-
-  fireDue(): void {
-    for (const timer of this.timers) {
-      if (!timer.active || timer.dueMs > this.nowMs) continue;
-      timer.active = false;
-      timer.callback();
-    }
-  }
-}
+import { deferred } from "./helpers/deferred.ts";
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 const context = (generation: number, serial = `device-${generation}`) => ({
   serial,
@@ -440,10 +385,29 @@ describe("UploadManager", () => {
     });
   });
 
+  test("remembers only the most recent cancelled generations", async () => {
+    const manager = new UploadManager({ maxActive: 1, maxQueued: 1 });
+    for (let generation = 0; generation <= 32; generation++) {
+      await manager.cancelGeneration(generation);
+    }
+    await rejectsWithCode(
+      manager.run({ context: context(32, "latest") }, () => "never"),
+      "device-session-changed",
+    );
+    await rejectsWithCode(
+      manager.run({ context: context(1, "older") }, () => "never"),
+      "device-session-changed",
+    );
+    // The oldest entry is forgotten; its aborted session signal still guards it.
+    expect(
+      await manager.run({ context: context(0, "evicted") }, () => "accepted"),
+    ).toBe("accepted");
+  });
+
   test("close is reentrant, idempotent, and awaits every active cleanup", async () => {
     const manager = new UploadManager({ maxActive: 1, maxQueued: 1 });
     const cleanup = deferred<void>();
-    let nestedClose: Promise<void> | null = null;
+    let nestedClose = null as Promise<void> | null;
     const active = manager.run({ context: context(1) }, ({ signal }) =>
       new Promise<string>((resolve) => {
         signal.addEventListener(

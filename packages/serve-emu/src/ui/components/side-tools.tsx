@@ -1,5 +1,7 @@
+import { FoldablePanel } from "./foldable-panel";
 import { memo, type ComponentType } from "react";
-import { AccessibilityPanel, type AccessibilityNode } from "./accessibility-panel";
+import type { AccessibilityNode } from "../../shared/api-contracts";
+import { AccessibilityPanel } from "./accessibility-panel";
 import { AppManagementPanel } from "./app-management-panel";
 import { FontScalePanel, NetworkPanel, NightModePanel, OrientationPanel } from "./device-panel";
 import { LocationPanel } from "./location-panel";
@@ -45,6 +47,7 @@ export const SideTools = memo(function SideTools({
 }: Props) {
   return (
     <>
+      <StaticTool id="foldable-tool" title="Foldable" panel={FoldablePanel} />
       <StaticTool id="network-tool" title="Network" panel={NetworkPanel} />
       <StaticTool id="theme-tool" title="Theme" panel={NightModePanel} />
       <StaticTool id="font-size-tool" title="Font Size" panel={FontScalePanel} />

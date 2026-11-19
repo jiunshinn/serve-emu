@@ -1,5 +1,5 @@
-export const DEFAULT_LOGCAT_MAX_LINES = 500;
-export const DEFAULT_LOGCAT_MAX_BYTES = 512 * 1024;
+const DEFAULT_LOGCAT_MAX_LINES = 500;
+const DEFAULT_LOGCAT_MAX_BYTES = 512 * 1024;
 
 const NEWLINE_BYTES = 1;
 const textEncoder = new TextEncoder();

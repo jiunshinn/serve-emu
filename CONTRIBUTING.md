@@ -49,7 +49,7 @@ bun run --filter serve-emu start
 ## Project Layout
 
 - `packages/serve-emu/src/cli.ts` - CLI entry point
-- `packages/serve-emu/src/server.ts` - HTTP, WebSocket, and API server
+- `packages/serve-emu/src/server.ts` - HTTP server entry point that wires the modules in `src/server/` (request gate, WebSocket endpoint, video pipeline, uploads, emulators)
 - `packages/serve-emu/src/scrcpy.ts` - scrcpy server lifecycle and video stream handling
 - `packages/serve-emu/src/input.ts` - scrcpy control socket message encoding
 - `packages/serve-emu/src/emulator.ts` - Android Emulator discovery and launch helpers
@@ -79,8 +79,13 @@ bun run check
 
 The aggregate check verifies generated documentation, runs package coverage,
 checks the server, browser, and test TypeScript projects, builds the production
-UI, and exercises the packed package. The default CI suite is entirely
-device-free: fake clocks, timers, sockets, processes, and sessions exercise
+UI, and exercises the packed package. CI's "Package check" job runs each of
+those commands as its own step, in the same order, and keeps going after a
+failure, so every failing command is reported once by name. A separate
+"Browser streaming integration" job runs `test:browser`. When you change the
+`check` script, update the job's steps to match;
+`tests/ci-workflow.test.ts` fails until they agree. The default CI suite is
+entirely device-free: fake clocks, timers, sockets, processes, and sessions exercise
 lifecycle and protocol behavior without an Android SDK, ADB, an emulator, or a
 connected device.
 
@@ -129,6 +134,8 @@ Please keep pull requests small and focused. A good PR includes:
 
 - a short description of the user-visible behavior change
 - screenshots, recordings, or API examples when UI or runtime behavior changes
+  (attach them to the PR or issue; to show media in the README, upload it as a
+  GitHub attachment and link that URL instead of committing the file)
 - the commands you ran for validation
 - any device/emulator model and Android version used for manual testing
 - notes about protocol, latency, or compatibility risks
@@ -180,7 +187,12 @@ Prepare a release:
 bun run release -- patch
 ```
 
-You can also pass `minor`, `major`, or an exact version such as `0.1.0`.
+You can also pass `minor`, `major`, or an exact version such as `0.2.0`. An
+exact version must be greater than the current one, have no leading zeros, and
+not already have a `v<version>` tag; otherwise the script exits with a one-line
+error and changes nothing. Add `--dry-run` to preview the bump and changelog
+source without writing files. The new changelog entry goes above the newest
+release.
 
 Before publishing, review `packages/serve-emu/CHANGELOG.md`, then run:
 

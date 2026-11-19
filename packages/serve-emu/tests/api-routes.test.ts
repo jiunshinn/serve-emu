@@ -1,10 +1,19 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { ApiMethod } from "../src/api/router.ts";
 import { createApiRoutes } from "../src/api/routes/index.ts";
+import { CommandFailureError } from "../src/command-failure.ts";
+import {
+  parseApiFailure,
+  type ApiErrorCode,
+} from "../src/shared/api-contracts.ts";
 import { createHarness, response } from "./helpers/server-harness.ts";
 
 const EXPECTED_ROUTES = [
   ["GET", "/api"],
+  ["GET", "/api/foldable"],
+  ["POST", "/api/foldable"],
+  ["GET", "/api/avds/catalog"],
+  ["POST", "/api/avds/create"],
   ["GET", "/api/devices"],
   ["GET", "/api/device-grid"],
   ["POST", "/api/devices/select"],
@@ -21,6 +30,8 @@ const EXPECTED_ROUTES = [
   ["GET", "/api/logcat"],
   ["GET", "/api/screenshot"],
   ["POST", "/api/screenshot"],
+  ["GET", "/api/stream-quality"],
+  ["POST", "/api/stream-quality"],
   ["GET", "/api/foreground"],
   ["GET", "/api/accessibility"],
   ["POST", "/api/accessibility/tap"],
@@ -31,6 +42,7 @@ const EXPECTED_ROUTES = [
   ["POST", "/api/apps/install"],
   ["POST", "/api/files/import"],
   ["POST", "/api/apps/launch"],
+  ["POST", "/api/deep-link"],
   ["POST", "/api/apps/clear"],
   ["POST", "/api/apps/force-stop"],
   ["POST", "/api/apps/grant"],
@@ -46,6 +58,11 @@ const EXPECTED_ROUTES = [
   ["POST", "/api/session/replay"],
   ["POST", "/api/session/replay/stop"],
 ] as const satisfies readonly (readonly [ApiMethod, string])[];
+
+/** The failure's code, after checking the body is a shared ApiFailure. */
+async function failureCode(res: Response): Promise<ApiErrorCode> {
+  return parseApiFailure(await res.json()).error.code;
+}
 
 describe("production API routing", () => {
   test("registers every production route including paginated session export", () => {
@@ -63,6 +80,7 @@ describe("production API routing", () => {
     for (const [method, path] of EXPECTED_ROUTES) {
       const denied = await response(h.request(path, { method }));
       expect(denied.status, `${method} ${path}`).toBe(401);
+      expect(await failureCode(denied), `${method} ${path}`).toBe("unauthorized");
       if (method !== "GET") {
         const forbidden = await response(
           h.request(path, {
@@ -74,6 +92,7 @@ describe("production API routing", () => {
           }),
         );
         expect(forbidden.status, path).toBe(403);
+        expect(await failureCode(forbidden), path).toBe("forbidden");
       }
     }
   });
@@ -88,10 +107,7 @@ describe("production API routing", () => {
       );
       expect(res.status, path).toBe(405);
       expect(res.headers.get("allow"), path).toBe(methods.join(", "));
-      expect(await res.json()).toMatchObject({
-        ok: false,
-        error: { code: "method_not_allowed" },
-      });
+      expect(await failureCode(res), path).toBe("method_not_allowed");
     }
   });
 
@@ -119,7 +135,7 @@ describe("production API routing", () => {
         h.request(path, { method: "POST", body: JSON.stringify(body) }),
       );
       expect(res.status, path).toBe(400);
-      expect(await res.json(), path).toMatchObject({ ok: false });
+      expect(await failureCode(res), path).toBe("invalid_request");
     }
   });
 
@@ -134,10 +150,12 @@ describe("production API routing", () => {
         h.request(path, { method: "POST", body: " ".repeat(8193) }),
       );
       expect(large.status, path).toBe(413);
+      expect(await failureCode(large), path).toBe("payload_too_large");
       const malformed = await response(
         h.request(path, { method: "POST", body: "{" }),
       );
       expect(malformed.status, path).toBe(400);
+      expect(await failureCode(malformed), path).toBe("invalid_json");
     }
   });
 
@@ -170,5 +188,130 @@ describe("production API routing", () => {
       ok: false,
       error: { code: "not_found", message: "API route not found" },
     });
+  });
+
+  test("reports device command failures without their output", async () => {
+    const geoFixOutput = "KO: bad command /home/me/.android/emulator_console_auth_token";
+    const h = await createHarness({}, {
+      setLocation: async () => {
+        throw new CommandFailureError(
+          "adb-failed",
+          "adb emu geo fix failed",
+          geoFixOutput,
+        );
+      },
+    });
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const location = await response(
+        h.request("/api/location", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ latitude: 37.5, longitude: 127 }),
+        }),
+      );
+      expect(location.status).toBe(502);
+      expect(await location.json()).toEqual({
+        ok: false,
+        error: {
+          code: "downstream_failure",
+          message: "adb emu geo fix failed",
+          reason: "adb-failed",
+        },
+      });
+      expect(errorLog).toHaveBeenCalledWith(
+        "[api] POST /api/location -> 502 adb emu geo fix failed:",
+        expect.objectContaining({
+          message: `adb emu geo fix failed: ${geoFixOutput}`,
+        }),
+      );
+      errorLog.mockClear();
+
+      const route = await response(
+        h.request("/api/route", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            waypoints: [
+              { latitude: 37.5, longitude: 127 },
+              { latitude: 37.51, longitude: 127.01 },
+            ],
+          }),
+        }),
+      );
+      expect(route.status).toBe(502);
+      const routeBody = await route.text();
+      expect(JSON.parse(routeBody)).toEqual({
+        ok: false,
+        error: {
+          code: "downstream_failure",
+          message: "adb emu geo fix failed",
+          reason: "adb-failed",
+        },
+      });
+      expect(routeBody).not.toContain("emulator_console_auth_token");
+      // Logged once, by the response, with the geo fix output as the cause.
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      expect(errorLog.mock.calls[0]?.[0]).toBe(
+        "[api] POST /api/route -> 502 adb emu geo fix failed:",
+      );
+      expect((errorLog.mock.calls[0]?.[1] as Error).cause).toMatchObject({
+        message: `adb emu geo fix failed: ${geoFixOutput}`,
+      });
+      const status = await response(h.request("/api/route"));
+      const statusBody = await status.text();
+      expect(statusBody).toContain('"lastError":"adb emu geo fix failed"');
+      expect(statusBody).not.toContain("emulator_console_auth_token");
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  test("POST /api/location honors record:false like every other action", async () => {
+    const h = await createHarness({}, { setLocation: async () => {} });
+    const post = (body: Record<string, unknown>) =>
+      response(
+        h.request("/api/location", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    expect((await post({ latitude: 37.5, longitude: 127, record: false })).status).toBe(200);
+    const unrecorded = await (await response(h.request("/api/session"))).json();
+    expect(unrecorded.session.eventCount).toBe(0);
+
+    expect((await post({ latitude: 37.6, longitude: 127.1 })).status).toBe(200);
+    const recorded = await (await response(h.request("/api/session"))).json();
+    expect(recorded.session.eventCount).toBe(1);
+    expect(recorded.events[0]).toMatchObject({
+      kind: "location",
+      location: { latitude: 37.6, longitude: 127.1 },
+    });
+  });
+
+  test("route mutations on an ended session return 409, not 500", async () => {
+    const h = await createHarness();
+    h.session.endFrames();
+    for (let turn = 0; turn < 20 && h.started.session !== null; turn++) {
+      await Promise.resolve();
+    }
+    expect(h.started.session).toBeNull();
+
+    const remove = await response(h.request("/api/route", { method: "DELETE" }));
+    expect(remove.status).toBe(409);
+    expect(await remove.json()).toMatchObject({
+      ok: false,
+      error: { code: "conflict", reason: "session_changed" },
+    });
+
+    const control = await response(
+      h.request("/api/route/control", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "stop" }),
+      }),
+    );
+    expect(control.status).toBe(409);
   });
 });

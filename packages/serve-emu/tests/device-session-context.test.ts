@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { AccessibilitySnapshot } from "../src/accessibility.ts";
 import {
   ActiveDeviceSession,
@@ -8,44 +8,39 @@ import {
   type ManagedDeviceSession,
 } from "../src/device-session-context.ts";
 import type { ScrcpySession } from "../src/scrcpy.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T | PromiseLike<T>) => void;
-  reject: (reason?: unknown) => void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: Deferred<T>["resolve"];
-  let reject!: Deferred<T>["reject"];
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
+import { deferred, type Deferred } from "./helpers/deferred.ts";
+import { fakeScrcpy, type FakeScrcpy } from "./helpers/server-harness.ts";
 
 function snapshot(capturedAt: string): AccessibilitySnapshot {
   return { ok: true, capturedAt, nodes: [] };
 }
 
-function fakeScrcpy(serial: string, onClose: () => void = () => {}): ScrcpySession {
+/**
+ * The shared fake's close() only counts calls. Disposal tests also need a
+ * close that signals, rejects, or throws, so this runs `close` after it.
+ */
+function closingWith(
+  session: FakeScrcpy,
+  close: () => Promise<void> | void,
+): ScrcpySession {
   return {
-    serial,
-    meta: { width: 1080, height: 1920 },
-    close: onClose,
-  } as unknown as ScrcpySession;
+    ...session,
+    close: () => {
+      session.close();
+      return close();
+    },
+  } as ScrcpySession;
 }
 
 function activeSession(
   serial: string,
   generation: number,
-  onClose: () => void = () => {},
+  scrcpy: ScrcpySession = fakeScrcpy(serial),
 ): ActiveDeviceSession {
   return new ActiveDeviceSession({
     serial,
     generation,
-    scrcpy: fakeScrcpy(serial, onClose),
+    scrcpy,
     applyLocation: async () => {},
   });
 }
@@ -127,16 +122,13 @@ describe("ActiveDeviceSession disposal", () => {
     const cleanupGate = deferred<void>();
     const drainGate = deferred<void>();
     const scrcpyClosed = deferred<void>();
+    const scrcpy = fakeScrcpy("device-a");
     let cleanupCalls = 0;
-    let scrcpyCloseCalls = 0;
     let clientCloseCalls = 0;
     const context = new ActiveDeviceSession({
       serial: "device-a",
       generation: 7,
-      scrcpy: fakeScrcpy("device-a", () => {
-        scrcpyCloseCalls += 1;
-        scrcpyClosed.resolve();
-      }),
+      scrcpy: closingWith(scrcpy, () => scrcpyClosed.resolve()),
       applyLocation: async () => {},
       closeClient: () => {
         clientCloseCalls += 1;
@@ -163,7 +155,7 @@ describe("ActiveDeviceSession disposal", () => {
     cleanupGate.resolve();
     await scrcpyClosed.promise;
     expect(cleanupCalls).toBe(1);
-    expect(scrcpyCloseCalls).toBe(1);
+    expect(scrcpy.closeCalls).toBe(1);
 
     const outcomeBeforeDrain = await Promise.race([
       first.then(() => "disposed" as const),
@@ -175,16 +167,72 @@ describe("ActiveDeviceSession disposal", () => {
     await first;
     expect(context.dispose("ignored third reason")).toBe(first);
     expect(cleanupCalls).toBe(1);
-    expect(scrcpyCloseCalls).toBe(1);
+    expect(scrcpy.closeCalls).toBe(1);
     expect(clientCloseCalls).toBe(1);
   });
 
-  test("publishes its dispose promise before abort listeners can re-enter", async () => {
-    let closeCalls = 0;
-    const context = activeSession("device-a", 8, () => {
-      closeCalls += 1;
+  test("logs a failed scrcpy cleanup and resolves only after it settles", async () => {
+    const closeGate = deferred<void>();
+    const cleanupError = new AggregateError(
+      [new Error("adb: device unauthorized")],
+      "scrcpy cleanup failed",
+    );
+    const context = new ActiveDeviceSession({
+      serial: "device-a",
+      generation: 9,
+      scrcpy: closingWith(fakeScrcpy("device-a"), () => closeGate.promise),
+      applyLocation: async () => {},
     });
-    let nested: Promise<void> | null = null;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const disposed = context.dispose("device switched");
+      const beforeCleanup = await Promise.race([
+        disposed.then(() => "disposed" as const),
+        Bun.sleep(10).then(() => "pending" as const),
+      ]);
+      expect(beforeCleanup).toBe("pending");
+
+      closeGate.reject(cleanupError);
+      await disposed;
+      await Bun.sleep(0);
+      expect(unhandled).toEqual([]);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      expect(errorLog).toHaveBeenCalledWith(
+        "[scrcpy] cleanup failed for device-a:",
+        cleanupError,
+      );
+    } finally {
+      errorLog.mockRestore();
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("survives a scrcpy session whose close throws synchronously", async () => {
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const context = activeSession(
+        "device-a",
+        10,
+        closingWith(fakeScrcpy("device-a"), () => {
+          throw new Error("socket already destroyed");
+        }),
+      );
+      await context.dispose("server stopped");
+      expect(errorLog).toHaveBeenCalledTimes(1);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
+  test("publishes its dispose promise before abort listeners can re-enter", async () => {
+    const scrcpy = fakeScrcpy("device-a");
+    const context = activeSession("device-a", 8, scrcpy);
+    let nested = null as Promise<void> | null;
     context.signal.addEventListener("abort", () => {
       nested = context.dispose("abort listener");
     });
@@ -192,7 +240,43 @@ describe("ActiveDeviceSession disposal", () => {
     const first = context.dispose("terminal failure");
     expect(nested).toBe(first);
     await first;
-    expect(closeCalls).toBe(1);
+    expect(scrcpy.closeCalls).toBe(1);
+  });
+});
+
+describe("ActiveDeviceSession route playback", () => {
+  test("binds its serial and cannot publish a location after the session ends", async () => {
+    const applying = deferred<void>();
+    const applied: string[] = [];
+    const session = new ActiveDeviceSession({
+      serial: "emulator-5554",
+      generation: 3,
+      scrcpy: fakeScrcpy("emulator-5554"),
+      applyLocation: async (serial) => {
+        applied.push(serial);
+        await applying.promise;
+      },
+    });
+
+    const starting = session.route.start({
+      waypoints: [
+        { latitude: 51.5, longitude: -0.12 },
+        { latitude: 51.51, longitude: -0.11 },
+      ],
+      speedKph: 30,
+      multiplier: 1,
+      intervalMs: 250,
+    });
+    await Promise.resolve();
+    expect(applied).toEqual(["emulator-5554"]);
+
+    // The device switches away while the first fix is still being applied.
+    const disposing = session.dispose("device switched");
+    applying.resolve();
+    await expect(starting).rejects.toThrow("route playback start was cancelled");
+    await disposing;
+    expect(session.lastLocation).toBeNull();
+    expect(session.route.snapshot().status).toBe("closed");
   });
 });
 
@@ -264,10 +348,11 @@ describe("DeviceSessionManager", () => {
     expect(initial.signal.aborted).toBe(false);
     expect(initial.disposeCalls).toEqual([]);
 
-    const recovered = managedSession("device-b", 5);
+    // The failed attempt used generation 5, so the next one gets 6.
+    const recovered = managedSession("device-b", 6);
     await expect(
       manager.switch("device-b", async (serial, generation) => {
-        expect({ serial, generation }).toEqual({ serial: "device-b", generation: 5 });
+        expect({ serial, generation }).toEqual({ serial: "device-b", generation: 6 });
         return recovered;
       }),
     ).resolves.toBe(recovered);
@@ -365,5 +450,28 @@ describe("DeviceSessionManager", () => {
     expect(candidate.disposeCalls).toEqual([
       { reason: "device session activation failed", opts: undefined },
     ]);
+  });
+
+  test("never hands out a generation again after its candidate was disposed (#167)", async () => {
+    const manager = new DeviceSessionManager(managedSession("device-a", 1));
+    const generations: number[] = [];
+    await expect(
+      manager.switch(
+        "device-b",
+        async (serial, generation) => {
+          generations.push(generation);
+          return managedSession(serial, generation);
+        },
+        () => {
+          throw new Error("activation failed");
+        },
+      ),
+    ).rejects.toThrow("activation failed");
+    const next = await manager.switch("device-b", async (serial, generation) => {
+      generations.push(generation);
+      return managedSession(serial, generation);
+    });
+    expect(generations).toEqual([2, 3]);
+    expect(next.generation).toBe(3);
   });
 });

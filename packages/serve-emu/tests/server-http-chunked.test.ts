@@ -1,39 +1,7 @@
-import { EventEmitter } from "node:events";
 import { createConnection } from "node:net";
 import { expect, test } from "bun:test";
-import type { ScrcpySession } from "../src/scrcpy.ts";
 import { startServer } from "../src/server.ts";
-
-function fakeSession(): ScrcpySession {
-  const controlSocket = new EventEmitter() as EventEmitter & {
-    write(packet: Buffer): boolean;
-  };
-  controlSocket.write = () => true;
-  let resolveFrame!: (frame: null) => void;
-  const frame = new Promise<null>((resolve) => {
-    resolveFrame = resolve;
-  });
-  return {
-    transport: "scrcpy",
-    meta: {
-      deviceName: "chunked-test",
-      codecId: "h264",
-      width: 720,
-      height: 1280,
-    },
-    protocol: 3,
-    videoReader: {} as never,
-    controlSocket: controlSocket as never,
-    proc: new EventEmitter() as never,
-    scid: "00000001",
-    localPort: 27_200,
-    serial: "device-test",
-    readFrame: () => frame,
-    close() {
-      resolveFrame(null);
-    },
-  };
-}
+import { fakeScrcpy } from "./helpers/server-harness.ts";
 
 function rawChunkedRequest(port: number, body: string): Promise<string> {
   return new Promise<string>((resolve, reject) => {
@@ -83,22 +51,24 @@ function rawChunkedRequest(port: number, body: string): Promise<string> {
 }
 
 test("real Bun HTTP rejects oversized chunked JSON with structured 413", async () => {
-  const session = fakeSession();
+  const session = fakeScrcpy("device-test");
+  // A real listening server: the test sends raw chunked HTTP over a socket.
   const started = await startServer(
     { serial: session.serial, port: 0 },
     {
-      startScrcpy: async () => session,
-      listAllDevices: async () => [
+      log: () => {},
+      openScrcpy: async () => session,
+      listDevices: async () => [
         { serial: session.serial, state: "device" },
       ],
     },
   );
   try {
     const body = JSON.stringify({ x: 0.5, padding: "x".repeat(9_000) });
-    const response = await rawChunkedRequest(started.server.port, body);
+    const response = await rawChunkedRequest(started.server.port!, body);
 
     expect(response).toContain(" 413 ");
-    expect(response).toContain('"code":"payload-too-large"');
+    expect(response).toContain('"code":"payload_too_large"');
   } finally {
     await started.stop();
   }

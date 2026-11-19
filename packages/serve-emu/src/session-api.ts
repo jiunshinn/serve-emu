@@ -28,3 +28,16 @@ export function parseSessionPageQuery(
     ? { limit }
     : { limit, before: positiveSafeInteger(rawBefore, "before") };
 }
+
+/**
+ * REST and WebSocket actions are recorded unless the payload opts out with
+ * `record: false`.
+ */
+export function shouldRecordPayload(value: unknown): boolean {
+  return (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    (value as Record<string, unknown>).record !== false
+  );
+}

@@ -1,10 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { toApiError } from "../src/api/error-mapping.ts";
 import {
   SessionRecorder,
   SessionReplayConflictError,
   SessionReplayValidationError,
   parseSessionReplayMultiplier,
-  sessionReplayErrorStatus,
   type ReplayHandlers,
   type SessionReplayClock,
 } from "../src/session-recorder.ts";
@@ -85,15 +85,21 @@ describe("session replay input validation", () => {
     }
   });
 
-  test("maps validation, conflict, and unexpected errors to HTTP statuses", () => {
-    expect(
-      sessionReplayErrorStatus(new SessionReplayValidationError("bad input")),
-    ).toBe(400);
-    expect(
-      sessionReplayErrorStatus(new SessionReplayConflictError("busy")),
-    ).toBe(409);
-    expect(sessionReplayErrorStatus(new Error("unexpected"))).toBe(500);
-    expect(sessionReplayErrorStatus("unexpected")).toBe(500);
+  test("maps validation, conflict, and unexpected errors to API failures", () => {
+    expect(toApiError(new SessionReplayValidationError("bad input"), "internal_error")).toMatchObject({
+      status: 400,
+      code: "invalid_request",
+      message: "bad input",
+    });
+    expect(toApiError(new SessionReplayConflictError("busy"), "internal_error")).toMatchObject({
+      status: 409,
+      code: "conflict",
+    });
+    expect(toApiError(new Error("unexpected"), "internal_error")).toMatchObject({
+      status: 500,
+      code: "internal_error",
+      message: "Internal server error",
+    });
   });
 });
 
@@ -195,8 +201,10 @@ describe("SessionRecorder asynchronous replay lifecycle", () => {
     recorder.recordLocation({ latitude: 1, longitude: 2 }, "during-replay");
     expect(recorder.snapshot().events).toHaveLength(1);
 
-    expect(recorder.stopReplay()).toMatchObject({ replaying: true });
+    const cancelling = recorder.cancelAndWait();
+    expect(recorder.summary()).toMatchObject({ replaying: true });
     const cancelled = await run.completion;
+    await cancelling;
     expect(cancelled).toMatchObject({
       replaying: false,
       replayStatus: "cancelled",
@@ -255,13 +263,6 @@ describe("SessionRecorder asynchronous replay lifecycle", () => {
     expect(() => recorder.startReplay(noopHandlers)).toThrow(
       "session recorder is closed",
     );
-    await expect(
-      recorder.replay({
-        dispatchGesture: () => {},
-        setLocation: () => {},
-      }),
-    ).rejects.toThrow("session recorder is closed");
-
     const disposedAgain = await recorder.dispose();
     expect(disposedAgain.recording).toBe(false);
     expect(recorder.replayAdmissionEpoch).toBe(2);
@@ -273,40 +274,50 @@ describe("SessionRecorder asynchronous replay lifecycle", () => {
       clock: immediateClock(() => now),
     });
     recorder.recordGesture({ type: "home" }, "test");
+    const errorLog = spyOn(console, "error").mockImplementation(() => {});
+    const gestureFailure = new Error("gesture failed");
+    try {
+      const first = await recorder.startReplay({
+        dispatchGesture: () => {
+          throw gestureFailure;
+        },
+        setLocation: () => {},
+      }).completion;
+      expect(first).toMatchObject({
+        replayStatus: "error",
+        replayCompletedAt: null,
+        replayCancelledAt: null,
+        lastError: "gesture failed",
+      });
 
-    const first = await recorder.startReplay({
-      dispatchGesture: () => {
-        throw new Error("gesture failed");
-      },
-      setLocation: () => {},
-    }).completion;
-    expect(first).toMatchObject({
-      replayStatus: "error",
-      replayCompletedAt: null,
-      replayCancelledAt: null,
-      lastError: "gesture failed",
-    });
+      now = 2_000;
+      const second = await recorder.startReplay({
+        dispatchGesture: () => {
+          throw "string failure";
+        },
+        setLocation: () => {},
+      }).completion;
+      expect(second).toMatchObject({
+        replayStatus: "error",
+        replayStartedAt: new Date(2_000).toISOString(),
+        lastError: "string failure",
+      });
 
-    now = 2_000;
-    const second = await recorder.startReplay({
-      dispatchGesture: () => {
-        throw "string failure";
-      },
-      setLocation: () => {},
-    }).completion;
-    expect(second).toMatchObject({
-      replayStatus: "error",
-      replayStartedAt: new Date(2_000).toISOString(),
-      lastError: "string failure",
-    });
-
-    now = 3_000;
-    const recovered = await recorder.startReplay(noopHandlers).completion;
-    expect(recovered).toMatchObject({
-      replayStatus: "completed",
-      replayCompletedAt: new Date(3_000).toISOString(),
-      lastError: null,
-    });
+      now = 3_000;
+      const recovered = await recorder.startReplay(noopHandlers).completion;
+      expect(recovered).toMatchObject({
+        replayStatus: "completed",
+        replayCompletedAt: new Date(3_000).toISOString(),
+        lastError: null,
+      });
+      // The replay outlives its API response, so its failures are logged.
+      expect(errorLog.mock.calls).toEqual([
+        ["[session] replay failed:", gestureFailure],
+        ["[session] replay failed:", "string failure"],
+      ]);
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   test("uses the default abortable clock when only now is overridden", async () => {
@@ -321,7 +332,7 @@ describe("SessionRecorder asynchronous replay lifecycle", () => {
       dispatchGesture: () => {
         if (!cancelScheduled) {
           cancelScheduled = true;
-          setTimeout(() => recorder.stopReplay(), 0);
+          setTimeout(() => void recorder.cancelAndWait(), 0);
         }
       },
       setLocation: () => {},
@@ -335,7 +346,7 @@ describe("SessionRecorder asynchronous replay lifecycle", () => {
     });
   });
 
-  test("checks cancellation again after a legacy sleep override settles", async () => {
+  test("checks cancellation again after a sleep override settles", async () => {
     let resolveSleep!: () => void;
     let sleepStarted!: () => void;
     const started = new Promise<void>((resolve) => {
@@ -353,126 +364,114 @@ describe("SessionRecorder asynchronous replay lifecycle", () => {
     const run = recorder.startReplay(noopHandlers);
     await started;
 
-    recorder.stopReplay();
+    const cancelling = recorder.cancelAndWait();
     resolveSleep();
     const cancelled = await run.completion;
+    await cancelling;
 
     expect(cancelled.replayStatus).toBe("cancelled");
   });
 });
 
-describe("SessionRecorder legacy replay validation", () => {
-  test("uses the built-in timer when no legacy sleep override is provided", async () => {
-    const recorder = new SessionRecorder(immediateClock(() => 50));
-    recorder.recordGesture({ type: "home" }, "test");
-    const calls: string[] = [];
-
-    const summary = await recorder.replay({
+describe("replay timeline", () => {
+  test("subtracts dispatch time and timer overshoot", async () => {
+    let now = 0;
+    const sleep = async (ms: number) => { now += ms + 5; };
+    const recorder = new SessionRecorder({ now: () => now, sleep });
+    recorder.recordGesture({ type: "swipe", x1: 0, y1: 0, x2: 1, y2: 1, durationMs: 1000 }, "test");
+    now = 1000;
+    recorder.recordGesture({ type: "tap", x: 0.5, y: 0.5 }, "test");
+    now = 2000;
+    recorder.recordLocation({ latitude: 0, longitude: 0 }, "test");
+    now = 0;
+    const starts: number[] = [];
+    const handlers: ReplayHandlers = {
       dispatchGesture: (gesture) => {
-        calls.push(gesture.type);
+        starts.push(now);
+        if (gesture.type === "swipe") now += gesture.durationMs!;
+      },
+      setLocation: () => { starts.push(now); },
+    };
+    await recorder.startReplay(handlers).completion;
+    expect(starts).toEqual([5, 1010, 2005]);
+  });
+});
+
+describe("SessionRecorder replay keeps touch pointers balanced", () => {
+  const touch = (action: "down" | "move" | "up", pointerId: number, x = 0.5) =>
+    ({ type: "touch", action, x, y: 0.5, pointerId }) as const;
+  const replayed = (dispatched: Array<{ type: string; action?: string; pointerId?: number }>) =>
+    dispatched.map((g) => (g.type === "touch" ? `${g.action}:${g.pointerId}` : g.type));
+
+  test("skips moves and ups whose down was not replayed and releases a trailing down", async () => {
+    const recorder = new SessionRecorder(immediateClock(() => 0));
+    // Pointer 1's down was evicted (or never recorded): its move and up remain.
+    recorder.recordGesture(touch("move", 1), "ws");
+    recorder.recordGesture(touch("up", 1), "ws");
+    recorder.recordGesture(touch("down", 2), "ws");
+    recorder.recordGesture(touch("up", 2), "ws");
+    recorder.recordGesture({ type: "home" }, "ws");
+    // Pointer 3's up was never recorded.
+    recorder.recordGesture(touch("down", 3, 0.1), "ws");
+    recorder.recordGesture(touch("move", 3, 0.7), "ws");
+
+    const dispatched: Array<{ type: string; action?: string; pointerId?: number; x?: number }> = [];
+    const run = recorder.startReplay({
+      dispatchGesture: (gesture) => {
+        dispatched.push({ ...gesture });
       },
       setLocation: () => {},
     });
-
-    expect(calls).toEqual(["home"]);
-    expect(summary).toMatchObject({
-      replaying: false,
-      replayStartedAt: new Date(50).toISOString(),
-      replayCompletedAt: new Date(50).toISOString(),
-    });
+    expect((await run.completion).replayStatus).toBe("completed");
+    expect(replayed(dispatched)).toEqual(["down:2", "up:2", "home", "down:3", "move:3", "up:3"]);
+    // The release lifts the pointer where it last was.
+    expect(dispatched.at(-1)).toMatchObject({ x: 0.7 });
   });
 
-  test("rejects empty, invalid, and concurrent legacy replays", async () => {
-    let releaseSleep!: () => void;
-    let sleepStarted!: () => void;
-    const started = new Promise<void>((resolve) => {
-      sleepStarted = resolve;
-    });
+  test("a cancelled replay releases the pointer it was holding before it reports cancelled", async () => {
+    // The delay before the down resolves at once; the one before the up waits.
+    const holding = pendingClock(() => 0);
+    let delays = 0;
     const recorder = new SessionRecorder({
       now: () => 0,
-      sleep: () =>
-        new Promise<void>((resolve) => {
-          releaseSleep = resolve;
-          sleepStarted();
-        }),
+      delay: (ms, signal) => (++delays === 1 ? Promise.resolve() : holding.clock.delay(ms, signal)),
     });
+    recorder.recordGesture(touch("down", 4), "ws");
+    recorder.recordGesture(touch("up", 4), "ws");
 
-    await expect(
-      recorder.replay({
-        dispatchGesture: () => {},
-        setLocation: () => {},
-      }),
-    ).rejects.toThrow("session has no recorded events");
-    recorder.recordGesture({ type: "home" }, "test");
-    await expect(
-      recorder.replay(
-        { dispatchGesture: () => {}, setLocation: () => {} },
-        0,
-      ),
-    ).rejects.toBeInstanceOf(SessionReplayValidationError);
-
-    const active = recorder.replay({
-      dispatchGesture: () => {},
+    const dispatched: string[] = [];
+    let releaseSignal: AbortSignal | undefined;
+    const run = recorder.startReplay({
+      dispatchGesture: (gesture, signal) => {
+        if (gesture.type !== "touch") return;
+        dispatched.push(`${gesture.action}:${gesture.pointerId}`);
+        if (gesture.action === "up") releaseSignal = signal;
+      },
       setLocation: () => {},
     });
-    await started;
-    await expect(
-      recorder.replay({
-        dispatchGesture: () => {},
-        setLocation: () => {},
-      }),
-    ).rejects.toThrow("session replay is already running");
-    recorder.stopReplay();
-    releaseSleep();
-    await active;
+    await holding.started;
+    expect(dispatched).toEqual(["down:4"]);
+
+    const cancelled = await recorder.cancelAndWait();
+    expect(cancelled.replayStatus).toBe("cancelled");
+    expect(dispatched).toEqual(["down:4", "up:4"]);
+    // The release is not tied to the aborted replay signal.
+    expect(releaseSignal?.aborted).toBe(false);
+    await run.completion;
   });
 
-  test("stringifies a non-Error legacy replay failure", async () => {
-    const recorder = new SessionRecorder({
-      now: () => 0,
-      sleep: async () => {},
+  test("a release that the session refuses does not turn completion into an error", async () => {
+    const recorder = new SessionRecorder(immediateClock(() => 0));
+    recorder.recordGesture(touch("down", 5), "ws");
+    const run = recorder.startReplay({
+      dispatchGesture: (gesture) => {
+        if (gesture.type === "touch" && gesture.action === "up") {
+          throw new Error("device session changed during session replay");
+        }
+      },
+      setLocation: () => {},
     });
-    recorder.recordGesture({ type: "home" }, "test");
-
-    await expect(
-      recorder.replay({
-        dispatchGesture: () => {
-          throw "legacy string failure";
-        },
-        setLocation: () => {},
-      }),
-    ).rejects.toBe("legacy string failure");
-    expect(recorder.summary().lastError).toBe("legacy string failure");
+    expect(await run.completion).toMatchObject({ replayStatus: "completed", lastError: null });
   });
 });
 
-
-describe("replay timeline", () => {
-  for (const legacy of [false, true]) {
-    test(`subtracts dispatch time and timer overshoot (${legacy ? "legacy" : "async"})`, async () => {
-      let now = 0;
-      const sleep = async (ms: number) => { now += ms + 5; };
-      const recorder = new SessionRecorder({ now: () => now, sleep });
-      recorder.recordGesture({ type: "swipe", x1: 0, y1: 0, x2: 1, y2: 1, durationMs: 1000 }, "test");
-      now = 1000;
-      recorder.recordGesture({ type: "tap", x: 0.5, y: 0.5 }, "test");
-      now = 2000;
-      recorder.recordLocation({ latitude: 0, longitude: 0 }, "test");
-      now = 0;
-      const starts: number[] = [];
-      const handlers: ReplayHandlers = {
-        dispatchGesture: (gesture) => {
-          starts.push(now);
-          if (gesture.type === "swipe") now += gesture.durationMs!;
-        },
-        setLocation: () => { starts.push(now); },
-      };
-      if (legacy) await recorder.replay({
-        dispatchGesture: (gesture) => handlers.dispatchGesture(gesture, new AbortController().signal),
-        setLocation: (fix) => handlers.setLocation(fix, new AbortController().signal),
-      });
-      else await recorder.startReplay(handlers).completion;
-      expect(starts).toEqual([5, 1010, 2005]);
-    });
-  }
-});

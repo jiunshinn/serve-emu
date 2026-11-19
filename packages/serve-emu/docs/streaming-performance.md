@@ -4,10 +4,14 @@ Why emulator streams feel less smooth than
 [serve-sim](https://github.com/EvanBacon/serve-sim)'s iOS Simulator streams,
 which Android and emulator APIs can change that, and the recommended plan.
 
-Research note from 2026-10-03. Measurements come from an Apple M1 Max
-(10 cores, 32 GB) running Android Emulator 36.6.11 with `-gpu host`, an Android
-17 arm64 system image, and the vendored scrcpy 4.0 server. Re-measure when any
-of those change.
+Research note from 2026-10-03, updated 2026-11-19 for the fixes that landed
+since ([#168](https://github.com/jiunshinn/serve-emu/pull/168),
+[#179](https://github.com/jiunshinn/serve-emu/pull/179), and several-device
+streaming in [#194](https://github.com/jiunshinn/serve-emu/pull/194)).
+Measurements come from an Apple M1 Max (10 cores, 32 GB) running Android
+Emulator 36.6.11 with `-gpu host`, an Android 17 arm64 system image, and the
+vendored scrcpy 4.0 server. They predate those fixes. Re-measure when any of
+those change.
 
 ## Summary
 
@@ -16,9 +20,10 @@ of those change.
   encoder at native resolution. serve-emu runs scrcpy inside the Android VM.
   There, the only H.264 encoder is a software encoder with a hard size limit,
   and every frame is first copied from the host GPU into the VM.
-- **Two serve-emu behaviors make it worse.** The recovery watchdog restarts the
-  encoder on static screens, and nothing prevents two sessions from streaming
-  one emulator.
+- **Two serve-emu behaviors made it worse.** The recovery watchdog restarted
+  the encoder every few seconds on static screens; it now backs off to one
+  check every 30 s. A second session on one emulator used to go unnoticed;
+  `/health` and the UI now report it, but serve-emu still does not refuse it.
 - **The transport and the browser are not the bottleneck.** On localhost the
   WebSocket hop takes 0.4 ms, so WebRTC would not raise the frame rate.
 - **Recommended direction:** keep scrcpy for input, physical devices, and other
@@ -33,7 +38,7 @@ of those change.
 | Capture | A SimulatorKit frame callback provides the framebuffer IOSurface; one memory copy | scrcpy mirrors the screen to a second, virtual display inside Android |
 | Encoder | VideoToolbox hardware H.264, High profile, low-latency rate control | `c2.android.avc.encoder`, a software encoder on the guest CPU |
 | Resolution | Native | 576×1280 by default for a 1080×2400 screen; at most 920×2048 |
-| Static screen | Re-encodes the last frame at 5 fps | No frames after about 1 s (see [Static screens](#static-screens-and-the-recovery-watchdog)) |
+| Static screen | Re-encodes the last frame at 5 fps | No frames after about 1 s, then an encoder check every 2.5–30 s (see [Static screens](#static-screens-and-the-recovery-watchdog)) |
 | Path to the browser | In-process helper → HTTP | Android's adb daemon → emulator pipe → adb server → TCP forward → Bun → WebSocket |
 
 The iOS Simulator avoids a VM because iOS and macOS share a kernel, so
@@ -94,12 +99,13 @@ Android's `GraphicBufferSource` repeats the last frame at most 10 times
 (`kRepeatLastFrameCount`). scrcpy asks for a repeat after 100 ms. A static
 screen therefore produces about one second of frames, then silence.
 
-[`session-recovery-watchdog.ts`](../src/session-recovery-watchdog.ts) treats
-2.5 s without a frame as a stall whenever a client is connected
-(`SOURCE_STALL_RESET_MS` in [`server.ts`](../src/server.ts)). It requests a video
-reset, which produces a new keyframe burst, about a second of repeats, silence,
-and then another reset. One viewer on a static home screen received these frame
-counts per second, with 7 resets in 30 s:
+Before [#168](https://github.com/jiunshinn/serve-emu/pull/168),
+[`session-recovery-watchdog.ts`](../src/session-recovery-watchdog.ts) treated
+2.5 s without a frame as a stall whenever a client was connected
+(`SOURCE_STALL_RESET_MS` in [`server/video.ts`](../src/server/video.ts)). It
+requested a video reset, which produced a new keyframe burst, about a second of
+repeats, silence, and then another reset. One viewer on a static home screen
+received these frame counts per second, with 7 resets in 30 s:
 
 ```text
 10,4,0,0,8,3,0,0,9,2,0,0,8,8,0,0,0,8,3,0,0,8,3,0,0,8,3,0,0
@@ -109,12 +115,35 @@ Silence is normal Android behavior here, not a stall. A larger
 `--repeat-frame-ms` only stretches the burst, because the 10-repeat cap still
 applies.
 
+Since #168 the watchdog still checks a quiet encoder, because a reset is the
+only way to tell a static screen from a dead encoder. Each check that the
+encoder answers with only its own burst doubles the wait before the next one,
+from 2.5 s up to 30 s. A sustained run of more than 16 frames, each within 1 s
+of the last, brings the wait back to 2.5 s. `/health` reports the result as
+`sourceState` (`streaming`, `idle`, `stalled`, or `starting`), the current wait
+as `keyFrameRecovery.stallResetAfterMs`, and every reset by reason in
+`videoResetsByReason` and `videoResetsLastMinute`. On a static screen the
+encoder therefore still restarts about twice a minute, which costs one keyframe
+burst each time.
+
 ### Several sessions on one emulator
 
-serve-emu does not check whether a device is already being streamed. An
-orphaned `serve-emu --avd` process, or a second agent's server, attaches its own
-scrcpy session. Each session repeats the composition, readback, and encoding
-work described above.
+An orphaned `serve-emu --avd` process, a second agent's server, or a desktop
+`scrcpy` attaches its own scrcpy session. Each session repeats the
+composition, readback, and encoding work described above.
+
+Since [#179](https://github.com/jiunshinn/serve-emu/pull/179) a streaming
+session reads the device's `/proc/net/unix` 2 s after it starts and every 10 s
+after that. `/health` reports the other sessions as
+`contention.otherScrcpySessions`, and the UI shows a warning in the status bar.
+serve-emu still starts its own session alongside them.
+
+Within one server, each device has at most one scrcpy session. Since
+[#194](https://github.com/jiunshinn/serve-emu/pull/194) one server can stream
+several devices under `/d/<serial>/`, and selecting a device that already
+streams under a prefix closes the prefixed stream instead of opening a second
+one. Several emulators on one host still compete for host CPU, so `/grid`
+tiles stream at 480 px and 15 fps by default.
 
 ## Measurements
 
@@ -191,11 +220,15 @@ the frame the emulator already has:
 
 ### 1. Fix the current pipeline
 
-- **Stop resetting on silence.** Request a video reset only when a client is
-  waiting for a keyframe, with a cooldown. Do not reset only because frames
-  stopped.
-- **Allow one session per device.** Detect an existing serve-emu scrcpy session
-  on the device, refuse or warn, and point to the existing server when known.
+- **Stop resetting on silence.** Done differently in
+  [#168](https://github.com/jiunshinn/serve-emu/pull/168): the watchdog keeps
+  checking a quiet encoder, but backs off from 2.5 s to 30 s, so a static
+  screen no longer causes a reset storm. Dropping the checks entirely would
+  leave a dead encoder undetected.
+- **Allow one session per device.** Detection is done in
+  [#179](https://github.com/jiunshinn/serve-emu/pull/179): `/health` and the
+  UI warn about other scrcpy sessions. Still open: refusing to start, or
+  pointing to the server that already streams the device.
 
 ### 2. Add host capture for emulators on macOS
 
@@ -232,16 +265,22 @@ Foundation) only when there is demand. Until then they keep scrcpy.
 Average frame rate hid every problem above. For each change, measure:
 
 - **Presentation jitter:** p95, p99, and maximum intervals between frames
-  presented in the browser.
+  presented in the browser, and the frames the player drops to catch up
+  (`skipped` in the status bar's tooltip).
 - **Input-to-photon latency:** time from sending a tap to the first presented
   frame that shows its effect. Use a test page that changes color on touch.
 - **App jank:** `adb shell dumpsys gfxinfo <package> framestats`, with streaming
   on and off, to see what capture costs the app.
 - **Effective resolution and quality:** actual stream size, bit rate, and a
   visual check during fast scrolling.
+- **Server cost:** host CPU, memory, and frames per client with many clients or
+  devices, from `bun run --filter serve-emu bench:server`
+  ([`scripts/bench-server.ts`](../scripts/bench-server.ts)).
 
-Use one session per emulator. Check `adb forward --list` for other sessions
-before measuring, and record the emulator and scrcpy versions with every result.
+Use one session per emulator. Before measuring, check that
+`contention.otherScrcpySessions` in `/health` is `0` and that
+`videoResetsLastMinute` stays low, and record the emulator and scrcpy versions
+with every result.
 
 ## Open questions
 

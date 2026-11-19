@@ -1,59 +1,14 @@
 import { useCallback, useMemo, useState } from "react";
+import type {
+  DeviceGridResponse,
+  GridDevice,
+  SessionStatus,
+} from "../../shared/api-contracts";
+import { apiErrorMessage, apiRequest } from "../lib/api-client";
+import { DEVICE_SETTINGS, useDeviceSetting } from "../lib/device-setting";
 import { deviceSessionStore, useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { usePoll } from "../lib/use-poll";
-
-type GridDeviceKind = "physical" | "emulator" | "avd";
-
-type GridDevice = {
-  id: string;
-  kind: GridDeviceKind;
-  serial: string | null;
-  avd: string | null;
-  name: string;
-  state: string;
-  current: boolean;
-  canSelect: boolean;
-  canStart: boolean;
-  canStop: boolean;
-};
-
-type DeviceGridResponse = {
-  ok?: boolean;
-  currentSerial?: string;
-  sessionStatus?: "streaming" | "stopped" | "error";
-  devices?: GridDevice[];
-  error?: string;
-};
-
-type Orientation = "auto" | "portrait" | "landscape";
-type OrientationResponse = {
-  ok?: boolean;
-  orientation?: { orientation?: Orientation | "unknown"; raw?: string };
-  error?: string;
-};
-
-type NightMode = "auto" | "dark" | "light";
-type NightModeResponse = {
-  ok?: boolean;
-  nightMode?: { mode?: NightMode | "unknown"; raw?: string };
-  error?: string;
-};
-
-type FontScaleResponse = {
-  ok?: boolean;
-  fontScale?: { scale?: number; raw?: string };
-  error?: string;
-};
-
-type NetworkResponse = {
-  ok?: boolean;
-  network?: {
-    enabled?: boolean | null;
-    wifi?: "enabled" | "disabled" | "unknown";
-    mobileData?: "enabled" | "disabled" | "unknown";
-  };
-  error?: string;
-};
+import { AddEmulator } from "./add-emulator";
 
 type BusyAction = "select" | "start" | "stop";
 const FONT_SCALE_PRESETS = [0.85, 1, 1.15, 1.3, 1.5] as const;
@@ -61,31 +16,27 @@ const FONT_SCALE_PRESETS = [0.85, 1, 1.15, 1.3, 1.5] as const;
 export function DevicePanel() {
   const [devices, setDevices] = useState<GridDevice[]>([]);
   const [status, setStatus] = useState("Loading...");
-  const [sessionStatus, setSessionStatus] = useState<DeviceGridResponse["sessionStatus"]>("streaming");
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>("streaming");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<Record<string, BusyAction | undefined>>({});
   const deviceSession = useDeviceSessionSnapshot();
 
-  const loadDevices = useCallback(async (signal?: AbortSignal) => {
-    const res = await fetch("/api/device-grid", { cache: "no-store", signal });
-    return await res.json() as DeviceGridResponse;
-  }, []);
+  const loadDevices = useCallback(
+    (signal?: AbortSignal) =>
+      apiRequest("/api/device-grid", { method: "GET", cache: "no-store", signal }),
+    [],
+  );
 
-  const applyDevices = useCallback((json: DeviceGridResponse) => {
-    if (!json.ok || !json.devices) {
-      setDevices([]);
-      setStatus(json.error || "Unavailable");
-      return;
-    }
-    setDevices(json.devices);
-    setSessionStatus(json.sessionStatus ?? "streaming");
-    const running = json.devices.filter((device) => device.serial && device.state === "device").length;
-    setStatus(`${running}/${json.devices.length} ready`);
+  const applyDevices = useCallback((grid: DeviceGridResponse) => {
+    setDevices(grid.devices);
+    setSessionStatus(grid.sessionStatus);
+    const running = grid.devices.filter((device) => device.serial && device.state === "device").length;
+    setStatus(`${running}/${grid.devices.length} ready`);
   }, []);
 
   const applyDevicesError = useCallback((error: unknown) => {
     setDevices([]);
-    setStatus(error instanceof Error ? error.message : String(error));
+    setStatus(apiErrorMessage(error));
   }, []);
 
   const { refresh: refreshDevices } = usePoll({
@@ -107,33 +58,24 @@ export function DevicePanel() {
       }
       let nextSession: { serial?: string | null; generation?: number | null } | null = null;
       try {
-        const endpoint =
+        const result =
           action === "select"
-            ? "/api/devices/select"
+            ? await apiRequest("/api/devices/select", {
+                method: "POST",
+                body: { serial: device.serial ?? "" },
+              })
             : action === "start"
-              ? "/api/avds/start"
-              : "/api/avds/stop";
-        const body =
-          action === "select"
-            ? { serial: device.serial }
-            : action === "start"
-              ? { avd: device.avd ?? device.name }
-              : { serial: device.serial, avd: device.avd ?? undefined };
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        const json = await res.json() as {
-          ok?: boolean;
-          error?: string;
-          serial?: string | null;
-          generation?: number | null;
-        };
-        if (!json.ok) throw new Error(json.error || "Action failed");
-        if (changesSession) nextSession = json;
+              ? await apiRequest("/api/avds/start", {
+                  method: "POST",
+                  body: { avd: device.avd ?? device.name },
+                })
+              : await apiRequest("/api/avds/stop", {
+                  method: "POST",
+                  body: { serial: device.serial ?? undefined, avd: device.avd ?? undefined },
+                });
+        if (changesSession) nextSession = result;
       } catch (err) {
-        setStatus(err instanceof Error ? err.message : String(err));
+        setStatus(apiErrorMessage(err));
       } finally {
         if (changesSession) {
           deviceSessionStore.endTransition();
@@ -195,242 +137,44 @@ export function DevicePanel() {
         )}
       </div>
 
+      <AddEmulator onCreated={() => { setQuery(""); refreshDevices(); }} />
       <button onClick={refreshDevices}>Refresh Devices</button>
     </section>
   );
 }
 
-export function OrientationPanel() {
-  const [orientation, setOrientation] = useState<Orientation | "unknown">("unknown");
-  const [orientationStatus, setOrientationStatus] = useState("Loading...");
-  const deviceSession = useDeviceSessionSnapshot();
+type SettingOption<Next> = { value: Next; label: string };
 
-  const applyOrientation = useCallback((json: OrientationResponse) => {
-    if (!json.ok || !json.orientation) {
-      setOrientation("unknown");
-      setOrientationStatus(json.error || "Unavailable");
-      return;
-    }
-    const next = json.orientation.orientation ?? "unknown";
-    setOrientation(next);
-    setOrientationStatus(next === "unknown" ? json.orientation.raw || "Unknown" : next);
-  }, []);
-
-  const { refresh: refreshOrientation } = usePoll({
-    poll: async ({ signal }) => {
-      const res = await fetch("/api/orientation", { cache: "no-store", signal });
-      return await res.json() as OrientationResponse;
-    },
-    onResult: applyOrientation,
-    onError: (error) => {
-      setOrientation("unknown");
-      setOrientationStatus(error instanceof Error ? error.message : String(error));
-    },
-    intervalMs: null,
-    pollKey: deviceSession.revision,
-    enabled: !deviceSession.transitioning,
-  });
-
-  const setDeviceOrientation = useCallback(async (next: Orientation) => {
-    setOrientationStatus("Applying...");
-    try {
-      const res = await fetch("/api/orientation", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orientation: next }),
-      });
-      const json = await res.json() as OrientationResponse;
-      if (!json.ok || !json.orientation) {
-        setOrientationStatus(json.error || "Failed");
-        return;
-      }
-      const applied = json.orientation.orientation ?? "unknown";
-      setOrientation(applied);
-      setOrientationStatus(applied === "unknown" ? json.orientation.raw || "Unknown" : applied);
-      refreshOrientation();
-    } catch (err) {
-      setOrientationStatus(err instanceof Error ? err.message : String(err));
-    }
-  }, [refreshOrientation]);
-
+/** A device setting's heading, status line, and one button per option. */
+function SettingPanel<Value, Next extends Value>({
+  title,
+  className,
+  rowClassName = "segmented-row",
+  setting,
+  options,
+  isSelected = (value, option) => value === option,
+}: {
+  title: string;
+  className: string;
+  rowClassName?: string;
+  setting: ReturnType<typeof useDeviceSetting<Value, Next>>;
+  options: readonly SettingOption<Next>[];
+  isSelected?: (value: Value, option: Next) => boolean;
+}) {
   return (
-    <section className="tool-panel orientation-panel">
+    <section className={`tool-panel ${className}`}>
       <div className="panel-heading">
-        <h2>Orientation</h2>
-        <div className="location-status">{orientationStatus}</div>
+        <h2>{title}</h2>
+        <div className="location-status">{setting.status}</div>
       </div>
-      <div className="segmented-row">
-        <button
-          className={orientation === "portrait" ? "selected" : ""}
-          onClick={() => void setDeviceOrientation("portrait")}
-        >
-          Portrait
-        </button>
-        <button
-          className={orientation === "landscape" ? "selected" : ""}
-          onClick={() => void setDeviceOrientation("landscape")}
-        >
-          Landscape
-        </button>
-        <button
-          className={orientation === "auto" ? "selected" : ""}
-          onClick={() => void setDeviceOrientation("auto")}
-        >
-          Auto
-        </button>
-      </div>
-    </section>
-  );
-}
-
-export function NightModePanel() {
-  const [nightMode, setNightMode] = useState<NightMode | "unknown">("unknown");
-  const [nightModeStatus, setNightModeStatus] = useState("Loading...");
-  const deviceSession = useDeviceSessionSnapshot();
-
-  const applyNightMode = useCallback((json: NightModeResponse) => {
-    if (!json.ok || !json.nightMode) {
-      setNightMode("unknown");
-      setNightModeStatus(json.error || "Unavailable");
-      return;
-    }
-    const next = json.nightMode.mode ?? "unknown";
-    setNightMode(next);
-    setNightModeStatus(next === "unknown" ? json.nightMode.raw || "Unknown" : next);
-  }, []);
-
-  const { refresh: refreshNightMode } = usePoll({
-    poll: async ({ signal }) => {
-      const res = await fetch("/api/night-mode", { cache: "no-store", signal });
-      return await res.json() as NightModeResponse;
-    },
-    onResult: applyNightMode,
-    onError: (error) => {
-      setNightMode("unknown");
-      setNightModeStatus(error instanceof Error ? error.message : String(error));
-    },
-    intervalMs: null,
-    pollKey: deviceSession.revision,
-    enabled: !deviceSession.transitioning,
-  });
-
-  const setDeviceNightMode = useCallback(async (next: NightMode) => {
-    setNightModeStatus("Applying...");
-    try {
-      const res = await fetch("/api/night-mode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mode: next }),
-      });
-      const json = await res.json() as NightModeResponse;
-      if (!json.ok || !json.nightMode) {
-        setNightModeStatus(json.error || "Failed");
-        return;
-      }
-      const applied = json.nightMode.mode ?? "unknown";
-      setNightMode(applied);
-      setNightModeStatus(applied === "unknown" ? json.nightMode.raw || "Unknown" : applied);
-      refreshNightMode();
-    } catch (err) {
-      setNightModeStatus(err instanceof Error ? err.message : String(err));
-    }
-  }, [refreshNightMode]);
-
-  return (
-    <section className="tool-panel night-mode-panel">
-      <div className="panel-heading">
-        <h2>Theme</h2>
-        <div className="location-status">{nightModeStatus}</div>
-      </div>
-      <div className="segmented-row">
-        <button
-          className={nightMode === "dark" ? "selected" : ""}
-          onClick={() => void setDeviceNightMode("dark")}
-        >
-          Dark
-        </button>
-        <button
-          className={nightMode === "light" ? "selected" : ""}
-          onClick={() => void setDeviceNightMode("light")}
-        >
-          Light
-        </button>
-        <button
-          className={nightMode === "auto" ? "selected" : ""}
-          onClick={() => void setDeviceNightMode("auto")}
-        >
-          Auto
-        </button>
-      </div>
-    </section>
-  );
-}
-
-export function FontScalePanel() {
-  const [fontScale, setFontScale] = useState<number | null>(null);
-  const [fontScaleStatus, setFontScaleStatus] = useState("Loading...");
-  const deviceSession = useDeviceSessionSnapshot();
-
-  const applyFontScale = useCallback((json: FontScaleResponse) => {
-    if (!json.ok || !json.fontScale || typeof json.fontScale.scale !== "number") {
-      setFontScale(null);
-      setFontScaleStatus(json.error || "Unavailable");
-      return;
-    }
-    setFontScale(json.fontScale.scale);
-    setFontScaleStatus(`${Math.round(json.fontScale.scale * 100)}%`);
-  }, []);
-
-  const { refresh: refreshFontScale } = usePoll({
-    poll: async ({ signal }) => {
-      const res = await fetch("/api/font-scale", { cache: "no-store", signal });
-      return await res.json() as FontScaleResponse;
-    },
-    onResult: applyFontScale,
-    onError: (error) => {
-      setFontScale(null);
-      setFontScaleStatus(error instanceof Error ? error.message : String(error));
-    },
-    intervalMs: null,
-    pollKey: deviceSession.revision,
-    enabled: !deviceSession.transitioning,
-  });
-
-  const setDeviceFontScale = useCallback(async (next: number) => {
-    setFontScaleStatus("Applying...");
-    try {
-      const res = await fetch("/api/font-scale", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scale: next }),
-      });
-      const json = await res.json() as FontScaleResponse;
-      if (!json.ok || !json.fontScale || typeof json.fontScale.scale !== "number") {
-        setFontScaleStatus(json.error || "Failed");
-        return;
-      }
-      setFontScale(json.fontScale.scale);
-      setFontScaleStatus(`${Math.round(json.fontScale.scale * 100)}%`);
-      refreshFontScale();
-    } catch (err) {
-      setFontScaleStatus(err instanceof Error ? err.message : String(err));
-    }
-  }, [refreshFontScale]);
-
-  return (
-    <section className="tool-panel font-scale-panel">
-      <div className="panel-heading">
-        <h2>Font Size</h2>
-        <div className="location-status">{fontScaleStatus}</div>
-      </div>
-      <div className="font-scale-row">
-        {FONT_SCALE_PRESETS.map((scale) => (
+      <div className={rowClassName}>
+        {options.map((option) => (
           <button
-            key={scale}
-            className={fontScale !== null && Math.abs(fontScale - scale) < 0.01 ? "selected" : ""}
-            onClick={() => void setDeviceFontScale(scale)}
+            key={String(option.value)}
+            className={isSelected(setting.value, option.value) ? "selected" : ""}
+            onClick={() => void setting.apply(option.value)}
           >
-            {Math.round(scale * 100)}%
+            {option.label}
           </button>
         ))}
       </div>
@@ -438,86 +182,64 @@ export function FontScalePanel() {
   );
 }
 
-function networkLabel(network: NonNullable<NetworkResponse["network"]>): string {
-  const state = network.enabled === true ? "on" : network.enabled === false ? "off" : "unknown";
-  const wifi = network.wifi && network.wifi !== "unknown" ? `wifi ${network.wifi}` : "wifi ?";
-  const mobileData =
-    network.mobileData && network.mobileData !== "unknown" ? `data ${network.mobileData}` : "data ?";
-  return `${state} (${wifi}, ${mobileData})`;
+export function OrientationPanel() {
+  return (
+    <SettingPanel
+      title="Orientation"
+      className="orientation-panel"
+      setting={useDeviceSetting(DEVICE_SETTINGS.orientation)}
+      options={[
+        { value: "portrait", label: "Portrait" },
+        { value: "landscape", label: "Landscape" },
+        { value: "auto", label: "Auto" },
+      ]}
+    />
+  );
+}
+
+export function NightModePanel() {
+  return (
+    <SettingPanel
+      title="Theme"
+      className="night-mode-panel"
+      setting={useDeviceSetting(DEVICE_SETTINGS.nightMode)}
+      options={[
+        { value: "dark", label: "Dark" },
+        { value: "light", label: "Light" },
+        { value: "auto", label: "Auto" },
+      ]}
+    />
+  );
+}
+
+export function FontScalePanel() {
+  return (
+    <SettingPanel
+      title="Font Size"
+      className="font-scale-panel"
+      rowClassName="font-scale-row"
+      setting={useDeviceSetting(DEVICE_SETTINGS.fontScale)}
+      options={FONT_SCALE_PRESETS.map((scale) => ({
+        value: scale,
+        label: `${Math.round(scale * 100)}%`,
+      }))}
+      isSelected={(value, option) => value !== null && Math.abs(value - option) < 0.01}
+    />
+  );
 }
 
 export function NetworkPanel() {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [networkStatus, setNetworkStatus] = useState("Loading...");
-  const deviceSession = useDeviceSessionSnapshot();
-
-  const applyNetwork = useCallback((json: NetworkResponse) => {
-    if (!json.ok || !json.network) {
-      setEnabled(null);
-      setNetworkStatus(json.error || "Unavailable");
-      return;
-    }
-    setEnabled(json.network.enabled ?? null);
-    setNetworkStatus(networkLabel(json.network));
-  }, []);
-
-  const { refresh: refreshNetwork } = usePoll({
-    poll: async ({ signal }) => {
-      const res = await fetch("/api/network", { cache: "no-store", signal });
-      return await res.json() as NetworkResponse;
-    },
-    onResult: applyNetwork,
-    onError: (error) => {
-      setEnabled(null);
-      setNetworkStatus(error instanceof Error ? error.message : String(error));
-    },
-    intervalMs: null,
-    pollKey: deviceSession.revision,
-    enabled: !deviceSession.transitioning,
-  });
-
-  const setDeviceNetwork = useCallback(async (next: boolean) => {
-    setNetworkStatus("Applying...");
-    try {
-      const res = await fetch("/api/network", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled: next }),
-      });
-      const json = await res.json() as NetworkResponse;
-      if (!json.ok || !json.network) {
-        setNetworkStatus(json.error || "Failed");
-        return;
-      }
-      setEnabled(json.network.enabled ?? null);
-      setNetworkStatus(networkLabel(json.network));
-      refreshNetwork();
-    } catch (err) {
-      setNetworkStatus(err instanceof Error ? err.message : String(err));
-    }
-  }, [refreshNetwork]);
-
   return (
-    <section className="tool-panel network-panel">
-      <div className="panel-heading">
-        <h2>Network</h2>
-        <div className="location-status">{networkStatus}</div>
-      </div>
-      <div className="segmented-row network-row">
-        <button
-          className={enabled === true ? "selected" : ""}
-          onClick={() => void setDeviceNetwork(true)}
-        >
-          On
-        </button>
-        <button
-          className={enabled === false ? "selected" : ""}
-          onClick={() => void setDeviceNetwork(false)}
-        >
-          Off
-        </button>
-      </div>
-    </section>
+    <SettingPanel
+      title="Network"
+      className="network-panel"
+      rowClassName="segmented-row network-row"
+      setting={useDeviceSetting(DEVICE_SETTINGS.network)}
+      options={[
+        { value: true, label: "On" },
+        { value: false, label: "Off" },
+      ]}
+    />
   );
 }
 
@@ -530,14 +252,14 @@ function DeviceRow({
   onStop,
 }: {
   device: GridDevice;
-  sessionStatus: DeviceGridResponse["sessionStatus"];
+  sessionStatus: SessionStatus;
   busy: BusyAction | undefined;
   onSelect: () => void;
   onStart: () => void;
   onStop: () => void;
 }) {
   const isLiveCurrent = device.current && sessionStatus === "streaming";
-  const status = device.current ? (sessionStatus ?? "streaming") : device.state;
+  const status = device.current ? sessionStatus : device.state;
   const title = device.kind === "avd" ? "AVD" : device.kind === "emulator" ? "EMU" : "USB";
 
   return (

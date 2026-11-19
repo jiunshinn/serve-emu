@@ -1,12 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseGesture } from "../src/shared/control-contracts.ts";
 import {
-  isWorkerCommand,
-  isWorkerEvent,
-  parseWorkerCommand,
-  parseWorkerEvent,
-} from "../src/shared/worker-contracts.ts";
-import {
   isWsClientMessage,
   isWsServerMessage,
   parseWsClientMessage,
@@ -53,62 +47,5 @@ describe("WebSocket contract rejection boundaries", () => {
     );
     expect(isWsServerMessage({ ok: false, error: "denied" })).toBe(true);
     expect(isWsServerMessage({ ok: "yes" })).toBe(false);
-  });
-});
-
-describe("worker contract rejection boundaries", () => {
-  test("validates command containers and command-specific fields", () => {
-    expect(() => parseWorkerCommand(null)).toThrow("worker command must be an object");
-    expect(() =>
-      parseWorkerCommand({ type: "init", canvas: {}, url: "" }),
-    ).toThrow("url must be a non-empty string");
-    expect(() => parseWorkerCommand({ type: "send", text: 1 })).toThrow(
-      "send text must be a string",
-    );
-    expect(() => parseWorkerCommand({ type: "unknown" })).toThrow(
-      "unsupported worker command",
-    );
-    expect(isWorkerCommand({ type: "connect" })).toBe(true);
-    expect(isWorkerCommand({ type: "send", text: null })).toBe(false);
-  });
-
-  test("validates session dimensions, status, and complete stats", () => {
-    expect(() => parseWorkerEvent({ type: "status", status: 1 })).toThrow(
-      "worker status must be a string",
-    );
-    expect(() =>
-      parseWorkerEvent({ type: "session", size: { width: 0, height: 1 } }),
-    ).toThrow("dimensions must be positive");
-    expect(() =>
-      parseWorkerEvent({
-        type: "stats",
-        stats: {
-          fps: 1,
-          decodeQueue: 0,
-          transitMs: null,
-          e2eMs: null,
-          codec: 1,
-          rendered: true,
-        },
-      }),
-    ).toThrow("codec must be a string or null");
-    expect(() =>
-      parseWorkerEvent({
-        type: "stats",
-        stats: {
-          fps: 1,
-          decodeQueue: 0,
-          transitMs: null,
-          e2eMs: null,
-          codec: null,
-          rendered: "yes",
-        },
-      }),
-    ).toThrow("rendered must be a boolean");
-    expect(() => parseWorkerEvent({ type: "unknown" })).toThrow(
-      "unsupported worker event",
-    );
-    expect(isWorkerEvent({ type: "rendered" })).toBe(true);
-    expect(isWorkerEvent([])).toBe(false);
   });
 });

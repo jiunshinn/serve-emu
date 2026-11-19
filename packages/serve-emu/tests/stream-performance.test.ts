@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   StreamPerformance,
   StreamClockSync,
+  admitDuringRecovery,
+  type RecoveryAdmission,
 } from "../src/ui/lib/stream-performance.ts";
 
 describe("decoder latency budget", () => {
@@ -76,5 +78,101 @@ describe("stream clock synchronization", () => {
     expect(sync.estimate(62_100)).toBeNull();
     sync.reset();
     expect(sync.estimate(0)).toBeNull();
+  });
+});
+
+describe("admitDuringRecovery", () => {
+  const neverAsked = () => {
+    throw new Error("the backlog must not decide this packet");
+  };
+
+  test("decodes the keyframe that ends a drop even while work is still queued", () => {
+    expect(
+      admitDuringRecovery({
+        dropping: true,
+        isKey: true,
+        decoderReady: true,
+        backlogged: neverAsked,
+      }),
+    ).toEqual({ action: "decode", endsDrop: true });
+  });
+
+  test("keeps asking for a keyframe while deltas are dropped", () => {
+    expect(
+      admitDuringRecovery({
+        dropping: true,
+        isKey: false,
+        decoderReady: true,
+        backlogged: neverAsked,
+      }),
+    ).toEqual({ action: "drop", requestKeyframe: true });
+    expect(
+      admitDuringRecovery({
+        dropping: true,
+        isKey: true,
+        decoderReady: false,
+        backlogged: neverAsked,
+      }),
+    ).toEqual({ action: "drop", requestKeyframe: true });
+  });
+
+  test("waits for a keyframe to configure a missing decoder", () => {
+    expect(
+      admitDuringRecovery({
+        dropping: false,
+        isKey: false,
+        decoderReady: false,
+        backlogged: neverAsked,
+      }),
+    ).toEqual({ action: "drop", requestKeyframe: true });
+    expect(
+      admitDuringRecovery({
+        dropping: false,
+        isKey: true,
+        decoderReady: false,
+        backlogged: neverAsked,
+      }),
+    ).toEqual({ action: "drop", requestKeyframe: false });
+  });
+
+  test("starts recovery on a backlog and otherwise decodes", () => {
+    const base = { dropping: false, isKey: false, decoderReady: true };
+    expect(admitDuringRecovery({ ...base, backlogged: () => true })).toEqual({
+      action: "recover",
+    });
+    expect(admitDuringRecovery({ ...base, backlogged: () => false })).toEqual({
+      action: "decode",
+      endsDrop: false,
+    });
+  });
+
+  test("a slow decoder recovers to the keyframe it requested", () => {
+    // Backlog → recovery → deltas dropped (each re-requests) → the requested
+    // keyframe arrives while the old backlog has not drained yet.
+    const perf = new StreamPerformance();
+    perf.submitted(1, 0);
+    const backlogged = () => perf.shouldRecover(3, 400);
+    let dropping = false;
+    const sequence = [
+      { isKey: false, expected: "recover" },
+      { isKey: false, expected: "drop" },
+      { isKey: false, expected: "drop" },
+      { isKey: true, expected: "decode" },
+    ];
+    const requests: boolean[] = [];
+    for (const step of sequence) {
+      const admission = admitDuringRecovery({
+        dropping,
+        isKey: step.isKey,
+        decoderReady: true,
+        backlogged,
+      });
+      expect(admission.action).toBe(step.expected as RecoveryAdmission["action"]);
+      if (admission.action === "recover") dropping = true;
+      if (admission.action === "drop") requests.push(admission.requestKeyframe);
+      if (admission.action === "decode" && admission.endsDrop) dropping = false;
+    }
+    expect(requests).toEqual([true, true]);
+    expect(dropping).toBe(false);
   });
 });

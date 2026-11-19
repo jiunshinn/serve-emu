@@ -1,8 +1,7 @@
-export type LocationPoint = {
-  latitude: number;
-  longitude: number;
-  altitude?: number;
-};
+import type { GeoFix } from "../../shared/api-contracts";
+
+/** A point on the route map: the shared location fix. */
+export type LocationPoint = GeoFix;
 
 export type WorldPoint = {
   x: number;
@@ -58,8 +57,8 @@ export type RouteProjectionCacheStats = {
 
 export const MAP_TILE_SIZE = 256;
 export const WEB_MERCATOR_MAX_LATITUDE = 85.05112878;
-export const DEFAULT_ROUTE_PIXEL_TOLERANCE = 0.75;
-export const DEFAULT_MAX_DISPLAY_POINTS = 1_024;
+const DEFAULT_ROUTE_PIXEL_TOLERANCE = 0.75;
+const DEFAULT_MAX_DISPLAY_POINTS = 1_024;
 
 const MAX_WEB_MERCATOR_ZOOM = 24;
 

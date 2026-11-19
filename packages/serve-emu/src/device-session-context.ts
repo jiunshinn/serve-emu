@@ -5,12 +5,16 @@ import type { Screen } from "./input.ts";
 import type { GeoFix } from "./location.ts";
 import { LogcatHub } from "./logcat.ts";
 import { RoutePlayback } from "./route-playback.ts";
-import type { ScrcpySession } from "./scrcpy.ts";
+import { closeScrcpySession, type ScrcpySession } from "./scrcpy.ts";
 import { SessionRecorder } from "./session-recorder.ts";
-import { disposeReplayBefore } from "./session-replay-lifecycle.ts";
 import type { SessionStatus } from "./session-status.ts";
 
 const FRAME_STAT_WINDOW = 240;
+// Reset times kept for the recent rate in /health. The watchdog's 500 ms
+// cooldown allows at most 120 resets a minute, so this never drops one
+// that is still inside the window.
+const MAX_RECENT_VIDEO_RESETS = 128;
+const VIDEO_RESET_RATE_WINDOW_MS = 60_000;
 
 export class SessionChangedError extends Error {
   readonly code = "session_changed";
@@ -41,12 +45,15 @@ type ActiveDeviceSessionOpts<TClient extends SessionClient> = {
   applyLocation: (serial: string, fix: GeoFix, signal: AbortSignal) => Promise<void>;
   closeClient?: (client: TClient, code: number, reason: string) => void;
   inputQueue?: ControlInputQueue;
+  recorder?: SessionRecorder;
   now?: () => number;
 };
 
 export type DisposeDeviceSessionOpts = {
   status?: Exclude<SessionStatus, "streaming">;
   clientCode?: number;
+  /** A client stopped this device on purpose (POST /api/avds/stop). */
+  byClient?: boolean;
 };
 
 /**
@@ -63,7 +70,7 @@ export class ActiveDeviceSession<
   readonly generation: number;
   readonly scrcpy: ScrcpySession;
   readonly screen: Screen;
-  readonly recorder = new SessionRecorder();
+  readonly recorder: SessionRecorder;
   readonly logcat: LogcatHub;
   readonly inputQueue: ControlInputQueue;
   readonly route: RoutePlayback;
@@ -81,18 +88,24 @@ export class ActiveDeviceSession<
   lastErrorMeta: Record<string, string | number> | null = null;
   frameCount = 0;
   configPacketCount = 0;
-  lastFrameMs = 0;
   totalDroppedFrames = 0;
   totalBackpressureEvents = 0;
-  sourceFps = 0;
-  lastFpsFrameCount = 0;
   videoResetRequests = 0;
   lastVideoResetAt: string | null = null;
   lastVideoResetReason: string | null = null;
   lastVideoResetMs = 0;
+  /** See {@link DisposeDeviceSessionOpts.byClient}. */
+  stoppedByClient = false;
+  /** Video resets by reason; reasons are a small fixed set. */
+  readonly videoResetsByReason: Record<string, number> = {};
+  /**
+   * Other scrcpy sessions on this device (another server, a desktop scrcpy),
+   * from the latest background probe; null until the first probe answers.
+   */
+  contention: { otherScrcpySessions: number; checkedAt: string } | null = null;
+  #recentVideoResetMs: number[] = [];
   lastLocation: (GeoFix & { appliedAt: string }) | null = null;
   cachedConfig: Buffer | null = null;
-  watchdog: ReturnType<typeof setInterval> | null = null;
 
   #accessibilitySnapshotCache: {
     snapshot: AccessibilitySnapshot;
@@ -108,6 +121,7 @@ export class ActiveDeviceSession<
 
   constructor(opts: ActiveDeviceSessionOpts<TClient>) {
     this.serial = opts.serial;
+    this.recorder = opts.recorder ?? new SessionRecorder();
     this.logcat = new LogcatHub(opts.serial);
     this.generation = opts.generation;
     this.scrcpy = opts.scrcpy;
@@ -144,6 +158,25 @@ export class ActiveDeviceSession<
         if (!this.signal.aborted) this.lastLocation = fix;
       },
     });
+  }
+
+  /** Records a video reset request accepted for `reason` at `nowMs`. */
+  noteVideoReset(reason: string, nowMs: number): void {
+    this.videoResetRequests++;
+    this.lastVideoResetMs = nowMs;
+    this.lastVideoResetAt = new Date(nowMs).toISOString();
+    this.lastVideoResetReason = reason;
+    this.videoResetsByReason[reason] = (this.videoResetsByReason[reason] ?? 0) + 1;
+    this.#recentVideoResetMs.push(nowMs);
+    if (this.#recentVideoResetMs.length > MAX_RECENT_VIDEO_RESETS) {
+      this.#recentVideoResetMs.shift();
+    }
+  }
+
+  /** Video resets in the {@link VIDEO_RESET_RATE_WINDOW_MS} before `nowMs`. */
+  recentVideoResets(nowMs: number): number {
+    const since = nowMs - VIDEO_RESET_RATE_WINDOW_MS;
+    return this.#recentVideoResetMs.filter((at) => at > since).length;
   }
 
   get signal(): AbortSignal {
@@ -214,24 +247,6 @@ export class ActiveDeviceSession<
     return task;
   }
 
-  /**
-   * Tracks capability-bearing background work only until this generation is
-   * revoked. The underlying legacy task may finish later, but every handler is
-   * generation-guarded and disposal is never held by an uninterruptible wait.
-   */
-  trackUntilAbort(task: Promise<unknown>): Promise<void> {
-    this.assertUsable();
-    let onAbort!: () => void;
-    const aborted = new Promise<void>((resolve) => {
-      onAbort = resolve;
-      this.signal.addEventListener("abort", onAbort, { once: true });
-    });
-    const guarded = Promise.race([task.then(() => {}), aborted]).finally(() => {
-      this.signal.removeEventListener("abort", onAbort);
-    });
-    return this.trackDrain(guarded);
-  }
-
   closeClients(code: number, reason: string): void {
     for (const client of this.clients) {
       try {
@@ -241,17 +256,11 @@ export class ActiveDeviceSession<
     this.clients.clear();
   }
 
-  setWatchdog(timer: ReturnType<typeof setInterval>): void {
-    if (this.signal.aborted) {
-      clearInterval(timer);
-      return;
-    }
-    if (this.watchdog) clearInterval(this.watchdog);
-    this.watchdog = timer;
-  }
-
   /** Idempotent; every owner receives the exact same cleanup promise. */
   dispose(reason: string, opts: DisposeDeviceSessionOpts = {}): Promise<void> {
+    // Recorded even on a session that already ended: the client still chose
+    // to stop the device, so the CLI keeps serving when its emulator exits.
+    if (opts.byClient) this.stoppedByClient = true;
     if (this.#disposeTask) return this.#disposeTask;
 
     let finishDispose!: () => void;
@@ -268,16 +277,10 @@ export class ActiveDeviceSession<
     this.abortController.abort(new SessionChangedError(this.generation, null));
     this.inputQueue.close(new Error(reason));
     this.logcat.close(reason);
-    const replayDisposed = disposeReplayBefore({
-      recorder: this.recorder,
-      stopRoute: () => {
-        this.route.stop();
-        this.route.close();
-      },
-      afterReplayStopped: () => {},
-    });
-    if (this.watchdog) clearInterval(this.watchdog);
-    this.watchdog = null;
+    // Stop route playback before cancelling replay, which awaits its task.
+    this.route.stop();
+    this.route.close();
+    const replayDisposed = this.recorder.dispose();
     this.closeClients(opts.clientCode ?? (nextStatus === "error" ? 1011 : 1000), reason);
 
     const cleanups = Array.from(this.#cleanup);
@@ -287,11 +290,13 @@ export class ActiveDeviceSession<
     void (async () => {
       for (const cleanup of cleanups) this.#startCleanup(cleanup);
       await replayDisposed;
-      try {
-        this.scrcpy.close();
-      } catch {}
+      // Closing the sockets ends the drains; the rest of scrcpy's cleanup
+      // (process reap, adb forward removal) settles before dispose resolves so
+      // shutdown cannot exit with a forward still installed.
+      const scrcpyClosed = closeScrcpySession(this.scrcpy);
       await Promise.allSettled(drains);
       await this.#drainCleanups();
+      await scrcpyClosed;
       // A route start that was awaiting its initial location can otherwise
       // create a timer after the first close(). Close again after draining it.
       this.route.stop();
@@ -317,19 +322,34 @@ export type ManagedDeviceSession = {
   readonly serial: string;
   readonly generation: number;
   readonly signal: AbortSignal;
+  readonly stoppedByClient?: boolean;
   dispose(reason: string, opts?: DisposeDeviceSessionOpts): Promise<void>;
 };
 
 /** Serializes every transition and owns the single published active context. */
 export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
   #current: TContext;
+  // The last generation handed to a candidate. Numbers are never reused: a
+  // candidate that failed may already have been disposed, and its cleanup
+  // marked its generation cancelled (for uploads), so the next candidate
+  // must not inherit that number (#167).
+  #lastGeneration: number;
   #tail: Promise<void> = Promise.resolve();
   #transitionController: AbortController | null = null;
+  #recoveryController: AbortController | null = null;
   #closing = false;
   #closed = false;
+  #allocateGeneration: () => number;
 
-  constructor(initial: TContext) {
+  /**
+   * `allocateGeneration` lets managers that share an upload service draw
+   * from one sequence, so a generation never names two sessions.
+   */
+  constructor(initial: TContext, allocateGeneration?: () => number) {
     this.#current = initial;
+    this.#lastGeneration = initial.generation;
+    this.#allocateGeneration =
+      allocateGeneration ?? (() => ++this.#lastGeneration);
   }
 
   get current(): TContext {
@@ -373,23 +393,36 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
       signal: AbortSignal,
     ) => Promise<TContext>,
     activate?: (context: TContext) => void,
+    recover?: TContext,
+    /** Reopen this context's device, e.g. with new settings; fails once it is replaced. */
+    restart?: TContext,
   ): Promise<TContext> {
-    return this.#enqueue(async () => {
+    // Explicit selection or stop takes precedence over an automatic reopen,
+    // even if scrcpy is still preparing the replacement.
+    this.#cancelRecovery();
+    const recovery = recover ? new AbortController() : null;
+    if (recovery) this.#recoveryController = recovery;
+    const operation = this.#enqueue(async () => {
       if (this.#closing) throw new Error("device session manager is closed");
       const previous = this.#current;
-      if (previous.serial === serial && !previous.signal.aborted) return previous;
+      recovery?.signal.throwIfAborted();
+      if (recover && (previous !== recover || recover.stoppedByClient)) {
+        throw new SessionChangedError(recover.generation, previous.generation);
+      }
+      if (restart && previous !== restart) {
+        throw new SessionChangedError(restart.generation, previous.generation);
+      }
+      if (previous.serial === serial && !previous.signal.aborted && !restart) {
+        return previous;
+      }
 
       // Candidate startup happens while the old context remains published. A
       // failed preparation therefore leaves the working device untouched.
-      const transition = new AbortController();
+      const transition = recovery ?? new AbortController();
       this.#transitionController = transition;
       let next: TContext;
       try {
-        next = await prepare(
-          serial,
-          previous.generation + 1,
-          transition.signal,
-        );
+        next = await prepare(serial, this.#allocateGeneration(), transition.signal);
       } finally {
         if (this.#transitionController === transition) {
           this.#transitionController = null;
@@ -398,6 +431,10 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
       if (this.#closing) {
         await next.dispose("server stopped during device switch");
         throw new Error("device session manager is closed");
+      }
+      if (recovery?.signal.aborted) {
+        await next.dispose("automatic recovery superseded");
+        recovery.signal.throwIfAborted();
       }
 
       // Publication is one synchronous assignment. From here on every health
@@ -413,6 +450,11 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
       await previous.dispose("device switched", { clientCode: 1012 });
       return next;
     });
+    return recovery
+      ? operation.finally(() => {
+          if (this.#recoveryController === recovery) this.#recoveryController = null;
+        })
+      : operation;
   }
 
   stop(
@@ -420,6 +462,7 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
     reason: string,
     opts: DisposeDeviceSessionOpts = {},
   ): Promise<void> {
+    if (this.isPublished(context)) this.#cancelRecovery();
     return this.#enqueue(async () => {
       this.assertPublished(context);
       await context.dispose(reason, opts);
@@ -428,6 +471,7 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
 
   close(reason: string): Promise<void> {
     this.#closing = true;
+    this.#cancelRecovery();
     this.#transitionController?.abort(
       new SessionChangedError(this.#current.generation, null),
     );
@@ -446,6 +490,13 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
         await this.#current.dispose(reason, { clientCode: 1001 });
       }
     });
+  }
+
+  #cancelRecovery(): void {
+    this.#recoveryController?.abort(
+      new SessionChangedError(this.#current.generation, null),
+    );
+    this.#recoveryController = null;
   }
 
   #enqueue<TResult>(operation: () => Promise<TResult>): Promise<TResult> {

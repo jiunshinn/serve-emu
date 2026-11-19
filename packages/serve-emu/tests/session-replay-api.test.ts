@@ -49,31 +49,37 @@ describe("session replay API responses", () => {
       {
         error: new SessionReplayValidationError("invalid replay"),
         status: 400,
-        message: "invalid replay",
+        body: { code: "invalid_request", message: "invalid replay" },
       },
       {
         error: new SessionReplayConflictError("replay conflict"),
         status: 409,
-        message: "replay conflict",
+        body: { code: "conflict", message: "replay conflict" },
       },
-      { error: new Error("unexpected"), status: 500, message: "unexpected" },
-      { error: "string failure", status: 500, message: "string failure" },
+      // Unexpected failures never echo their message to the client.
+      {
+        error: new Error("unexpected"),
+        status: 500,
+        body: { code: "internal_error", message: "Internal server error" },
+      },
+      {
+        error: "string failure",
+        status: 500,
+        body: { code: "internal_error", message: "Internal server error" },
+      },
     ];
 
     for (const entry of cases) {
       const response = sessionReplayErrorResponse(entry.error);
       expect(response.status).toBe(entry.status);
-      expect(await response.json()).toEqual({
-        ok: false,
-        error: entry.message,
-      });
+      expect(await response.json()).toEqual({ ok: false, error: entry.body });
     }
 
-    const overridden = sessionReplayErrorResponse(new Error("bad body"), 422);
-    expect(overridden.status).toBe(422);
-    expect(await overridden.json()).toEqual({
+    const invalidBody = sessionReplayErrorResponse(new Error("bad body"), "invalid_request");
+    expect(invalidBody.status).toBe(400);
+    expect(await invalidBody.json()).toEqual({
       ok: false,
-      error: "bad body",
+      error: { code: "invalid_request", message: "bad body" },
     });
   });
 
@@ -112,7 +118,7 @@ describe("session replay API responses", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
       ok: false,
-      error: "device session changed before session replay start",
+      error: { code: "conflict", message: "device session changed before session replay start" },
     });
     expect(recorder.isReplaying).toBe(false);
   });
@@ -123,7 +129,7 @@ describe("session replay API responses", () => {
     expect(invalid.status).toBe(400);
     expect(await invalid.json()).toEqual({
       ok: false,
-      error: "session has no recorded events",
+      error: { code: "invalid_request", message: "session has no recorded events" },
     });
 
     const failed = startSessionReplayResponse(
@@ -134,7 +140,7 @@ describe("session replay API responses", () => {
     expect(failed.status).toBe(500);
     expect(await failed.json()).toEqual({
       ok: false,
-      error: "start exploded",
+      error: { code: "internal_error", message: "Internal server error" },
     });
   });
 
@@ -179,7 +185,7 @@ describe("session replay API responses", () => {
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({
       ok: false,
-      error: "stop failed",
+      error: { code: "conflict", message: "stop failed" },
     });
   });
 
@@ -202,7 +208,7 @@ describe("session replay API responses", () => {
     expect(failed.status).toBe(409);
     expect(await failed.json()).toEqual({
       ok: false,
-      error: "cannot clear active replay",
+      error: { code: "conflict", message: "cannot clear active replay" },
     });
   });
 });

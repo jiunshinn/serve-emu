@@ -1,19 +1,7 @@
 import { expect, test } from "bun:test";
 import { getNetworkStatus } from "../src/adb.ts";
 import type { execText } from "../src/exec.ts";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve(value: T): void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
+import { deferred } from "./helpers/deferred.ts";
 
 test("getNetworkStatus reads Wi-Fi and mobile settings concurrently", async () => {
   const wifi = deferred<string>();
@@ -35,7 +23,7 @@ test("getNetworkStatus reads Wi-Fi and mobile settings concurrently", async () =
     };
   }) as typeof execText;
 
-  const status = getNetworkStatus("emulator-5554", runExec);
+  const status = getNetworkStatus("emulator-5554", { execText: runExec });
   await Promise.resolve();
   expect(calls).toEqual(["wifi_on", "mobile_data"]);
 

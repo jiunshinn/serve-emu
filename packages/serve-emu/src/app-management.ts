@@ -1,5 +1,17 @@
 import { randomBytes } from "node:crypto";
-import { execText } from "./exec.ts";
+import {
+  adbCommandFailure,
+  adbOperation,
+  adbSucceeded,
+  runAdb,
+  throwIfAdbAborted,
+  type AdbDeps,
+} from "./adb-command.ts";
+import {
+  CommandFailureError,
+  type CommandFailureCode,
+} from "./command-failure.ts";
+import { shellQuote } from "./shell-quote.ts";
 import type {
   AppActionResponse,
   FileImportResponse,
@@ -15,23 +27,34 @@ export type LocalUploadFile = {
   size: number;
 };
 
-export type AppManagementErrorCode =
-  | "adb-failed"
-  | "adb-timeout"
-  | "adb-cleanup-failed";
+export type AppManagementErrorCode = Exclude<CommandFailureCode, "emulator-failed">;
 
-export type AppManagementDependencies = {
-  execText?: typeof execText;
+export type AppManagementDependencies = AdbDeps & {
   uploadId?: () => string;
 };
 
-export class AppManagementError extends Error {
+const PUBLIC_MESSAGES: Record<AppManagementErrorCode, string> = {
+  "adb-failed": "adb command failed",
+  "adb-timeout": "adb command timed out",
+  "adb-aborted": "adb command was cancelled",
+  "adb-output-limit": "adb command printed more output than allowed",
+  "adb-device-unavailable": "adb command failed: the device is unavailable",
+  "adb-cleanup-failed": "adb cleanup failed",
+};
+
+/** `message` is adb's own output; `publicMessage` is what clients see. */
+export class AppManagementError extends CommandFailureError {
+  declare readonly code: AppManagementErrorCode;
+
   constructor(
-    readonly code: AppManagementErrorCode,
+    code: AppManagementErrorCode,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; publicMessage?: string },
   ) {
-    super(message, options);
+    super(code, options?.publicMessage ?? PUBLIC_MESSAGES[code], undefined, {
+      cause: options?.cause,
+    });
+    this.message = message;
     this.name = "AppManagementError";
   }
 }
@@ -39,6 +62,11 @@ export class AppManagementError extends Error {
 const PACKAGE_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 const PERMISSION_RE = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$/;
 const ACTIVITY_RE = /^([A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+|\.?[A-Za-z][A-Za-z0-9_.$]*)(\/[A-Za-z0-9_.$]+)?$/;
+// An RFC 3986 scheme and a non-empty rest. Control characters are rejected so
+// a link stays one argument on the device shell line.
+const DEEP_LINK_RE = /^[A-Za-z][A-Za-z0-9+.-]*:[^\x00-\x1f\x7f]+$/;
+const MAX_DEEP_LINK_LENGTH = 4096;
+const UNRESOLVED_INTENT_RE = /unable to resolve Intent/;
 
 function output(stdout: string, stderr: string): string {
   return `${stdout}${stderr}`.trim();
@@ -47,57 +75,30 @@ function output(stdout: string, stderr: string): string {
 async function adb(
   serial: string,
   args: string[],
-  timeout = 30_000,
-  signal?: AbortSignal,
-  runExec: typeof execText = execText,
+  timeout: number,
+  deps: AdbDeps,
 ): Promise<AppActionResult> {
-  if (signal?.aborted) {
-    throw signal.reason instanceof Error
-      ? signal.reason
-      : new DOMException("The operation was aborted", "AbortError");
-  }
-  const result = await runExec("adb", ["-s", serial, ...args], {
+  throwIfAdbAborted(deps.signal, "The operation was aborted");
+  const result = await runAdb(serial, args, {
     timeout,
-    signal,
+    signal: deps.signal,
     lane: "background",
+    execText: deps.execText,
   });
-  if (signal?.aborted) {
-    throw signal.reason instanceof Error
-      ? signal.reason
-      : new DOMException("The operation was aborted", "AbortError");
-  }
+  throwIfAdbAborted(deps.signal, "The operation was aborted");
   const text = output(result.stdout, result.stderr);
-  if (result.timedOut) {
+  if (!adbSucceeded(result)) {
+    const failure = adbCommandFailure(adbOperation(args), result);
+    const fallback = result.timedOut
+      ? `adb ${args.join(" ")} timed out`
+      : result.error?.message || `adb ${args.join(" ")} failed`;
     throw new AppManagementError(
-      "adb-timeout",
-      text || `adb ${args.join(" ")} timed out`,
-      { cause: result.error },
-    );
-  }
-  if (result.error) {
-    throw new AppManagementError(
-      "adb-failed",
-      text || result.error.message || `adb ${args.join(" ")} failed`,
-      { cause: result.error },
-    );
-  }
-  if (result.status !== 0) {
-    throw new AppManagementError(
-      "adb-failed",
-      text || `adb ${args.join(" ")} failed`,
+      failure.code as AppManagementErrorCode,
+      text || fallback,
+      { cause: result.error ?? undefined, publicMessage: failure.publicMessage },
     );
   }
   return { ok: true, output: text };
-}
-
-function adbHost(
-  serial: string,
-  args: string[],
-  timeout = 30_000,
-  signal?: AbortSignal,
-  runExec: typeof execText = execText,
-): Promise<AppActionResult> {
-  return adb(serial, args, timeout, signal, runExec);
 }
 
 function validate(value: unknown, name: string, pattern: RegExp): string {
@@ -119,22 +120,22 @@ export function permissionName(value: unknown): string {
   return validate(value, "permission", PERMISSION_RE);
 }
 
+function deepLinkUrl(value: unknown): string {
+  if (typeof value === "string" && value.trim().length > MAX_DEEP_LINK_LENGTH) {
+    throw new Error(`url must be at most ${MAX_DEEP_LINK_LENGTH} characters`);
+  }
+  return validate(value, "url", DEEP_LINK_RE);
+}
+
 export async function installApk(
   serial: string,
   file: LocalUploadFile,
-  signal?: AbortSignal,
   dependencies: AppManagementDependencies = {},
 ): Promise<AppActionResult> {
   if (!file.filename.toLowerCase().endsWith(".apk")) {
     throw new Error("APK file must end with .apk");
   }
-  return adb(
-    serial,
-    ["install", "-r", file.path],
-    120_000,
-    signal,
-    dependencies.execText,
-  );
+  return adb(serial, ["install", "-r", file.path], 120_000, dependencies);
 }
 
 function safeFileName(name: string, fallback: string): string {
@@ -154,7 +155,6 @@ function mediaKind(file: LocalUploadFile): FileImportResult["kind"] {
 export async function importMediaFile(
   serial: string,
   file: LocalUploadFile,
-  signal?: AbortSignal,
   dependencies: AppManagementDependencies = {},
 ): Promise<FileImportResult> {
   const uploadId =
@@ -165,30 +165,21 @@ export async function importMediaFile(
     kind === "image" ? "/sdcard/Pictures" : kind === "video" ? "/sdcard/Movies" : "/sdcard/Download";
   const remotePath = `${remoteDir}/${filename}`;
   const partialPath = `${remoteDir}/.serve-emu-${uploadId}-${filename}.part`;
-  const runExec = dependencies.execText;
   let committed = false;
   let operationFailure: unknown;
   try {
     await adb(
       serial,
-      ["shell", "mkdir", "-p", remoteDir],
+      ["shell", "mkdir", "-p", shellQuote(remoteDir)],
       30_000,
-      signal,
-      runExec,
+      dependencies,
     );
-    await adbHost(
-      serial,
-      ["push", file.path, partialPath],
-      120_000,
-      signal,
-      runExec,
-    );
+    await adb(serial, ["push", file.path, partialPath], 120_000, dependencies);
     await adb(
       serial,
-      ["shell", "mv", "-f", partialPath, remotePath],
+      ["shell", "mv", "-f", shellQuote(partialPath), shellQuote(remotePath)],
       30_000,
-      signal,
-      runExec,
+      dependencies,
     );
     committed = true;
     await adb(serial, [
@@ -198,8 +189,8 @@ export async function importMediaFile(
       "-a",
       "android.intent.action.MEDIA_SCANNER_SCAN_FILE",
       "-d",
-      `file://${remotePath}`,
-    ], 30_000, signal, runExec);
+      shellQuote(`file://${remotePath}`),
+    ], 30_000, dependencies);
     return {
       ok: true,
       output: `Imported ${file.filename} to ${remotePath}`,
@@ -212,12 +203,13 @@ export async function importMediaFile(
   } finally {
     if (!committed) {
       try {
+        // Without the call's signal: an aborted import still removes its
+        // partial file.
         await adb(
           serial,
-          ["shell", "rm", "-f", partialPath],
+          ["shell", "rm", "-f", shellQuote(partialPath)],
           5_000,
-          undefined,
-          runExec,
+          { ...dependencies, signal: undefined },
         );
       } catch (cleanupError) {
         throw new AppManagementError(
@@ -248,10 +240,9 @@ export function launchApp(
     const component = act.includes("/") ? act : `${pkg}/${act}`;
     return adb(
       serial,
-      ["shell", "am", "start", "-n", component],
+      ["shell", "am", "start", "-n", shellQuote(component)],
       30_000,
-      undefined,
-      dependencies.execText,
+      dependencies,
     );
   }
   return adb(
@@ -260,15 +251,69 @@ export function launchApp(
       "shell",
       "monkey",
       "-p",
-      pkg,
+      shellQuote(pkg),
       "-c",
       "android.intent.category.LAUNCHER",
       "1",
     ],
     30_000,
-    undefined,
-    dependencies.execText,
+    dependencies,
   );
+}
+
+/** A failed VIEW intent; a link no activity takes gets its own public message. */
+function deepLinkFailure(output: string, cause?: unknown): AppManagementError {
+  return new AppManagementError("adb-failed", output, {
+    cause,
+    publicMessage: UNRESOLVED_INTENT_RE.test(output)
+      ? "no app on the device handles the link"
+      : "adb shell am failed",
+  });
+}
+
+/**
+ * Opens `url` with a VIEW intent, the command Android's deep-link testing docs
+ * use. `-W` waits for the launch, so `output` names the activity that took the
+ * link and a following screenshot shows it. With `packageName`, only that app
+ * can take the link and the app chooser does not open.
+ */
+export async function openDeepLink(
+  serial: string,
+  urlValue: string,
+  packageNameValue?: string,
+  dependencies: AppManagementDependencies = {},
+): Promise<AppActionResult> {
+  const url = deepLinkUrl(urlValue);
+  const pkg =
+    packageNameValue === undefined ? undefined : packageName(packageNameValue);
+  const args = [
+    "shell",
+    "am",
+    "start",
+    "-W",
+    "-a",
+    "android.intent.action.VIEW",
+    "-d",
+    shellQuote(url),
+    ...(pkg ? [shellQuote(pkg)] : []),
+  ];
+  let result: AppActionResult;
+  try {
+    result = await adb(serial, args, 30_000, dependencies);
+  } catch (error) {
+    if (
+      error instanceof AppManagementError &&
+      error.code === "adb-failed" &&
+      UNRESOLVED_INTENT_RE.test(error.message)
+    ) {
+      throw deepLinkFailure(error.message, error);
+    }
+    throw error;
+  }
+  // Devices without adb's shell protocol always exit 0, so the activity
+  // manager's own error line also means the launch failed.
+  if (/^Error:/m.test(result.output)) throw deepLinkFailure(result.output);
+  return result;
 }
 
 export function clearAppData(
@@ -278,10 +323,9 @@ export function clearAppData(
 ): Promise<AppActionResult> {
   return adb(
     serial,
-    ["shell", "pm", "clear", packageName(packageNameValue)],
+    ["shell", "pm", "clear", shellQuote(packageName(packageNameValue))],
     30_000,
-    undefined,
-    dependencies.execText,
+    dependencies,
   );
 }
 
@@ -292,10 +336,9 @@ export function forceStopApp(
 ): Promise<AppActionResult> {
   return adb(
     serial,
-    ["shell", "am", "force-stop", packageName(packageNameValue)],
+    ["shell", "am", "force-stop", shellQuote(packageName(packageNameValue))],
     30_000,
-    undefined,
-    dependencies.execText,
+    dependencies,
   );
 }
 
@@ -311,11 +354,10 @@ export function grantPermission(
       "shell",
       "pm",
       "grant",
-      packageName(packageNameValue),
-      permissionName(permissionValue),
+      shellQuote(packageName(packageNameValue)),
+      shellQuote(permissionName(permissionValue)),
     ],
     30_000,
-    undefined,
-    dependencies.execText,
+    dependencies,
   );
 }

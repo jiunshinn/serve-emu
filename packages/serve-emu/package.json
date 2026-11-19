@@ -1,6 +1,6 @@
 {
   "name": "serve-emu",
-  "version": "0.0.6",
+  "version": "0.1.0",
   "description": "The `npx serve` of Android devices — stream a booted emulator or attached device over a WebSocket H.264 feed decoded in the browser with WebCodecs.",
   "license": "Apache-2.0",
   "type": "module",
@@ -45,18 +45,23 @@
     "coverage": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov --coverage-dir=coverage && bun run scripts/check-coverage.ts",
     "test:package": "bun run scripts/package-smoke.ts",
     "check:unused": "knip",
-    "check": "bun run docs:check && bun run coverage && bun run typecheck && bun run typecheck:ui && bun run typecheck:tests && bun run build && bun run test:package",
+    "check:unused:prod": "knip --production --include files",
+    "check": "bun run docs:check && bun run check:unused:prod && bun run check:unused && bun run coverage && bun run typecheck && bun run typecheck:ui && bun run typecheck:tests && bun run build && bun run test:package",
     "release": "bun run scripts/release.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:ui": "tsc -p src/ui --noEmit",
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
+    "prepack": "bun run scripts/fetch-scrcpy.ts",
     "prepublishOnly": "bun run check",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "bench:server": "bun run scripts/bench-server.ts",
+    "bench:stream": "bun run scripts/bench-stream.ts"
   },
   "files": [
     "src",
-    "scripts",
-    "vendor",
+    "!src/ui",
+    "scripts/fetch-scrcpy.ts",
+    "vendor/scrcpy-server-v4.0",
     "dist/ui",
     "docs",
     "CHANGELOG.md",
@@ -64,9 +69,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@fastify/busboy": "^3.2.0",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "@fastify/busboy": "^3.2.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",
@@ -74,6 +77,8 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "knip": "6.26.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "vite": "^5.4.11"
   }
 }

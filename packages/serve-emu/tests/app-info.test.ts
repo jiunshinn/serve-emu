@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { CommandFailureError } from "../src/command-failure.ts";
 import { getForegroundApp } from "../src/app-info.ts";
 import type { execText } from "../src/exec.ts";
 
@@ -44,14 +45,14 @@ describe("getForegroundApp", () => {
             application-label-en:'Example App'
             pkgFlags=[ HAS_CODE DEBUGGABLE ]
           `);
-        case "pidof com.example.app":
+        case "pidof 'com.example.app'":
           return textResult("123 456\n");
         default:
           throw new Error(`unexpected command: ${shellCommand(args)}`);
       }
     }) as typeof execText;
 
-    await expect(getForegroundApp("emulator-5554", runExec)).resolves.toEqual({
+    await expect(getForegroundApp("emulator-5554", { execText: runExec })).resolves.toEqual({
       packageName: "com.example.app",
       activity: "com.example.app.MainActivity",
       pid: 123,
@@ -88,11 +89,11 @@ describe("getForegroundApp", () => {
           pkgFlags=[ HAS_CODE ]
         `);
       }
-      if (command === "pidof com.alternate") return textResult("not-a-pid\n");
+      if (command === "pidof 'com.alternate'") return textResult("not-a-pid\n");
       throw new Error(`unexpected command: ${command}`);
     }) as typeof execText;
 
-    await expect(getForegroundApp("device-1", runExec)).resolves.toEqual({
+    await expect(getForegroundApp("device-1", { execText: runExec })).resolves.toEqual({
       packageName: "com.alternate",
       activity: "com.alternate.Home",
       pid: null,
@@ -114,7 +115,7 @@ describe("getForegroundApp", () => {
       return textResult("no foreground component\n");
     }) as typeof execText;
 
-    await expect(getForegroundApp("device-1", runExec)).resolves.toEqual({
+    await expect(getForegroundApp("device-1", { execText: runExec })).resolves.toEqual({
       packageName: null,
       activity: null,
       pid: null,
@@ -143,7 +144,7 @@ describe("getForegroundApp", () => {
       });
     }) as typeof execText;
 
-    await expect(getForegroundApp("device-1", runExec)).resolves.toEqual({
+    await expect(getForegroundApp("device-1", { execText: runExec })).resolves.toEqual({
       packageName: "com.example",
       activity: "com.example.KeyboardActivity",
       pid: null,
@@ -175,7 +176,7 @@ describe("getForegroundApp", () => {
         throw new Error(`unexpected command: ${command}`);
       }) as typeof execText;
 
-      expect((await getForegroundApp("device-1", runExec)).packageName).toBe(
+      expect((await getForegroundApp("device-1", { execText: runExec })).packageName).toBe(
         expectedPackage,
       );
     }
@@ -190,22 +191,22 @@ describe("getForegroundApp", () => {
           stderr: " stderr detail ",
           error: spawnError,
         }),
-        message: "stderr detail",
+        message: "adb shell dumpsys failed: stderr detail",
         cause: spawnError,
       },
       {
         result: textResult("stdout detail", { status: null, error: spawnError }),
-        message: "spawn failed",
+        message: "adb shell dumpsys failed: spawn failed",
         cause: spawnError,
       },
       {
         result: textResult(" stdout detail ", { status: 1 }),
-        message: "stdout detail",
+        message: "adb shell dumpsys failed: stdout detail",
         cause: undefined,
       },
       {
         result: textResult("", { status: 1 }),
-        message: "adb shell dumpsys window failed",
+        message: "adb shell dumpsys failed: status 1",
         cause: undefined,
       },
     ];
@@ -213,12 +214,17 @@ describe("getForegroundApp", () => {
     for (const entry of cases) {
       const runExec = (async () => entry.result) as typeof execText;
       try {
-        await getForegroundApp("device-1", runExec);
+        await getForegroundApp("device-1", { execText: runExec });
         throw new Error("expected getForegroundApp to reject");
       } catch (error) {
-        expect(error).toBeInstanceOf(Error);
+        expect(error).toBeInstanceOf(CommandFailureError);
         expect((error as Error).message).toBe(entry.message);
         expect((error as Error).cause).toBe(entry.cause);
+        // Clients only ever see the operation, never adb's output.
+        expect(error).toMatchObject({
+          code: "adb-failed",
+          publicMessage: "adb shell dumpsys failed",
+        });
       }
     }
   });

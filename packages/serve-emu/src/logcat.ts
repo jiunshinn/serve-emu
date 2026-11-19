@@ -1,25 +1,20 @@
-import {
-  spawn,
-  type ChildProcessByStdio,
-} from "node:child_process";
+import type { ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
+import { spawnAdb, terminateChild } from "./adb-command.ts";
+import { ApiError, apiErrorResponse } from "./api/api-error.ts";
+import { packagePids } from "./package-pids.ts";
 
-export const DEFAULT_MAX_LOGCAT_SUBSCRIBERS = 8;
-export const DEFAULT_LOGCAT_BATCH_INTERVAL_MS = 75;
-export const DEFAULT_LOGCAT_QUEUE_LINES = 256;
-export const DEFAULT_LOGCAT_QUEUE_BYTES = 256 * 1024;
-export const DEFAULT_LOGCAT_MAX_LINE_BYTES = 16 * 1024;
-export const DEFAULT_LOGCAT_PID_REFRESH_MS = 5_000;
-export const DEFAULT_LOGCAT_TERMINATION_GRACE_MS = 1_000;
+const DEFAULT_MAX_LOGCAT_SUBSCRIBERS = 8;
+const DEFAULT_LOGCAT_BATCH_INTERVAL_MS = 75;
+const DEFAULT_LOGCAT_QUEUE_LINES = 256;
+const DEFAULT_LOGCAT_QUEUE_BYTES = 256 * 1024;
+const DEFAULT_LOGCAT_MAX_LINE_BYTES = 16 * 1024;
+const DEFAULT_LOGCAT_PID_REFRESH_MS = 5_000;
+const DEFAULT_LOGCAT_TERMINATION_GRACE_MS = 1_000;
 
-const LOGCAT_PID_LOOKUP_TIMEOUT_MS = 2_000;
-const LOGCAT_PID_LOOKUP_MAX_OUTPUT_BYTES = 64 * 1024;
-
-export type LogcatLine = {
-  line: string;
-  at: string;
-};
+export type { LogcatLine } from "./shared/api-contracts.ts";
+import type { LogcatEventMap, LogcatLine } from "./shared/api-contracts.ts";
 
 export type LogcatSubscriptionOptions = {
   packageName?: string;
@@ -66,6 +61,10 @@ type LogcatChild = ChildProcessByStdio<null, Readable, Readable>;
 
 export type LogcatDependencies = {
   spawn?: (serial: string) => LogcatChild;
+  /**
+   * Resolves the package's running PIDs (empty when it is not running) and
+   * rejects when the lookup failed; a rejection keeps the previous PIDs.
+   */
   resolvePackagePids?: (
     serial: string,
     packageName: string,
@@ -102,96 +101,29 @@ function positiveInteger(value: number, name: string): number {
   return value;
 }
 
+// Short-lived, so it goes through the bounded executor (unlike the
+// long-running logcat stream). A failed lookup rejects, which keeps the
+// subscriber's previous PIDs.
 async function resolvePackagePids(
   serial: string,
   packageName: string,
   signal: AbortSignal,
 ): Promise<Set<string>> {
-  if (!/^[A-Za-z0-9_.:-]+$/.test(packageName) || signal.aborted) {
-    return new Set();
-  }
-  return new Promise((resolve) => {
-    let child!: LogcatChild;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let outputBytes = 0;
-    let failed = false;
-    let killRequested = false;
-    const stdoutChunks: Buffer[] = [];
-
-    const kill = () => {
-      failed = true;
-      if (killRequested) return;
-      killRequested = true;
-      try {
-        child.kill("SIGKILL");
-      } catch {}
-    };
-    const onAbort = () => kill();
-    const collect = (target: "stdout" | "stderr", value: Buffer | string) => {
-      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-      if (chunk.byteLength > LOGCAT_PID_LOOKUP_MAX_OUTPUT_BYTES - outputBytes) {
-        kill();
-        return;
-      }
-      outputBytes += chunk.byteLength;
-      if (target === "stdout") stdoutChunks.push(chunk);
-    };
-    const finish = (status: number | null) => {
-      if (timer) clearTimeout(timer);
-      signal.removeEventListener("abort", onAbort);
-      if (failed || status !== 0) {
-        resolve(new Set());
-        return;
-      }
-      resolve(
-        new Set(
-          Buffer.concat(stdoutChunks)
-            .toString("utf8")
-            .trim()
-            .split(/\s+/)
-            .filter(Boolean),
-        ),
-      );
-    };
-
-    try {
-      child = spawn(
-        "adb",
-        ["-s", serial, "shell", "pidof", packageName],
-        { stdio: ["ignore", "pipe", "pipe"] },
-      );
-    } catch {
-      resolve(new Set());
-      return;
-    }
-    signal.addEventListener("abort", onAbort, { once: true });
-    timer = setTimeout(kill, LOGCAT_PID_LOOKUP_TIMEOUT_MS);
-    child.stdout.on("data", (chunk: Buffer | string) => {
-      collect("stdout", chunk);
-    });
-    child.stderr.on("data", (chunk: Buffer | string) => {
-      collect("stderr", chunk);
-    });
-    child.once("error", () => {
-      failed = true;
-    });
-    child.stdout.once("error", kill);
-    child.stderr.once("error", kill);
-    child.once("close", (status) => finish(status));
-    if (signal.aborted) onAbort();
-  });
+  return new Set(
+    await packagePids(serial, packageName, { signal, lane: "background" }),
+  );
 }
 
 function spawnLogcat(serial: string): LogcatChild {
   // Start at the live edge so reconnects do not replay the device ring buffer.
-  return spawn(
-    "adb",
-    ["-s", serial, "logcat", "-T", "1", "-v", "threadtime"],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
+  return spawnAdb(serial, ["logcat", "-T", "1", "-v", "threadtime"]);
 }
 
-function encodeEvent(event: string, value: unknown): Uint8Array {
+// Payloads are typed by the shared contract so the UI parser cannot drift.
+function encodeEvent<Event extends keyof LogcatEventMap>(
+  event: Event,
+  value: LogcatEventMap[Event],
+): Uint8Array {
   return new TextEncoder().encode(
     `event: ${event}\ndata: ${JSON.stringify(value)}\n\n`,
   );
@@ -311,7 +243,6 @@ export class LogcatHub {
   #nextSubscriberId = 1;
   #child: LogcatChild | null = null;
   #terminatingChild: LogcatChild | null = null;
-  #terminationTimer: unknown | null = null;
   #lineBuffer = "";
   #discardingLongLine = false;
   #activePidLookups = 0;
@@ -361,37 +292,35 @@ export class LogcatHub {
     signal?: AbortSignal,
   ): Response {
     if (this.#closed) {
-      return Response.json(
-        { ok: false, code: "logcat-session-closed", error: "logcat session is closed" },
-        { status: 409 },
+      return apiErrorResponse(
+        new ApiError(409, "conflict", "logcat session is closed", {
+          reason: "logcat-session-closed",
+        }),
       );
     }
     if (signal?.aborted) {
-      return Response.json(
-        { ok: false, code: "logcat-request-aborted", error: "request was aborted" },
-        { status: 499 },
+      return apiErrorResponse(
+        new ApiError(400, "invalid_request", "request was aborted", {
+          reason: "logcat-request-aborted",
+        }),
       );
     }
     if (this.#subscribers.size >= this.#maxSubscribers) {
-      return Response.json(
-        {
-          ok: false,
-          code: "logcat-subscriber-limit",
-          error: `logcat subscriber limit is ${this.#maxSubscribers}`,
-        },
-        { status: 429 },
+      return apiErrorResponse(
+        new ApiError(429, "rate_limited", `logcat subscriber limit is ${this.#maxSubscribers}`, {
+          reason: "logcat-subscriber-limit",
+        }),
       );
     }
     try {
       this.#ensureChild();
     } catch (error) {
-      return Response.json(
-        {
-          ok: false,
-          code: "logcat-start-failed",
-          error: error instanceof Error ? error.message : String(error),
-        },
-        { status: 502 },
+      console.error(`[logcat] could not start logcat for ${this.serial}:`, error);
+      return apiErrorResponse(
+        new ApiError(502, "downstream_failure", "logcat could not start", {
+          cause: error,
+          reason: "logcat-start-failed",
+        }),
       );
     }
 
@@ -537,10 +466,6 @@ export class LogcatHub {
     child.once("close", (code, signal) => {
       if (this.#terminatingChild === child) {
         this.#terminatingChild = null;
-        if (this.#terminationTimer !== null) {
-          this.#clock.clearTimeout(this.#terminationTimer);
-          this.#terminationTimer = null;
-        }
         if (!this.#closed && this.#subscribers.size > 0) {
           this.#startReplacementChild();
         }
@@ -667,10 +592,10 @@ export class LogcatHub {
     }
   }
 
-  #sendControl(
+  #sendControl<Event extends keyof LogcatEventMap>(
     subscriber: Subscriber,
-    event: string,
-    value: unknown,
+    event: Event,
+    value: LogcatEventMap[Event],
   ): void {
     if (!subscriber.active) return;
     try {
@@ -785,22 +710,19 @@ export class LogcatHub {
     this.#discardingLongLine = false;
     this.#decoder.end();
     this.#decoder = new StringDecoder("utf8");
-    this.#terminationTimer = this.#clock.setTimeout(() => {
-      this.#terminationTimer = null;
-      if (this.#terminatingChild !== child) return;
-      this.#totals.forcedKills++;
-      try {
-        child.kill("SIGKILL");
-      } catch (error) {
-        this.#lastError =
-          error instanceof Error ? error.message : String(error);
-      }
-    }, this.#terminationGraceMs);
-    try {
-      child.kill("SIGTERM");
-    } catch (error) {
-      this.#lastError =
-        error instanceof Error ? error.message : String(error);
-    }
+    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    void terminateChild(child, {
+      exited: closed,
+      graceMs: this.#terminationGraceMs,
+      label: "logcat",
+      onEscalate: () => {
+        this.#totals.forcedKills++;
+      },
+      setTimer: (callback, ms) => this.#clock.setTimeout(callback, ms),
+      clearTimer: (timer) => this.#clock.clearTimeout(timer),
+    }).catch((error: unknown) => {
+      this.#lastError = error instanceof Error ? error.message : String(error);
+    });
   }
+
 }

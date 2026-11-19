@@ -8,6 +8,7 @@ import {
   importMediaFile,
   installApk,
   launchApp,
+  openDeepLink,
   packageName,
   permissionName,
   type LocalUploadFile,
@@ -137,7 +138,7 @@ describe("app management actions", () => {
         "shell",
         "monkey",
         "-p",
-        "com.example.app",
+        "'com.example.app'",
         "-c",
         "android.intent.category.LAUNCHER",
         "1",
@@ -149,7 +150,7 @@ describe("app management actions", () => {
         "am",
         "start",
         "-n",
-        "com.example.app/.MainActivity",
+        "'com.example.app/.MainActivity'",
       ],
       [
         "-s",
@@ -158,13 +159,33 @@ describe("app management actions", () => {
         "am",
         "start",
         "-n",
-        "com.other/.Entry",
+        "'com.other/.Entry'",
       ],
     ]);
     expect(calls.every((call) => call.cmd === "adb")).toBe(true);
     expect(calls.every((call) => call.opts.timeout === 30_000)).toBe(true);
     expect(calls.every((call) => call.opts.lane === "background")).toBe(true);
     expect(calls.every((call) => call.opts.signal === undefined)).toBe(true);
+  });
+
+  test("quotes nested-class activities so the device shell keeps the $ suffix", async () => {
+    const calls: ExecCall[] = [];
+    const run = recordingExec(calls, result({ stdout: "Starting\n" }));
+    for (const activity of [
+      "Settings$WifiSettingsActivity",
+      ".Settings$WifiSettingsActivity",
+      "com.android.settings/.Settings$WifiSettingsActivity",
+    ]) {
+      await launchApp("device-a", "com.android.settings", activity, {
+        execText: run,
+      });
+    }
+
+    expect(calls.map((call) => call.args.slice(2))).toEqual([
+      ["shell", "am", "start", "-n", "'com.android.settings/Settings$WifiSettingsActivity'"],
+      ["shell", "am", "start", "-n", "'com.android.settings/.Settings$WifiSettingsActivity'"],
+      ["shell", "am", "start", "-n", "'com.android.settings/.Settings$WifiSettingsActivity'"],
+    ]);
   });
 
   test("builds clear, force-stop, and permission grant commands", async () => {
@@ -183,14 +204,14 @@ describe("app management actions", () => {
     );
 
     expect(calls.map((call) => call.args)).toEqual([
-      ["-s", "device-b", "shell", "pm", "clear", "com.example.app"],
+      ["-s", "device-b", "shell", "pm", "clear", "'com.example.app'"],
       [
         "-s",
         "device-b",
         "shell",
         "am",
         "force-stop",
-        "com.example.app",
+        "'com.example.app'",
       ],
       [
         "-s",
@@ -198,8 +219,8 @@ describe("app management actions", () => {
         "shell",
         "pm",
         "grant",
-        "com.example.app",
-        "android.permission.CAMERA",
+        "'com.example.app'",
+        "'android.permission.CAMERA'",
       ],
     ]);
   });
@@ -243,7 +264,7 @@ describe("app management actions", () => {
     await expect(nonzero).rejects.toMatchObject({
       name: "AppManagementError",
       code: "adb-failed",
-      message: "adb shell pm clear com.example.app failed",
+      message: "adb shell pm clear 'com.example.app' failed",
     });
 
     const spawnError = new Error("spawn adb ENOENT");
@@ -270,9 +291,124 @@ describe("app management actions", () => {
     await expect(timedOut).rejects.toMatchObject({
       code: "adb-timeout",
       message:
-        "adb shell pm grant com.example.app android.permission.CAMERA timed out",
+        "adb shell pm grant 'com.example.app' 'android.permission.CAMERA' timed out",
       cause: timeoutError,
     });
+  });
+});
+
+describe("deep links", () => {
+  const VIEW = ["shell", "am", "start", "-W", "-a", "android.intent.action.VIEW", "-d"];
+
+  test("starts a VIEW intent for any scheme, optionally in one package", async () => {
+    const calls: ExecCall[] = [];
+    const run = recordingExec(
+      calls,
+      result({ stdout: "Starting: Intent { ... }\nStatus: ok\n" }),
+    );
+
+    expect(
+      await openDeepLink("device-a", " myapp://profile/42?tab=posts ", undefined, {
+        execText: run,
+      }),
+    ).toEqual({ ok: true, output: "Starting: Intent { ... }\nStatus: ok" });
+    await openDeepLink("device-a", "https://example.com/p/7", " com.example.app ", {
+      execText: run,
+    });
+    await openDeepLink("device-a", "tel:+15551234", undefined, { execText: run });
+    await openDeepLink("device-a", `x:${"a".repeat(4094)}`, undefined, {
+      execText: run,
+    });
+
+    expect(calls.slice(0, 3).map((call) => call.args)).toEqual([
+      ["-s", "device-a", ...VIEW, "'myapp://profile/42?tab=posts'"],
+      ["-s", "device-a", ...VIEW, "'https://example.com/p/7'", "'com.example.app'"],
+      ["-s", "device-a", ...VIEW, "'tel:+15551234'"],
+    ]);
+    expect(calls.every((call) => call.opts.timeout === 30_000)).toBe(true);
+    expect(calls.every((call) => call.opts.lane === "background")).toBe(true);
+  });
+
+  test("quotes the URL so the device shell passes it through unchanged", async () => {
+    const hostile = "myapp://x?a=1&b=2;reboot|id`id`$(id)$HOME'q\"z *";
+    const calls: ExecCall[] = [];
+    await openDeepLink("device-a", hostile, undefined, {
+      execText: recordingExec(calls),
+    });
+    const quoted = calls[0]!.args.at(-1)!;
+
+    // adb joins shell argv with spaces and runs the line through `sh -c`.
+    const echoed = Bun.spawnSync(["/bin/sh", "-c", `printf '%s' ${quoted}`]);
+    expect(echoed.stdout.toString()).toBe(hostile);
+  });
+
+  test("rejects non-URLs, control characters, and long links before adb runs", async () => {
+    const calls: ExecCall[] = [];
+    const dependencies = { execText: recordingExec(calls) };
+
+    for (const value of [
+      "",
+      "profile/42",
+      "myapp:",
+      "1app://x",
+      "-n://x",
+      "myapp://a\nreboot",
+      "myapp://a\u0000b",
+      "myapp://a\u007fb",
+    ]) {
+      await expect(
+        openDeepLink("device-a", value, undefined, dependencies),
+      ).rejects.toThrow("url is invalid");
+    }
+    await expect(
+      openDeepLink("device-a", `x:${"a".repeat(4095)}`, undefined, dependencies),
+    ).rejects.toThrow("url must be at most 4096 characters");
+    await expect(
+      openDeepLink("device-a", "myapp://x", "invalid", dependencies),
+    ).rejects.toThrow("packageName is invalid");
+    expect(calls).toEqual([]);
+  });
+
+  test("a link no app takes fails with its own message, even when adb exits 0", async () => {
+    const unresolved =
+      "Starting: Intent { act=android.intent.action.VIEW dat=nope://x/... }\n" +
+      "Error: Activity not started, unable to resolve Intent { ... }";
+
+    for (const exec of [
+      result({ stdout: unresolved }),
+      result({ status: 1, stdout: unresolved }),
+    ]) {
+      await expect(
+        openDeepLink("device-a", "nope://x", undefined, {
+          execText: async () => exec,
+        }),
+      ).rejects.toMatchObject({
+        name: "AppManagementError",
+        code: "adb-failed",
+        publicMessage: "no app on the device handles the link",
+        message: unresolved,
+      });
+    }
+
+    const otherError = "Error: Activity class {com.example/.Gone} does not exist.";
+    await expect(
+      openDeepLink("device-a", "myapp://x", undefined, {
+        execText: async () => result({ stdout: otherError }),
+      }),
+    ).rejects.toMatchObject({ code: "adb-failed", publicMessage: "adb shell am failed" });
+    await expect(
+      openDeepLink("device-a", "myapp://x", undefined, {
+        execText: async () => result({ status: null, timedOut: true }),
+      }),
+    ).rejects.toMatchObject({ code: "adb-timeout" });
+
+    const delivered =
+      "Warning: Activity not started, intent has been delivered to currently running top-most instance.";
+    expect(
+      await openDeepLink("device-a", "myapp://x", undefined, {
+        execText: async () => result({ stdout: delivered }),
+      }),
+    ).toEqual({ ok: true, output: delivered });
   });
 });
 
@@ -284,9 +420,8 @@ describe("app management install and import boundaries", () => {
 
     const installing = installApk(
       "device-a",
-      upload({ filename: "Release.APK" }),
-      controller.signal,
-      {
+      upload({ filename: "Release.APK" }), {
+        signal: controller.signal,
         execText: async () => {
           calls++;
           controller.abort(reason);
@@ -307,9 +442,8 @@ describe("app management install and import boundaries", () => {
     try {
       await installApk(
         "device-a",
-        upload(),
-        controller.signal,
-        {
+        upload(), {
+          signal: controller.signal,
           execText: async () => {
             invoked = true;
             return result();
@@ -337,9 +471,7 @@ describe("app management install and import boundaries", () => {
       const calls: ExecCall[] = [];
       const imported = await importMediaFile(
         "device-a",
-        upload({ filename, mediaType }),
-        undefined,
-        {
+        upload({ filename, mediaType }), {
           uploadId: () => "media-kind",
           execText: recordingExec(calls),
         },
@@ -354,7 +486,7 @@ describe("app management install and import boundaries", () => {
         "shell",
         "mkdir",
         "-p",
-        directory,
+        `'${directory}'`,
       ]);
     },
   );
@@ -364,9 +496,7 @@ describe("app management install and import boundaries", () => {
 
     await importMediaFile(
       "device-a",
-      upload({ filename: "photo.png", mediaType: "image/png" }),
-      undefined,
-      { execText: recordingExec(calls) },
+      upload({ filename: "photo.png", mediaType: "image/png" }), { execText: recordingExec(calls) },
     );
 
     expect(calls[1]?.args.at(-1)).toMatch(
@@ -385,9 +515,7 @@ describe("app management install and import boundaries", () => {
 
     const importing = importMediaFile(
       "device-a",
-      upload({ filename: "photo.jpg", mediaType: "image/jpeg" }),
-      undefined,
-      { uploadId: () => "committed", execText: run },
+      upload({ filename: "photo.jpg", mediaType: "image/jpeg" }), { uploadId: () => "committed", execText: run },
     );
 
     await expect(importing).rejects.toMatchObject({
@@ -400,8 +528,8 @@ describe("app management install and import boundaries", () => {
       "shell",
       "mv",
       "-f",
-      "/sdcard/Pictures/.serve-emu-committed-photo.jpg.part",
-      "/sdcard/Pictures/photo.jpg",
+      "'/sdcard/Pictures/.serve-emu-committed-photo.jpg.part'",
+      "'/sdcard/Pictures/photo.jpg'",
     ]);
   });
 
@@ -417,9 +545,7 @@ describe("app management install and import boundaries", () => {
 
     const importing = importMediaFile(
       "device-a",
-      upload({ filename: "clip.mp4", mediaType: "video/mp4" }),
-      controller.signal,
-      { uploadId: () => "cancelled", execText: run },
+      upload({ filename: "clip.mp4", mediaType: "video/mp4" }), { signal: controller.signal, uploadId: () => "cancelled", execText: run },
     );
 
     await expect(importing).rejects.toBe(reason);
@@ -427,7 +553,7 @@ describe("app management install and import boundaries", () => {
       "shell",
       "rm",
       "-f",
-      "/sdcard/Movies/.serve-emu-cancelled-clip.mp4.part",
+      "'/sdcard/Movies/.serve-emu-cancelled-clip.mp4.part'",
     ]);
     expect(calls.at(-1)?.opts.signal).toBeUndefined();
   });

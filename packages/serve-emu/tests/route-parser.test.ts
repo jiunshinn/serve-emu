@@ -1,9 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
+  DEFAULT_MAX_ROUTE_FILE_BYTES,
   RouteParseError,
   parseRouteText,
   type RouteParseErrorCode,
 } from "../src/ui/lib/route-parser.ts";
+import { parseRoutePlaybackRequest } from "../src/route-playback.ts";
+import {
+  MAX_ROUTE_BODY_BYTES,
+  MAX_ROUTE_FILE_BYTES,
+  MAX_ROUTE_WAYPOINTS,
+} from "../src/shared/route-limits.ts";
 import {
   RouteParserWorkerController,
   type RouteFileLike,
@@ -61,7 +68,7 @@ describe("parseRouteText", () => {
   });
 
   test("parses waypoint JSON aliases without truncating the validated sequence", async () => {
-    const points = Array.from({ length: 10_000 }, (_, index) => ({
+    const points = Array.from({ length: MAX_ROUTE_WAYPOINTS }, (_, index) => ({
       lat: (index % 1_000) / 10_000,
       lng: (index % 1_000) / 10_000 + 1,
       alt: index,
@@ -70,7 +77,7 @@ describe("parseRouteText", () => {
       yieldControl: async () => {},
     });
 
-    expect(result.points).toHaveLength(10_000);
+    expect(result.points).toHaveLength(MAX_ROUTE_WAYPOINTS);
     expect(result.points[0]).toEqual({ latitude: 0, longitude: 1, altitude: 0 });
     expect(result.points[9_999]).toEqual({ latitude: 0.0999, longitude: 1.0999, altitude: 9_999 });
   });
@@ -396,3 +403,30 @@ describe("RouteParserWorkerController", () => {
     expect(responses.some((response) => response.type === "result")).toBe(false);
   });
 });
+
+describe("route limits shared by the parser and the server", () => {
+  test("the parser and the playback request enforce one waypoint limit", async () => {
+    const waypoint = { latitude: 1, longitude: 2 };
+    // The parser takes MAX_ROUTE_WAYPOINTS (see the JSON alias test above).
+    await expectRouteError(
+      parseRouteText(
+        JSON.stringify(Array(MAX_ROUTE_WAYPOINTS + 1).fill(waypoint)),
+        "route.json",
+        { yieldControl: async () => {} },
+      ),
+      "waypoint-limit",
+    );
+    expect(() =>
+      parseRoutePlaybackRequest({ waypoints: Array(MAX_ROUTE_WAYPOINTS).fill(waypoint) }),
+    ).not.toThrow();
+    expect(() =>
+      parseRoutePlaybackRequest({ waypoints: Array(MAX_ROUTE_WAYPOINTS + 1).fill(waypoint) }),
+    ).toThrow(`route cannot exceed ${MAX_ROUTE_WAYPOINTS} waypoints`);
+  });
+
+  test("the route file budget matches the request body budget", () => {
+    expect(DEFAULT_MAX_ROUTE_FILE_BYTES).toBe(MAX_ROUTE_FILE_BYTES);
+    expect(MAX_ROUTE_FILE_BYTES).toBe(MAX_ROUTE_BODY_BYTES);
+  });
+});
+

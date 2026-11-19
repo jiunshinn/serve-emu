@@ -10,7 +10,7 @@ import {
   type NormalizedPoint,
 } from "../lib/accessibility-hover";
 import type { Sender } from "../lib/use-stream";
-import type { AccessibilityNode } from "./accessibility-panel";
+import type { AccessibilityNode } from "../../shared/api-contracts";
 
 type Props = {
   canvasRef: RefObject<HTMLCanvasElement>;

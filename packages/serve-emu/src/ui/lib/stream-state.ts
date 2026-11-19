@@ -1,41 +1,18 @@
-export type DeviceSize = { width: number; height: number };
+import type { DeviceSize } from "../../shared/api-contracts";
 
-export type StreamStats = {
-  fps: number;
-  decodeQueue: number;
-  transitMs: number | null;
-  e2eMs: number | null;
-  codec: string | null;
-  rendered: boolean;
-};
-
-export type StreamState = {
-  status: string;
-  fps: number;
-  deviceSize: DeviceSize | null;
-  stats: StreamStats | null;
-};
-
-export type StreamWorkerEvent =
-  | { type: "status"; status: string }
-  | { type: "session"; size: DeviceSize }
-  | { type: "rendered" }
-  | { type: "stats"; stats: StreamStats };
+// Lenient /health parser for the stream hook. It reads only what the hook
+// needs, so it keeps working while the full HealthResponse contract evolves.
 
 export type StreamHealth = {
   serial?: string;
   generation?: number;
   size: DeviceSize;
   status?: "streaming" | "stopped" | "error";
+  recovering?: boolean;
   lastFrameAt?: string | null;
   lastError?: string | null;
-};
-
-export const INITIAL_STREAM_STATE: StreamState = {
-  status: "connecting…",
-  fps: 0,
-  deviceSize: null,
-  stats: null,
+  /** From `contention`; absent until the server's first probe answers. */
+  otherScrcpySessions?: number;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -88,107 +65,23 @@ export function parseStreamHealth(value: unknown): StreamHealth {
   ) {
     throw new Error("health lastError is invalid");
   }
+  // Diagnostics only: a malformed value is ignored rather than failing the poll.
+  const contention = value.contention;
+  const otherScrcpySessions =
+    isRecord(contention) &&
+    typeof contention.otherScrcpySessions === "number" &&
+    Number.isSafeInteger(contention.otherScrcpySessions) &&
+    contention.otherScrcpySessions >= 0
+      ? contention.otherScrcpySessions
+      : undefined;
   return {
     size: parseSize(value.size),
     ...(value.serial === undefined ? {} : { serial: value.serial as string }),
     ...(value.generation === undefined ? {} : { generation: value.generation as number }),
     ...(status === undefined ? {} : { status }),
+    ...(value.recovering === true ? { recovering: true } : {}),
     ...(lastFrameAt === undefined ? {} : { lastFrameAt }),
     ...(lastError === undefined ? {} : { lastError }),
+    ...(otherScrcpySessions === undefined ? {} : { otherScrcpySessions }),
   };
-}
-
-export function parseStreamWorkerEvent(
-  value: unknown,
-): StreamWorkerEvent | null {
-  if (!isRecord(value) || typeof value.type !== "string") return null;
-  if (value.type === "rendered") return { type: "rendered" };
-  if (value.type === "status") {
-    return typeof value.status === "string"
-      ? { type: "status", status: value.status }
-      : null;
-  }
-  if (value.type === "session") {
-    try {
-      return { type: "session", size: parseSize(value.size) };
-    } catch {
-      return null;
-    }
-  }
-  if (value.type !== "stats" || !isRecord(value.stats)) return null;
-  const stats = value.stats;
-  if (
-    typeof stats.fps !== "number" ||
-    !Number.isFinite(stats.fps) ||
-    typeof stats.decodeQueue !== "number" ||
-    !Number.isFinite(stats.decodeQueue) ||
-    (stats.transitMs !== null && typeof stats.transitMs !== "number") ||
-    (stats.e2eMs !== null && typeof stats.e2eMs !== "number") ||
-    (stats.codec !== null && typeof stats.codec !== "string") ||
-    typeof stats.rendered !== "boolean"
-  ) {
-    return null;
-  }
-  return {
-    type: "stats",
-    stats: {
-      fps: stats.fps,
-      decodeQueue: stats.decodeQueue,
-      transitMs: stats.transitMs,
-      e2eMs: stats.e2eMs,
-      codec: stats.codec,
-      rendered: stats.rendered,
-    },
-  };
-}
-
-export function applyWorkerEvent(
-  state: StreamState,
-  event: StreamWorkerEvent,
-): StreamState {
-  switch (event.type) {
-    case "status":
-      return state.status === event.status
-        ? state
-        : { ...state, status: event.status };
-    case "session":
-      return { ...state, deviceSize: event.size };
-    case "stats":
-      return {
-        ...state,
-        fps: event.stats.fps,
-        stats: event.stats,
-      };
-    case "rendered":
-      return state;
-    default:
-      return state;
-  }
-}
-
-const RECOVERABLE_HEALTH_STATUSES = new Set([
-  "metadata unavailable",
-  "waiting for video",
-]);
-
-export function applyStreamHealth(
-  state: StreamState,
-  health: StreamHealth,
-  options: { nowMs: number; hasRenderedFrame: boolean },
-): StreamState {
-  const lastFrameMs = health.lastFrameAt
-    ? Date.parse(health.lastFrameAt)
-    : Number.NaN;
-  const lastFrameAgeMs = Number.isFinite(lastFrameMs)
-    ? options.nowMs - lastFrameMs
-    : Infinity;
-  let status = state.status;
-  if (health.status && health.status !== "streaming") {
-    status = health.lastError || health.status;
-  } else if (!options.hasRenderedFrame && lastFrameAgeMs > 5_000) {
-    status = "waiting for video";
-  } else if (RECOVERABLE_HEALTH_STATUSES.has(status)) {
-    status = "streaming";
-  }
-  return { ...state, deviceSize: health.size, status };
 }

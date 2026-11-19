@@ -3,7 +3,7 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { execText } from "../src/exec.ts";
+import { ProcessExecutor, execText } from "../src/exec.ts";
 
 const CHILD_START_TIMEOUT_MS = 5_000;
 const BOUNDED_COMPLETION_MS = 2_500;
@@ -134,6 +134,10 @@ test("execText reaps a child that exceeds maxBuffer before releasing its slot", 
 });
 
 test("aborting a command queued at the concurrency gate does not consume a slot", async () => {
+  // Its own executor: the test fills exactly maxActive slots and must not
+  // share them with the process-wide default executor.
+  const executor = new ProcessExecutor({ maxActive: 4 });
+  const run = executor.execText.bind(executor);
   const dir = await mkdtemp(join(tmpdir(), "serve-emu-exec-queue-"));
   const holderControllers = Array.from(
     { length: 4 },
@@ -143,7 +147,7 @@ test("aborting a command queued at the concurrency gate does not consume a slot"
     join(dir, `holder-${index}`),
   );
   const holders = holderControllers.map((controller, index) =>
-    execText(
+    run(
       process.execPath,
       ["-e", hangingChildScript(holderPaths[index])],
       { signal: controller.signal, timeout: 10_000 },
@@ -158,7 +162,7 @@ test("aborting a command queued at the concurrency gate does not consume a slot"
   try {
     await Promise.all(holderPaths.map(waitForPath));
 
-    const queued = execText(
+    const queued = run(
       process.execPath,
       ["-e", hangingChildScript(queuedPath)],
       { signal: queuedController.signal, timeout: 10_000 },
@@ -184,7 +188,7 @@ test("aborting a command queued at the concurrency gate does not consume a slot"
     );
     try {
       const probe = await within(
-        execText(process.execPath, ["-e", 'process.stdout.write("probe")'], {
+        run(process.execPath, ["-e", 'process.stdout.write("probe")'], {
           signal: probeController.signal,
           timeout: 2_000,
         }),

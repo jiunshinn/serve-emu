@@ -1,14 +1,31 @@
 // Floors apply to executed lines, not merely LCOV file presence. Browser-only
-// Worker/React wiring is covered separately by the required browser CI job.
+// Worker/React code has no line floors here; the browser CI job runs it
+// (tests/browser): a real H.264 GOP with delta frames, cached SPS/PPS for a
+// late joiner, reset-video recovery, scrcpy v4 framing, and the token cookie.
 const CRITICAL_SOURCE_FILES = {
   "src/server.ts": 80,
   "src/api/router.ts": 85,
   "src/api/routes/index.ts": 100,
+  "src/api/routes/applications.ts": 95,
+  "src/api/routes/devices.ts": 80,
+  "src/api/routes/inspection.ts": 80,
+  "src/api/routes/session.ts": 75,
+  "src/device-service.ts": 95,
+  "src/server/auth.ts": 95,
   "src/server/backpressure.ts": 95,
-  "src/server/session-cache.ts": 95,
+  "src/server/contention.ts": 95,
+  "src/request-body.ts": 95,
+  "src/server/emulators.ts": 95,
+  "src/server/health.ts": 95,
+  "src/server/session-services.ts": 95,
+  "src/server/static.ts": 95,
+  "src/server/uploads.ts": 90,
+  "src/server/video.ts": 95,
+  "src/server/ws.ts": 90,
   "src/control-input-queue.ts": 90,
   "src/device-session-context.ts": 85,
   "src/scrcpy.ts": 85,
+  "src/adb-command.ts": 95,
   "src/input.ts": 90,
   "src/route-playback.ts": 90,
   "src/session-recorder.ts": 95,

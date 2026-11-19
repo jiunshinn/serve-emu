@@ -11,8 +11,9 @@ import {
   type RefObject,
 } from "react";
 import { StatusBar } from "./components/status-bar";
-import type { AccessibilityNode } from "./components/accessibility-panel";
+import type { AccessibilityNode } from "../shared/api-contracts";
 import { DevicePanel } from "./components/device-panel";
+import { ErrorBoundary } from "./components/error-boundary";
 import { DeviceStream } from "./components/device-stream";
 import { ControlBar, type HardwareKey } from "./components/control-bar";
 import { SideTools } from "./components/side-tools";
@@ -87,7 +88,7 @@ export function App() {
 
   return (
     <>
-      <StatusBar controlError={state.controlError} onDismissError={clearControlError} status={state.status} deviceSize={state.deviceSize} fps={state.fps} stats={state.stats} />
+      <StatusBar controlError={state.controlError} onDismissError={clearControlError} status={state.status} deviceSize={state.deviceSize} fps={state.fps} stats={state.stats} otherScrcpySessions={state.otherScrcpySessions} />
       <StreamControlsContext.Provider value={controls}>
         <AppShell />
       </StreamControlsContext.Provider>
@@ -209,7 +210,11 @@ const AppShell = memo(function AppShell() {
             </button>
             {devicesOpen ? <span>Devices</span> : null}
           </div>
-          {devicesOpen ? <StableDevicePanel /> : null}
+          {devicesOpen ? (
+            <ErrorBoundary label="Devices">
+              <StableDevicePanel />
+            </ErrorBoundary>
+          ) : null}
         </aside>
         <div className="device">
           <DeviceStream
@@ -235,7 +240,10 @@ const AppShell = memo(function AppShell() {
           />
         </div>
         <aside className="side-panel">
-          <SideTools key={deviceSession.revision}
+          {/* Not keyed by the session: remounting on every store publish
+              collapsed open sections and dropped panel input. Panels refresh
+              their own device data when the session changes. */}
+          <SideTools
             accessibilityEnabled={accessibilityEnabled}
             accessibilityNodes={accessibilityNodes}
             highlightedAccessibilityId={highlightedAccessibilityId}

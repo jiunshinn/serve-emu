@@ -3,13 +3,14 @@ import {
   ApiError,
   apiErrorResponse,
 } from "../src/api/api-error.ts";
-import { readBodyBytes, readJsonBody } from "../src/api/body.ts";
 import {
   createApiRouter,
   type ApiErrorLogContext,
   type ApiLogger,
   type ApiRoute,
 } from "../src/api/router.ts";
+import { CommandFailureError } from "../src/command-failure.ts";
+import { SessionChangedError } from "../src/device-session-context.ts";
 
 const url = (path: string) => `http://127.0.0.1:3011${path}`;
 
@@ -43,6 +44,7 @@ describe("ApiError", () => {
     [500, "internal_error"],
     [502, "downstream_failure"],
     [503, "service_unavailable"],
+    [504, "downstream_timeout"],
   ] as const)("serializes status %i and code %s", async (status, code) => {
     const response = apiErrorResponse(
       new ApiError(status, code, "Safe message"),
@@ -75,83 +77,6 @@ describe("ApiError", () => {
     expect(() => new ApiError(400, "not_found", "Missing")).toThrow(
       "API error code not_found must use status 404, not 400",
     );
-  });
-});
-
-describe("bounded request bodies", () => {
-  test("parses chunked JSON without trusting Content-Length", async () => {
-    const encoder = new TextEncoder();
-    const request = new Request(url("/api/example"), {
-      method: "POST",
-      body: streamBody(encoder.encode('{"ready":'), encoder.encode("true}")),
-    });
-
-    expect(await readJsonBody(request, 14)).toEqual({ ready: true });
-  });
-
-  test("rejects an oversized declared Content-Length before reading", async () => {
-    const request = new Request(url("/api/example"), {
-      method: "POST",
-      headers: { "Content-Length": "900719925474099999999" },
-      body: "{}",
-    });
-
-    await expect(readBodyBytes(request, 8)).rejects.toMatchObject({
-      status: 413,
-      code: "payload_too_large",
-    });
-    expect(request.bodyUsed).toBe(false);
-  });
-
-  test("counts actual UTF-8 bytes when no length is declared", async () => {
-    const encoder = new TextEncoder();
-    const request = new Request(url("/api/example"), {
-      method: "POST",
-      body: streamBody(encoder.encode('"🙂"')),
-    });
-
-    await expect(readJsonBody(request, 5)).rejects.toMatchObject({
-      status: 413,
-      code: "payload_too_large",
-    });
-  });
-
-  test("maps malformed JSON and malformed UTF-8 to a safe validation error", async () => {
-    const malformedJson = new Request(url("/api/example"), {
-      method: "POST",
-      body: "{",
-    });
-    const malformedUtf8 = new Request(url("/api/example"), {
-      method: "POST",
-      body: streamBody(new Uint8Array([0xc3, 0x28])),
-    });
-
-    await expect(readJsonBody(malformedJson)).rejects.toMatchObject({
-      status: 400,
-      code: "invalid_json",
-      message: "Request body must be valid JSON",
-    });
-    await expect(readJsonBody(malformedUtf8)).rejects.toMatchObject({
-      status: 400,
-      code: "invalid_json",
-      message: "Request body must be valid JSON",
-    });
-  });
-
-  test("rejects an invalid Content-Length and invalid configured limits", async () => {
-    const request = new Request(url("/api/example"), {
-      method: "POST",
-      headers: { "Content-Length": "-1" },
-      body: "{}",
-    });
-
-    await expect(readBodyBytes(request, 10)).rejects.toMatchObject({
-      status: 400,
-      code: "invalid_request",
-    });
-    await expect(
-      readBodyBytes(new Request(url("/api/example")), -1),
-    ).rejects.toBeInstanceOf(RangeError);
   });
 });
 
@@ -347,6 +272,61 @@ describe("createApiRouter", () => {
     });
     expect(text).not.toContain("hunter2");
     expect(text).not.toContain("super-secret");
+  });
+
+  test("maps uncaught errors through the same table as handled ones", async () => {
+    const calls: ApiErrorLogContext[] = [];
+    const thrown: Record<string, unknown> = {
+      "/api/stale": new SessionChangedError(1, 2),
+      "/api/adb": new CommandFailureError(
+        "adb-timeout",
+        "screencap timed out",
+        "/home/me/SECRET-PATH",
+      ),
+      "/api/bug": new TypeError("cannot read /home/me/SECRET-PATH"),
+    };
+    const router = createApiRouter<Deps>(
+      Object.entries(thrown).map(([path, error]) => ({
+        method: "GET",
+        path,
+        handler: () => {
+          throw error;
+        },
+      })),
+      { logger: { error: (_message, context) => calls.push(context) } },
+    );
+
+    const stale = await router.handle(new Request(url("/api/stale")), deps);
+    expect(stale!.status).toBe(409);
+    expect(await errorJson(stale)).toMatchObject({
+      error: { code: "conflict", reason: "session_changed" },
+    });
+
+    const adb = await router.handle(new Request(url("/api/adb")), deps);
+    const adbText = await adb!.text();
+    expect(adb!.status).toBe(504);
+    expect(JSON.parse(adbText)).toEqual({
+      ok: false,
+      error: {
+        code: "downstream_timeout",
+        message: "screencap timed out",
+        reason: "adb-timeout",
+      },
+    });
+    expect(adbText).not.toContain("SECRET-PATH");
+
+    const bug = await router.handle(new Request(url("/api/bug")), deps);
+    expect(bug!.status).toBe(500);
+    expect(await errorJson(bug)).toEqual({
+      ok: false,
+      error: { code: "internal_error", message: "Internal server error" },
+    });
+
+    // Only server failures are logged, each with its original error.
+    expect(calls.map(({ path, status, cause }) => [path, status, cause])).toEqual([
+      ["/api/adb", 504, thrown["/api/adb"]],
+      ["/api/bug", 500, thrown["/api/bug"]],
+    ]);
   });
 
   test("can widen the claimed path set for composition routes", async () => {

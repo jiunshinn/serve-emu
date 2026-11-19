@@ -1,4 +1,6 @@
-import { deviceSessionStore } from "./device-session-store";
+import { PAGE_BASE } from "./base-path";
+import { deviceSessionStore, type DeviceSessionHealthRequest } from "./device-session-store";
+import { bindPollVisibility, createPollController } from "./polling";
 import { parseStreamHealth, type StreamHealth } from "./stream-state";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
@@ -14,11 +16,16 @@ import type {
   StreamFatalStatus,
   StreamLifecycleState,
 } from "./stream-lifecycle";
-import type { StreamStats, StreamWorkerEvent } from "./stream-worker";
+import type { DeviceSize } from "../../shared/api-contracts";
+import type { Gesture } from "../../shared/control-contracts";
+import type { WsMessageOptions } from "../../shared/websocket-contracts";
+import type {
+  StreamStats,
+  StreamWorkerEvent,
+  WorkerCommand,
+} from "../../shared/worker-contracts";
 
-export type DeviceSize = { width: number; height: number };
-
-export type { StreamStats };
+export type { DeviceSize, StreamStats };
 
 export type StreamState = {
   controlError: string | null;
@@ -28,11 +35,26 @@ export type StreamState = {
   fps: number;
   deviceSize: DeviceSize | null;
   stats: StreamStats | null;
+  /** Other scrcpy sessions streaming this device, per the server's probe. */
+  otherScrcpySessions: number;
 };
 
-export type Sender = (msg: Record<string, unknown>, ack?: boolean) => void;
+/** Sends one control gesture; the hook adds `requestId` and `ack`. */
+export type Sender = (
+  msg: Gesture & Pick<WsMessageOptions, "record">,
+  ack?: boolean,
+) => void;
 
 type ApiInfo = StreamHealth;
+
+/** postMessage, checked against the worker's command contract. */
+function postCommand(
+  worker: Worker,
+  command: WorkerCommand<OffscreenCanvas>,
+  transfer: Transferable[] = [],
+): void {
+  worker.postMessage(command, transfer);
+}
 
 // A canvas can transfer control to an OffscreenCanvas only once, so the worker
 // that received it must be reused if the effect re-runs for the same element.
@@ -52,6 +74,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     fps: 0,
     deviceSize: null,
     stats: null,
+    otherScrcpySessions: 0,
   });
   const workerRef = useRef<Worker | null>(null);
   const clientEpochRef = useRef(0);
@@ -61,7 +84,9 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
   const send = useCallback<Sender>((msg, ack = true) => {
     const clientEpoch = clientEpochRef.current;
     if (clientEpoch < 1) return;
-    workerRef.current?.postMessage({
+    const worker = workerRef.current;
+    if (!worker) return;
+    postCommand(worker, {
       type: "send",
       clientEpoch,
       text: JSON.stringify({ ...msg, requestId: `${clientEpoch}:${++requestSequenceRef.current}`, ...(!ack ? { ack: false } : {}) }),
@@ -83,17 +108,19 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     let serverTerminalStatus: string | null = null;
     let workerFatalStatus: StreamFatalStatus | null = null;
     let lifecycleTimer: ReturnType<typeof setInterval> | null = null;
-    let healthTimer: ReturnType<typeof setTimeout> | null = null;
-    let healthController: AbortController | null = null;
-    let healthRequestSequence = 0;
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${location.host}/ws?frame-meta=1`;
+    const url = `${proto}//${location.host}${PAGE_BASE}/ws?frame-meta=1`;
 
     let worker = workerByCanvas.get(canvas);
     const isNewWorker = !worker;
     if (!worker) {
-      worker = new Worker(new URL("./stream-worker.ts", import.meta.url), { type: "module" });
+      worker = new Worker(new URL("./stream-worker.ts", import.meta.url), {
+        type: "module",
+        // A stable identity for DevTools and the browser tests, whatever
+        // the bundler names the chunk.
+        name: "stream-worker",
+      });
       workerByCanvas.set(canvas, worker);
     }
     currentGeneration = workerGenerationByCanvas.get(canvas) ?? 0;
@@ -225,7 +252,8 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     // generation boundary synchronously with the command.
     if (isNewWorker) {
       const offscreen = canvas.transferControlToOffscreen();
-      worker.postMessage(
+      postCommand(
+        worker,
         { type: "init", clientEpoch, canvas: offscreen, url },
         [offscreen],
       );
@@ -237,7 +265,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
         fps: 0,
         stats: null,
       }));
-      worker.postMessage({ type: "connect", clientEpoch });
+      postCommand(worker, { type: "connect", clientEpoch });
     }
 
     lifecycleTimer = setInterval(() => {
@@ -251,81 +279,63 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
 
     const applyServerStatus = (d: ApiInfo) => {
       serverTerminalStatus =
-        d.status && d.status !== "streaming" ? d.lastError || d.status : null;
+        d.recovering ? "Reconnecting to device…" :
+          d.status && d.status !== "streaming" ? d.lastError || d.status : null;
       setState((prev) => ({
         ...prev,
         deviceSize: d.size,
+        otherScrcpySessions: d.otherScrcpySessions ?? 0,
         ...(serverTerminalStatus ? { status: serverTerminalStatus } : {}),
       }));
     };
 
-    function refreshHealthForGeneration() {
-      if (cancelled) return;
-      if (healthTimer !== null) {
-        clearTimeout(healthTimer);
-        healthTimer = null;
-      }
-      if (healthController) {
-        // Its finally block observes the generation mismatch and schedules an
-        // immediate replacement without overlapping requests.
-        healthController.abort();
-        return;
-      }
-      void pollHealth();
-    }
-
-    async function pollHealth() {
-      if (cancelled) return;
-      const requestSequence = ++healthRequestSequence;
-      const sessionRequest = deviceSessionStore.beginHealthRequest();
-      const requestGeneration = currentGeneration;
-      const controller = new AbortController();
-      healthController = controller;
-      const requestTimeout = setTimeout(
-        () => controller.abort(),
-        HEALTH_REQUEST_TIMEOUT_MS,
-      );
-
-      try {
-        const response = await fetch("/health", { signal: controller.signal });
-        const data = parseStreamHealth(await response.json());
-        if (
-          cancelled ||
-          controller.signal.aborted ||
-          requestSequence !== healthRequestSequence ||
-          requestGeneration !== currentGeneration
-        ) {
-          return;
+    type HealthPollResult = {
+      data: StreamHealth;
+      sessionRequest: DeviceSessionHealthRequest;
+    };
+    // Keyed by the stream generation: a new generation restarts the poll so
+    // metadata refreshes at once, and a response for an older generation is
+    // inert. Polling pauses while the tab is hidden and resumes immediately.
+    const healthPoll = createPollController<HealthPollResult, number>({
+      intervalMs: HEALTH_POLL_INTERVAL_MS,
+      task: async ({ signal }) => {
+        const sessionRequest = deviceSessionStore.beginHealthRequest();
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        signal.addEventListener("abort", abort, { once: true });
+        const requestTimeout = setTimeout(abort, HEALTH_REQUEST_TIMEOUT_MS);
+        try {
+          const response = await fetch(`${PAGE_BASE}/health`, { signal: controller.signal });
+          return { data: parseStreamHealth(await response.json()), sessionRequest };
+        } finally {
+          clearTimeout(requestTimeout);
+          signal.removeEventListener("abort", abort);
         }
+      },
+      onResult: ({ data, sessionRequest }, { key: requestGeneration }) => {
+        if (cancelled || requestGeneration !== currentGeneration) return;
         if (!deviceSessionStore.applyHealth(data, sessionRequest)) return;
         applyServerStatus(data);
-      } catch {
-        // The stream lifecycle remains authoritative when metadata is
-        // temporarily unavailable.
-      } finally {
-        clearTimeout(requestTimeout);
-        if (healthController === controller) healthController = null;
-        if (!cancelled && requestSequence === healthRequestSequence) {
-          // If a stream boundary made this response stale, refresh metadata
-          // immediately; otherwise keep the normal low-frequency cadence.
-          const delay =
-            requestGeneration === currentGeneration
-              ? HEALTH_POLL_INTERVAL_MS
-              : 0;
-          healthTimer = setTimeout(() => void pollHealth(), delay);
-        }
-      }
+      },
+      // The stream lifecycle remains authoritative when metadata is
+      // temporarily unavailable.
+      onError: () => {},
+    });
+    const unbindHealthVisibility = bindPollVisibility(healthPoll, document);
+
+    function refreshHealthForGeneration() {
+      if (cancelled) return;
+      healthPoll.restart(currentGeneration);
     }
-    void pollHealth();
+    healthPoll.start(currentGeneration);
 
     return () => {
       cancelled = true;
-      healthRequestSequence++;
-      healthController?.abort();
-      if (healthTimer !== null) clearTimeout(healthTimer);
+      unbindHealthVisibility();
+      healthPoll.stop();
       if (lifecycleTimer !== null) clearInterval(lifecycleTimer);
       worker.removeEventListener("message", onMessage);
-      worker.postMessage({ type: "stop", clientEpoch });
+      postCommand(worker, { type: "stop", clientEpoch });
       if (clientEpochRef.current === clientEpoch) clientEpochRef.current = 0;
       workerRef.current = null;
     };

@@ -1,7 +1,7 @@
-import { SessionChangedError } from "../../device-session-context.ts";
 import { parseGeoFix } from "../../location.ts";
-import { routePlaybackErrorResponse } from "../../route-playback-api.ts";
+import { startRoutePlaybackResponse } from "../../route-playback-api.ts";
 import { parseRoutePlaybackRequest } from "../../route-playback.ts";
+import { shouldRecordPayload } from "../../session-api.ts";
 import type { ApiDependencies } from "../dependencies.ts";
 import type { ApiRoute } from "../router.ts";
 
@@ -32,13 +32,18 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
           errorResponse,
         } = deps;
         try {
-          const fix = parseGeoFix(
-            await readJsonBody(req, MAX_JSON_BODY_BYTES, requestContext),
+          const payload = await readJsonBody(
+            req,
+            MAX_JSON_BODY_BYTES,
+            requestContext,
           );
           const location = await applyLocation(
             requestContext,
-            fix,
-            "rest:location",
+            parseGeoFix(payload),
+            {
+              source: "rest:location",
+              record: shouldRecordPayload(payload),
+            },
           );
           return Response.json({ ok: true, location });
         } catch (err) {
@@ -71,20 +76,17 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
             await readJsonBody(req, MAX_ROUTE_BODY_BYTES, requestContext),
           );
         } catch (err) {
-          return errorResponse(err, 400);
+          return errorResponse(err);
         }
         try {
-          const start = requestContext.route.start(route);
-          const snapshot = await requestContext.trackDrain(start);
-          sessions.assertCurrent(requestContext);
-          return Response.json({
-            ok: true,
-            route: snapshot,
+          return await startRoutePlaybackResponse(requestContext.route, route, {
+            assertCurrent: () => sessions.assertCurrent(requestContext),
+            track: (start) => requestContext.trackDrain(start),
+            req,
           });
         } catch (err) {
-          return err instanceof SessionChangedError
-            ? errorResponse(err)
-            : routePlaybackErrorResponse(err);
+          // Only a session change escapes the helper: 409 session_changed.
+          return errorResponse(err);
         }
       },
     },
@@ -92,12 +94,17 @@ export function locationRoutes(): ApiRoute<ApiDependencies>[] {
       method: "DELETE",
       path: "/api/route",
       handler: async ({ deps }) => {
-        const { requestContext, sessions } = deps;
-        sessions.assertCurrent(requestContext);
-        return Response.json({
-          ok: true,
-          route: requestContext.route.stop(),
-        });
+        const { requestContext, sessions, errorResponse } = deps;
+        try {
+          // A stale session is a 409 like the other route mutations, not a 500.
+          sessions.assertCurrent(requestContext);
+          return Response.json({
+            ok: true,
+            route: requestContext.route.stop(),
+          });
+        } catch (err) {
+          return errorResponse(err);
+        }
       },
     },
     {

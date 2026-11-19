@@ -1,0 +1,38 @@
+.add-emulator { display: flex; flex-direction: column; gap: 6px; }
+.add-emulator-result { color: #91d5ab; font-size: 12px; max-width: 280px; }
+.add-emulator-result:empty { display: none; }
+.add-emulator-dialog {
+  box-sizing: border-box;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  padding: 28px;
+  border: 1px solid #363640;
+  border-radius: 16px;
+  background: #15151b;
+  color: #e5e5ea;
+  box-shadow: 0 24px 80px #0008;
+}
+.add-emulator-dialog::backdrop { background: #0009; }
+.add-emulator-dialog h2 { margin: 0 0 8px; font-size: 20px; letter-spacing: -0.02em; }
+.add-emulator-dialog p { font-size: 13px; line-height: 1.6; color: #aaaab5; margin: 0 0 20px; }
+.add-emulator-dialog fieldset { display: flex; flex-direction: column; gap: 8px; padding: 0; margin: 0; border: 0; min-width: 0; }
+.add-emulator-dialog label { font-size: 13px; font-weight: 600; margin-top: 8px; }
+.add-emulator-dialog fieldset input, .add-emulator-dialog fieldset select {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #363640;
+  border-radius: 8px;
+  background: #0b0b0e;
+  color: #e5e5ea;
+  font: inherit;
+  font-size: 13px;
+}
+.add-emulator-dialog select:focus-visible { outline: 2px solid #5cc8ff; outline-offset: 3px; }
+.add-emulator-dialog small { font-size: 12px; line-height: 1.5; color: #9a9aa6; }
+.add-emulator-dialog .add-emulator-error { color: #ffaaaa; overflow-wrap: anywhere; }
+.add-emulator-reload { align-self: flex-start; margin-top: 4px; }
+.add-emulator-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
+.add-emulator-submit { background: #c5edff; border-color: #c5edff; color: #10232e; }
+.add-emulator-dialog button:active:not(:disabled) { transform: scale(0.97); }

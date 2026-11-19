@@ -1,9 +1,6 @@
-export type AccessibilityBounds = {
-  left: number;
-  top: number;
-  right: number;
-  bottom: number;
-};
+import type { AccessibilityBounds } from "../../shared/api-contracts";
+
+export type { AccessibilityBounds };
 
 export type AccessibilityHitTarget = {
   id: string;

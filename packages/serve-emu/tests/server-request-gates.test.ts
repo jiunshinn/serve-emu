@@ -1,6 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { describe, expect, spyOn, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { InvalidTokenError, startupUrl } from "../src/access-policy.ts";
 import { ScrcpyStreamError } from "../src/scrcpy.ts";
 import { startServer } from "../src/server.ts";
 import { parseFramePacket } from "../src/shared/frame-meta.ts";
@@ -21,7 +23,10 @@ describe("server request gates", () => {
     const missing = await response(harness.request("/api"));
     expect(missing.status).toBe(401);
     expect(missing.headers.get("www-authenticate")).toBe("Bearer");
-    expect(await missing.json()).toEqual({ ok: false, error: "unauthorized" });
+    expect(await missing.json()).toEqual({
+      ok: false,
+      error: { code: "unauthorized", message: "unauthorized" },
+    });
 
     const wrongLength = await response(
       harness.request("/api", {
@@ -88,6 +93,34 @@ describe("server request gates", () => {
     });
   });
 
+  test("a token with every allowed character class round-trips through URL, cookie, and bearer", async () => {
+    const token = "AZaz09._~-";
+    const harness = await createHarness({ token });
+    const printed = new URL(startupUrl("http://127.0.0.1:3300", token));
+    const bootstrap = await response(
+      harness.request(`${printed.pathname}${printed.search}`, {
+        headers: { accept: "text/html" },
+      }),
+    );
+    expect(bootstrap.status).toBe(303);
+    // What a browser stores: the cookie value up to the first ';'.
+    const stored = bootstrap.headers.get("set-cookie")!.split(";")[0]!;
+    expect(stored).toBe(`semu_session=${token}`);
+    expect((await response(harness.request("/api", { headers: { cookie: stored } }))).status).toBe(200);
+    expect(
+      (await response(harness.request("/api", { headers: { authorization: `Bearer ${token}` } }))).status,
+    ).toBe(200);
+  });
+
+  test("refuses to start with a token the cookie or URL would corrupt", async () => {
+    for (const token of ["abc;def", "a+b", "a b"]) {
+      // startServer itself must reject, so there is no harness to return.
+      await expect(
+        startServer({ serial: "emulator-5554", port: 0, token }, { openScrcpy: async () => fakeScrcpy() }),
+      ).rejects.toThrow(InvalidTokenError);
+    }
+  });
+
   test("rejects cross-origin mutations and upgrades before routing", async () => {
     const harness = await createHarness();
 
@@ -101,7 +134,7 @@ describe("server request gates", () => {
     expect(crossOriginPost.status).toBe(403);
     expect(await crossOriginPost.json()).toEqual({
       ok: false,
-      error: "forbidden origin",
+      error: { code: "forbidden", message: "forbidden origin" },
     });
 
     const malformedOrigin = await response(
@@ -123,7 +156,7 @@ describe("server request gates", () => {
     expect(sameOriginPost.status).toBe(400);
     expect(await sameOriginPost.json()).toMatchObject({
       ok: false,
-      code: "invalid-json",
+      error: { code: "invalid_json" },
     });
 
     const crossOriginRead = await response(
@@ -141,6 +174,140 @@ describe("server request gates", () => {
     expect(crossOriginUpgrade.status).toBe(403);
     expect(harness.server.upgrades).toHaveLength(0);
   });
+
+  test("rejects DNS-rebound host names before routing when auth is off", async () => {
+    const harness = await createHarness();
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      // A rebound page is same-origin with itself, so Origin matches Host.
+      const rebound = {
+        host: "evil.example:33040",
+        origin: "http://evil.example:33040",
+      };
+      const mutation = await response(
+        harness.request("/api/tap", {
+          method: "POST",
+          headers: rebound,
+          body: "{",
+        }),
+      );
+      expect(mutation.status).toBe(403);
+      expect(await mutation.json()).toEqual({
+        ok: false,
+        error: { code: "forbidden", message: "forbidden host" },
+      });
+      for (const path of ["/api", "/health", "/", "/ws"]) {
+        const read = await response(
+          harness.request(path, { headers: rebound }),
+        );
+        expect(read.status).toBe(403);
+      }
+      expect(harness.server.upgrades).toHaveLength(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0]?.[0])).toContain("evil.example:33040");
+    } finally {
+      warn.mockRestore();
+    }
+
+    // The Vite dev proxy keeps its own Host and Origin (changeOrigin: false).
+    const viteProxy = await response(
+      harness.request("/api/tap", {
+        method: "POST",
+        headers: { host: "localhost:5173", origin: "http://localhost:5173" },
+        body: "{",
+      }),
+    );
+    expect(viteProxy.status).toBe(400);
+    expect(await viteProxy.json()).toMatchObject({
+      ok: false,
+      error: { code: "invalid_json" },
+    });
+
+    for (const host of ["localhost:33040", "[::1]:33040", "192.168.1.20:33040"]) {
+      const read = await response(harness.request("/api", { headers: { host } }));
+      expect(read.status).toBe(200);
+    }
+  });
+
+  test("serves configured host names and leaves rebinding to the token when set", async () => {
+    const configured = await createHarness({
+      host: "0.0.0.0",
+      allowedHosts: ["DevBox.lan"],
+    });
+    const named = await response(
+      configured.request("/api", { headers: { host: "devbox.lan:33040" } }),
+    );
+    expect(named.status).toBe(200);
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const other = await response(
+        configured.request("/api", { headers: { host: "other.lan:33040" } }),
+      );
+      expect(other.status).toBe(403);
+    } finally {
+      warn.mockRestore();
+    }
+
+    const authenticated = await createHarness({ token: "test-secret" });
+    const withToken = await response(
+      authenticated.request("/api", {
+        headers: {
+          host: "serve-emu.example:443",
+          authorization: "Bearer test-secret",
+        },
+      }),
+    );
+    expect(withToken.status).toBe(200);
+    const withoutToken = await response(
+      authenticated.request("/api", {
+        headers: { host: "serve-emu.example:443" },
+      }),
+    );
+    expect(withoutToken.status).toBe(401);
+  });
+
+  test("rejects malformed allowed host names at startup", async () => {
+    await expect(
+      createHarness({ allowedHosts: ["devbox.lan/admin"] }),
+    ).rejects.toThrow('invalid allowed host "devbox.lan/admin"');
+  });
+
+  test("rejects cross-site subresource requests and API navigations, but not UI navigations", async () => {
+    const harness = await createHarness();
+    const image = await response(
+      harness.request("/api", {
+        headers: {
+          "sec-fetch-site": "cross-site",
+          "sec-fetch-mode": "no-cors",
+          "sec-fetch-dest": "image",
+        },
+      }),
+    );
+    expect(image.status).toBe(403);
+    expect(await image.json()).toEqual({
+      ok: false,
+      error: { code: "forbidden", message: "forbidden cross-site request" },
+    });
+
+    const navigationHeaders = {
+      "sec-fetch-site": "cross-site",
+      "sec-fetch-mode": "navigate",
+      "sec-fetch-dest": "iframe",
+    };
+    const apiNavigation = await response(
+      harness.request("/api", { headers: navigationHeaders }),
+    );
+    expect(apiNavigation.status).toBe(403);
+    expect(await apiNavigation.json()).toEqual({
+      ok: false,
+      error: { code: "forbidden", message: "forbidden cross-site request" },
+    });
+
+    const uiNavigation = await response(
+      harness.request("/", { headers: navigationHeaders }),
+    );
+    expect(uiNavigation.status).not.toBe(403);
+  });
 });
 
 describe("server HTTP and WebSocket boundaries", () => {
@@ -152,6 +319,7 @@ describe("server HTTP and WebSocket boundaries", () => {
       ["GET", "/api/devices/select"],
       ["GET", "/api/avds/start"],
       ["GET", "/api/avds/stop"],
+      ["PUT", "/api/stream-quality"],
       ["PATCH", "/api/orientation"],
       ["PATCH", "/api/night-mode"],
       ["PATCH", "/api/font-scale"],
@@ -172,6 +340,7 @@ describe("server HTTP and WebSocket boundaries", () => {
       ["GET", "/api/apps/install"],
       ["GET", "/api/files/import"],
       ["GET", "/api/apps/launch"],
+      ["GET", "/api/deep-link"],
       ["GET", "/api/apps/clear"],
       ["GET", "/api/apps/force-stop"],
       ["GET", "/api/apps/grant"],
@@ -290,6 +459,11 @@ describe("server HTTP and WebSocket boundaries", () => {
       ["/api/devices/select", {}],
       ["/api/avds/start", {}],
       ["/api/avds/stop", {}],
+      ["/api/stream-quality", {}],
+      ["/api/stream-quality", { maxFps: 0 }],
+      ["/api/stream-quality", { maxSize: 720, codec: "h265" }],
+      ["/api/avds/create", { name: "../escape", profile: "pixel_fold", image: "x" }],
+      ["/api/foldable", { posture: "tent" }],
       ["/api/orientation", { orientation: "upside-down" }],
       ["/api/night-mode", { mode: "midnight" }],
       ["/api/font-scale", { scale: 3 }],
@@ -300,6 +474,8 @@ describe("server HTTP and WebSocket boundaries", () => {
       ["/api/text", {}],
       ["/api/key", {}],
       ["/api/apps/launch", null],
+      ["/api/deep-link", null],
+      ["/api/deep-link", { url: "no-scheme" }],
       ["/api/apps/clear", null],
       ["/api/apps/force-stop", null],
       ["/api/apps/grant", null],
@@ -323,13 +499,29 @@ describe("server HTTP and WebSocket boundaries", () => {
   });
 
   test("serves existing UI files and returns stable missing-file responses", async () => {
-    const harness = await createHarness();
-    const uiDir = join(import.meta.dir, "..", "dist", "ui");
-    const fixtureName = "__server-request-gates-fixture__.txt";
-    const fixturePath = join(uiDir, fixtureName);
-    await mkdir(uiDir, { recursive: true });
-    await writeFile(fixturePath, "static fixture\n", "utf8");
+    // A private UI directory: concurrent runs and `vite build --emptyOutDir`
+    // must not see (or remove) this fixture, and it must never reach the
+    // published dist/ui.
+    const base = await mkdtemp(join(tmpdir(), "serve-emu-ui-"));
     try {
+      const uiDir = join(base, "ui");
+      await mkdir(uiDir);
+      // A file next to the UI directory that traversal must never reach.
+      await writeFile(join(base, "secret.txt"), "outside the UI\n", "utf8");
+      const harness = await createHarness({}, { uiDir });
+      const fixtureName = "__server-request-gates-fixture__.txt";
+      await writeFile(join(uiDir, fixtureName), "static fixture\n", "utf8");
+      await writeFile(join(uiDir, "index.html"), "<!doctype html>fixture ui", "utf8");
+
+      const index = await response(harness.request("/"));
+      expect(index.status).toBe(200);
+      expect(await index.text()).toBe("<!doctype html>fixture ui");
+      for (const page of ["/grid", "/grid/", "/d/emulator-5556/", "/d/emulator-5556/index.html"]) {
+        const ui = await response(harness.request(page));
+        expect(ui.status, page).toBe(200);
+        expect(await ui.text()).toBe("<!doctype html>fixture ui");
+      }
+
       const existing = await response(harness.request(`/${fixtureName}`));
       expect(existing.status).toBe(200);
       expect(await existing.text()).toBe("static fixture\n");
@@ -340,12 +532,17 @@ describe("server HTTP and WebSocket boundaries", () => {
       expect(missing.status).toBe(404);
       expect(await missing.text()).toBe("not found");
 
-      const encodedTraversal = await response(
-        harness.request("/%2e%2e%2fpackage.json"),
-      );
-      expect(encodedTraversal.status).toBe(404);
+      // URL parsing already folds `/../` and `/%2e%2e/` into `/secret.txt`,
+      // so those only prove the file stays outside the UI directory. The
+      // encoded-slash form reaches the handler as-is and guards against a
+      // future change that decodes the path before the `..` check.
+      for (const traversal of ["/%2e%2e%2fsecret.txt", "/../secret.txt", "/%2e%2e/secret.txt"]) {
+        const escaped = await response(harness.request(traversal));
+        expect(escaped.status, traversal).toBe(404);
+        expect(await escaped.text(), traversal).not.toContain("outside the UI");
+      }
     } finally {
-      await rm(fixturePath, { force: true });
+      await rm(base, { recursive: true, force: true });
     }
   });
 
@@ -541,17 +738,19 @@ describe("server shutdown and errors", () => {
     expect(harness.server.stopArguments).toEqual([true]);
     expect(harness.session.closeCalls).toBe(1);
     expect(harness.started.session).toBeNull();
-    expect(harness.started.getSession()).toBeNull();
+    expect(harness.started.session).toBeNull();
   });
 
   test("rolls back scrcpy when session construction fails before binding", async () => {
     const session = fakeScrcpy();
     let serveCalls = 0;
 
+    // startServer itself must reject, so there is no harness to return.
     await expect(
       startServer(
         { serial: session.serial, port: 33_041 },
         {
+          log: () => {},
           openScrcpy: async () => session,
           createInputQueue: () => {
             throw new Error("input queue construction failed");

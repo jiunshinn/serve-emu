@@ -4,7 +4,13 @@
 
 This document is the source of truth for the binary protocols implemented by
 `serve-emu`. The vendored device server is scrcpy **4.0**, pinned by
-`scripts/fetch-scrcpy.ts`. The host parser remains compatible with the scrcpy v3
+`scripts/fetch-scrcpy.ts` together with its upstream SHA-256:
+
+```text
+scrcpy-server-v4.0  84924bd564a1eb6089c872c7521f968058977f91f5ff02514a8c74aff3210f3a
+```
+
+A server file with any other digest is never pushed to a device. The host parser remains compatible with the scrcpy v3
 and v4 stream layouts so that protocol changes fail explicitly instead of being
 mistaken for video data.
 
@@ -28,6 +34,17 @@ the first enabled socket, rather than one byte to every socket. The host must no
 blindly discard the first byte: `parseVideoPreamble()` accepts the video preamble
 at offset 0 or 1 and validates its codec and dimensions. The control socket is
 drained for any device-to-host events that this package does not consume.
+
+Before starting the server, the host prepares the jar on the device. The cache
+is content-addressed,
+`/data/local/tmp/serve-emu-scrcpy-server-v<version>.jar-<first 24 hex of its SHA-256>`,
+and is reused only when `sha256sum` on the device prints exactly the local
+jar's digest. Otherwise (a missing, empty, or truncated file, or a device
+without `sha256sum`) the host pushes the jar to a temporary path, runs `sync`,
+and `mv -f`s it over the cache name, so a hard stop cannot leave a
+complete-looking empty cache. Each session copies the cache to its own working
+path and removes that copy when it ends. A damaged cache therefore repairs
+itself on the next start; deleting it by hand is never required.
 
 ## Video preamble
 
@@ -105,6 +122,20 @@ configuration and prepends it to key frames so that a browser joining or
 refreshing mid-stream can initialize its decoder. Slow clients drop frames until
 the next key frame and may request a video reset.
 
+A session packet starts a new encoder session, and the session's first packets
+are a codec configuration and a key frame. `serve-emu` and the browser wait for
+that key frame instead of requesting another reset, which would restart the
+encoder before it can answer. Each reset also restarts the encoder, so while an
+admitted reset has not yet produced a key frame, further reset requests from
+the watchdog or clients are coalesced into it. The wait starts at 2.5 seconds
+and doubles for each reset that produces no frames, up to 30 seconds.
+
+Reset-video packets take a priority lane in the control queue: they are written
+at the next step boundary of whatever gesture is running (at most one ~16–20 ms
+step away) rather than after it, a queued reset absorbs later reset requests
+even when gestures were queued in between, and resets do not count against the
+gesture depth limit.
+
 ## Control socket packets
 
 The current scrcpy 4.0 server accepts the following messages written by
@@ -125,6 +156,44 @@ then converted to screen pixels before the touch packet is encoded. Home,
 Recents, and Power use inject-keycode packets; Back uses type 4. Input must stay
 on this socket rather than falling back to `adb shell input`, which adds
 significant latency.
+
+## Key frames: never wait for a periodic IDR
+
+`--key-frame-interval` (default 10 s) is passed as the codec option
+`i-frame-interval`, and `--repeat-frame-ms` as `repeat-previous-frame-after`.
+Both are advisory. Measured on the Android 16 (API 36) x86_64 emulator image,
+emulator 37.2.12, whose only H.264 encoder is the software
+`c2.android.avc.encoder`:
+
+- **The interval is counted in frames.** scrcpy configures the encoder with a
+  nominal `KEY_FRAME_RATE` of 60, and the encoder turns the interval into
+  `interval × 60` frames. The frame rate is variable, so the wall-clock gap is
+  `interval × 60 / fps`. With `--key-frame-interval 2`, IDRs arrived every 119
+  frames: 9.4 s apart at 12.4 fps on AVD `dev`, and 15 s apart at 7.2 fps on AVD
+  `serve-emu-e2e`. The default of 10 s means 600 frames, nearly a minute or more
+  at the 3–12 fps an emulator usually produces. scrcpy itself sets the same
+  10 s (`DEFAULT_I_FRAME_INTERVAL` in its `SurfaceEncoder`), so
+  `--key-frame-interval 0`, which omits the option, behaves like the default.
+- **Repeats stop after 10 frames.** After the last screen change, the surface
+  input repeats the previous frame at most 10 times, whatever the repeat delay,
+  so a static screen sends no frames about a second later (see #165).
+
+Method: start `serve-emu`, connect a raw `/ws?frame-meta=1` client that never
+sends `reset-video`, and log the time of each key frame and the number of
+frames since the previous one. Swipe through the REST API for a moving screen,
+or leave the screen untouched for a static one.
+
+So no recovery path may rely on a periodic IDR. Every wait for a key frame
+requests one with a rate-limited `reset-video`:
+
+| Who waits | Retry |
+| --- | --- |
+| Server: a new client, or one that fell behind (`awaitingKeyFrame`) | `SessionRecoveryWatchdog` requests a reset about every 2.5–3 s (it checks once a second) while any client waits. Retries are coalesced while a restart awaits its key frame, and back off for restarts that produce no frames. |
+| Worker: a delta frame with no configured decoder, or before the first key frame | requests a key frame on that delta frame, at most every 400 ms |
+| Worker: soft or hard recovery dropping until a key frame | requests a key frame on every dropped delta frame, at most every 400 ms (#128), so a reset the server coalesced is retried |
+
+The server's gate, not the client, limits how often the encoder actually
+restarts, so client retries cost only small WebSocket messages.
 
 ## `SEMU` WebSocket frame metadata
 
@@ -165,6 +234,11 @@ while coalesced pointer moves use `ack: false`. A disconnected client's remainin
 touches are released on the same device session, with distinct wire pointer IDs
 for each client.
 
+Session recording is decided per pointer at its `down`: a touch `down` with
+`"record": false` keeps that pointer's `move`, `up`, and disconnect release out
+of the session, and a recorded `down` records them all, whatever their own
+`record` fields say.
+
 A timing request `{ "type": "clock-sync", "clientTsMs": 1000 }` receives
 `{ "type": "clock-sync", "clientTsMs": 1000, "serverTsMs": 1005 }`.
 Both timestamps are epoch milliseconds; the response is a timing sample, not a
@@ -204,7 +278,11 @@ each `SEMU` header in an actual WebSocket message.
 Treat a scrcpy server bump as a protocol change, even when upstream release
 notes do not call one out.
 
-1. Change `SCRCPY_VERSION` in `scripts/fetch-scrcpy.ts` and fetch the new server.
+1. Change `SCRCPY_VERSION` in `scripts/fetch-scrcpy.ts`, set
+   `SCRCPY_SERVER_SHA256` to the `scrcpy-server-v<version>` line of the
+   release's upstream `SHA256SUMS.txt` (and compare it with the release asset's
+   digest), update the digest line above and the `vendor/scrcpy-server-v<version>`
+   entry in `package.json` `files`, then fetch the new server.
 2. Compare upstream `DesktopConnection`, `Streamer`, `ControlMessage`,
    `ControlMessageReader`, and server-option parsing with the pinned version.
 3. Revalidate socket order and dummy-byte behavior; the device-name and stream

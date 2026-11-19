@@ -115,10 +115,6 @@ export function normalizeTextForControl(text: string): string {
   return textBytes(text).toString("utf8");
 }
 
-export function normalizeGesture(gesture: Gesture): Gesture {
-  return parseGesture(gesture);
-}
-
 export function parseGesture(value: unknown): Gesture {
   if (!isRecord(value) || typeof value.type !== "string") {
     throw new Error("message must be a gesture object");
@@ -251,7 +247,7 @@ export function compileGesture(
   gesture: Gesture,
   screenValue: Screen,
 ): CompiledGesture {
-  const normalized = normalizeGesture(gesture);
+  const normalized = parseGesture(gesture);
   const screen = validateScreen(screenValue);
   const px = (n: number) => n * screen.width;
   const py = (n: number) => n * screen.height;
@@ -360,17 +356,4 @@ export function compileGesture(
     steps,
     bytes: steps.reduce((total, step) => total + step.packet.length, 0),
   };
-}
-
-export async function dispatch(
-  control: { write(packet: Buffer): unknown },
-  gesture: Gesture,
-  screen: Screen,
-): Promise<void> {
-  for (const step of compileGesture(gesture, screen).steps) {
-    if (step.delayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, step.delayMs));
-    }
-    control.write(step.packet);
-  }
 }

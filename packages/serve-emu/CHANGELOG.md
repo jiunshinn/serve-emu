@@ -8,6 +8,27 @@ This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html):
 - `minor` for backwards-compatible user-facing features or APIs
 - `major` for breaking CLI, HTTP API, WebSocket protocol, package, or runtime behavior
 
+## 0.1.0 - 2026-10-04
+
+### Added
+
+- Experimental: show a host webcam in the Android emulator's camera. Pass
+  `--camera-back` or `--camera-front` with `--avd` to choose a webcam
+  (`webcam<N>`), a still image (`imagefile:<path>`), or another emulator camera
+  mode, and list webcams with `--webcam-list`. The preview can be slow, and the
+  flags may change in a later release; the README's Camera section lists the
+  known limitations. The CLI prints a notice when a camera flag is used.
+- `/health` `keyFrameRecovery` reports `pendingResetAgeMs` and
+  `resetBackoffMs`.
+
+### Fixed
+
+- Stop back-to-back video resets from freezing the stream for tens of seconds
+  on slow devices. Session packets no longer trigger a reset, and reset
+  requests that arrive before the pending restart's key frame are coalesced
+  into it. The wait starts at 2.5 seconds and doubles for each reset that
+  produces no frames, up to 30 seconds.
+
 ## 0.0.6 - 2026-09-21
 
 ### Changed

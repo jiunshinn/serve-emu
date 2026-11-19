@@ -8,24 +8,9 @@ import {
   type ControlBinaryWriter,
   type ControlInputClock,
 } from "../src/control-input-queue.ts";
+import { deferred, type Deferred } from "./helpers/deferred.ts";
 
 const SCREEN = { width: 1080, height: 1920 };
-
-type Deferred = {
-  promise: Promise<void>;
-  resolve: () => void;
-  reject: (reason: unknown) => void;
-};
-
-function deferred(): Deferred {
-  let resolve!: () => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<void>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 async function flushMicrotasks(): Promise<void> {
   for (let i = 0; i < 8; i++) await Promise.resolve();
@@ -109,7 +94,8 @@ type ClockWaiter = {
   onAbort: () => void;
 };
 
-class ManualClock implements ControlInputClock {
+/** Sleeps that end only when the test calls `advanceNext`. */
+class ManualSleeper implements ControlInputClock {
   readonly waits: ClockWaiter[] = [];
 
   sleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -148,7 +134,7 @@ class ManualClock implements ControlInputClock {
 
 function makeQueue(
   writer: FakeWriter,
-  clock: ManualClock,
+  clock: ManualSleeper,
   options: { maxDepth?: number; maxBytes?: number } = {},
 ): ControlInputQueue {
   return new ControlInputQueue({
@@ -173,7 +159,7 @@ function expectOverloaded(callback: () => unknown): ControlInputError {
 describe("ControlInputQueue ordering and backpressure", () => {
   test("keeps an overlapping swipe and tap atomic", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const queue = makeQueue(writer, clock);
     const swipe = queue.enqueue(
       {
@@ -235,7 +221,7 @@ describe("ControlInputQueue ordering and backpressure", () => {
 
   test("does not start the next packet until a deferred write completes", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const gate = writer.deferNext();
     const queue = makeQueue(writer, clock);
     const input = queue.enqueue({ type: "key", keycode: 66 }, SCREEN);
@@ -354,7 +340,7 @@ describe("SocketControlWriter", () => {
 describe("ControlInputQueue bounds and coalescing", () => {
   test("bounds active and pending input by depth", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const gate = writer.deferNext();
     const queue = makeQueue(writer, clock, { maxDepth: 2 });
     const first = queue.enqueue({ type: "text", text: "a" }, SCREEN);
@@ -387,7 +373,7 @@ describe("ControlInputQueue bounds and coalescing", () => {
 
   test("bounds active and pending input by compiled packet bytes", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const gate = writer.deferNext();
     const queue = makeQueue(writer, clock, {
       maxDepth: 10,
@@ -414,7 +400,7 @@ describe("ControlInputQueue bounds and coalescing", () => {
 
   test("coalesces only a same-pointer move at the pending tail", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const gate = writer.deferNext();
     const queue = makeQueue(writer, clock);
     const active = queue.enqueue({ type: "text", text: "hold" }, SCREEN);
@@ -453,7 +439,7 @@ describe("ControlInputQueue bounds and coalescing", () => {
 
   test("does not coalesce across a different pointer at the tail", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const gate = writer.deferNext();
     const queue = makeQueue(writer, clock);
     const active = queue.enqueue({ type: "text", text: "hold" }, SCREEN);
@@ -496,7 +482,7 @@ describe("ControlInputQueue bounds and coalescing", () => {
 
   test("never removes touch down or up while coalescing moves", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const gate = writer.deferNext();
     const queue = makeQueue(writer, clock);
     const active = queue.enqueue({ type: "text", text: "hold" }, SCREEN);
@@ -538,7 +524,7 @@ describe("ControlInputQueue bounds and coalescing", () => {
 
   test("reserves capacity for touch up while move events flood", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const gate = writer.deferNext();
     const queue = makeQueue(writer, clock, { maxDepth: 3 });
     const down = queue.enqueue(
@@ -595,7 +581,7 @@ describe("ControlInputQueue cancellation and failures", () => {
 
   test("cancels sleeping and queued work without further writes", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const queue = makeQueue(writer, clock);
     const swipe = queue.enqueue(
       {
@@ -646,7 +632,7 @@ describe("ControlInputQueue cancellation and failures", () => {
 
   test("rejects active and queued work when the writer fails", async () => {
     const writer = new FakeWriter();
-    const clock = new ManualClock();
+    const clock = new ManualSleeper();
     const failure = new Error("write failed");
     writer.rejectNext(failure);
     const queue = makeQueue(writer, clock);
@@ -699,5 +685,103 @@ describe("ControlInputQueue cancellation and failures", () => {
       bytes: 0,
       active: false,
     });
+  });
+});
+
+describe("ControlInputQueue priority packets", () => {
+  const RESET = Buffer.from([17]);
+  const types = (writer: FakeWriter) => writer.writes.map((packet) => packet[0]);
+
+  async function drain(clock: ManualSleeper): Promise<void> {
+    while (clock.waits.length > 0) await clock.advanceNext();
+  }
+
+  test("writes a reset at the next step boundary of a long swipe", async () => {
+    const writer = new FakeWriter();
+    const clock = new ManualSleeper();
+    const queue = makeQueue(writer, clock);
+    const swipe = queue.enqueue(
+      { type: "swipe", x1: 0.5, y1: 0.8, x2: 0.5, y2: 0.2, durationMs: 1_000 },
+      SCREEN,
+    );
+    await flushMicrotasks();
+    expect(types(writer)).toEqual([2]); // touch down, now sleeping
+
+    const reset = queue.enqueuePacket(RESET, {
+      coalesceKey: "reset-video",
+      priority: true,
+    });
+    await clock.advanceNext();
+    expect(types(writer)).toEqual([2, 17, 2]);
+    expect(await reset.completion).toEqual({ status: "completed" });
+
+    await drain(clock);
+    await swipe.completion;
+    const swipePackets = writer.writes.filter((packet) => packet[0] === 2);
+    expect(swipePackets).toHaveLength(64); // down, 62 moves, up
+    expect(types(writer).filter((type) => type === 17)).toHaveLength(1);
+  });
+
+  test("merges resets even with gestures queued between them", async () => {
+    const writer = new FakeWriter();
+    const clock = new ManualSleeper();
+    const queue = makeQueue(writer, clock);
+    const swipe = queue.enqueue(
+      { type: "swipe", x1: 0.5, y1: 0.8, x2: 0.5, y2: 0.2, durationMs: 500 },
+      SCREEN,
+    );
+    await flushMicrotasks();
+    const first = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+    const tap = queue.enqueue({ type: "tap", x: 0.5, y: 0.5 }, SCREEN);
+    const second = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+
+    await drain(clock);
+    await Promise.all([swipe.completion, tap.completion]);
+    expect(await first.completion).toEqual({ status: "coalesced" });
+    expect(await second.completion).toEqual({ status: "completed" });
+    expect(types(writer).filter((type) => type === 17)).toHaveLength(1);
+  });
+
+  test("a full gesture queue cannot block a reset", async () => {
+    const writer = new FakeWriter();
+    const clock = new ManualSleeper();
+    const queue = makeQueue(writer, clock, { maxDepth: 2 });
+    queue.enqueue({ type: "tap", x: 0.1, y: 0.1 }, SCREEN);
+    queue.enqueue({ type: "tap", x: 0.2, y: 0.2 }, SCREEN);
+    expectOverloaded(() => queue.enqueue({ type: "tap", x: 0.3, y: 0.3 }, SCREEN));
+    const reset = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+    await flushMicrotasks();
+    await drain(clock);
+    expect(await reset.completion).toEqual({ status: "completed" });
+  });
+
+  test("an idle queue writes a priority packet at once and close rejects queued ones", async () => {
+    const writer = new FakeWriter();
+    const clock = new ManualSleeper();
+    const queue = makeQueue(writer, clock);
+    const idle = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+    await flushMicrotasks();
+    expect(await idle.completion).toEqual({ status: "completed" });
+
+    const blocked = writer.deferNext();
+    const key = queue.enqueue({ type: "key", keycode: 3 }, SCREEN);
+    const keyResult = key.completion.catch((error: unknown) => error);
+    await flushMicrotasks();
+    const pending = queue.enqueuePacket(RESET, { coalesceKey: "reset-video", priority: true });
+    expect(queue.snapshot().entries).toBe(2);
+    queue.close(new Error("session ended"));
+    blocked.resolve();
+    await expect(pending.completion).rejects.toThrow("session ended");
+    expect(await keyResult).toBeInstanceOf(Error);
+  });
+
+  test("bounds distinct priority keys", () => {
+    const queue = makeQueue(new FakeWriter(), new ManualSleeper());
+    for (let key = 0; key < 8; key++) {
+      queue.enqueuePacket(RESET, { coalesceKey: `k${key}`, priority: true });
+    }
+    expectOverloaded(() =>
+      queue.enqueuePacket(RESET, { coalesceKey: "k8", priority: true }),
+    );
   });
 });

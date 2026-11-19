@@ -1,7 +1,18 @@
-import { StreamPerformance, StreamClockSync } from "./stream-performance";
+import {
+  StreamPerformance,
+  StreamClockSync,
+  VsyncEstimator,
+  admitDuringRecovery,
+  nextPresentation,
+} from "./stream-performance";
 import { parseWsServerJson } from "../../shared/websocket-contracts";
 import { buildCodecString, scanAU } from "./h264";
 import { epochNowMs, parseFramePacket } from "../../shared/frame-meta";
+import {
+  parseWorkerCommand,
+  type StreamStats,
+  type StreamWorkerEventPayload,
+} from "../../shared/worker-contracts";
 import {
   StreamSessionResources,
   beginStreamGeneration,
@@ -26,52 +37,6 @@ const FRAME_QUEUE_SIZE = 3;
 const PENDING_TIMING_LIMIT = 256;
 const STATS_INTERVAL_MS = 1000;
 
-export type StreamStats = {
-  fps: number;
-  decodeQueue: number;
-  transitMs: number | null;
-  e2eMs: number | null;
-  codec: string | null;
-  rendered: boolean;
-  decodeMsP95: number | null;
-  presentMsP95: number | null;
-  decodePendingMs: number;
-  recoveries: number;
-  clockUncertaintyMs: number | null;
-};
-
-type StreamWorkerEventPayload =
-  | {
-      type: "control-error";
-      generation: number;
-      error: string;
-      requestId?: string;
-    }
-  | { type: "lifecycle"; generation: number; state: StreamLifecycleState }
-  | { type: "status"; generation: number; status: string }
-  | {
-      type: "session";
-      generation: number;
-      size: { width: number; height: number };
-    }
-  | { type: "rendered"; generation: number; at: number }
-  | { type: "stats"; generation: number; stats: StreamStats }
-  | {
-      type: "control-dropped";
-      generation: number;
-      reason: "socket-not-open" | "send-failed";
-    };
-
-export type StreamWorkerEvent = StreamWorkerEventPayload & {
-  clientEpoch: number;
-};
-
-type WorkerCommand =
-  | { type: "init"; clientEpoch: number; canvas: OffscreenCanvas; url: string }
-  | { type: "connect"; clientEpoch: number }
-  | { type: "send"; clientEpoch: number; text: string }
-  | { type: "stop"; clientEpoch: number };
-
 // Typed against the worker global's message surface only, to avoid pulling the
 // whole WebWorker lib into the DOM-flavored UI tsconfig.
 const workerPort = self as unknown as {
@@ -81,7 +46,8 @@ const workerPort = self as unknown as {
 
 // requestAnimationFrame is available in dedicated workers everywhere WebCodecs
 // is, but fall back to a vsync-ish timer just in case.
-const scheduleFrame: (cb: () => void) => number =
+// The callback gets the vsync time (performance timeline) when there is one.
+const scheduleFrame: (cb: (vsyncAt?: number) => void) => number =
   typeof requestAnimationFrame === "function"
     ? (cb) => requestAnimationFrame(cb)
     : (cb) => setTimeout(cb, 16) as unknown as number;
@@ -120,6 +86,7 @@ type FrameTiming = {
   decodedAt: number | null;
 };
 const streamPerformance = new StreamPerformance();
+const vsync = new VsyncEstimator();
 const clockSync = new StreamClockSync();
 let pendingClockSync: number | null = null;
 let lastClockSyncAt = Number.NEGATIVE_INFINITY;
@@ -136,9 +103,6 @@ let e2eCount = 0;
 
 const postEvent = (event: StreamWorkerEventPayload) =>
   workerPort.postMessage({ ...event, clientEpoch: activeClientEpoch });
-
-const validClientEpoch = (value: number) =>
-  Number.isSafeInteger(value) && value > 0;
 
 const postLifecycle = () => {
   postEvent({
@@ -173,6 +137,7 @@ const postStats = (includeLifecycleSnapshot = true) => {
     rendered: lifecycle.rendered,
     ...streamPerformance.takeStats(),
     decodePendingMs: Math.round(streamPerformance.pendingMs(epochNowMs())),
+    skippedFrames: resources.takeSkippedFrames(),
     recoveries: recoveryCount,
     clockUncertaintyMs: clockSync.estimate(epochNowMs())?.uncertaintyMs ?? null,
   };
@@ -323,19 +288,28 @@ const beginDecoderRecovery = () => {
   requestKeyframe(generation);
 };
 
-const renderFromQueue = (generation: number) => {
+const renderFromQueue = (generation: number, vsyncAt?: number) => {
   renderHandle = 0;
   if (!isCurrentStreamGeneration(lifecycle, generation) || !canvas || !ctx)
     return;
+  if (vsyncAt !== undefined) vsync.observe(vsyncAt);
 
-  // Latency-first policy: each vsync, present the NEWEST decoded frame and
-  // discard the staler ones still queued. They were superseded before they
-  // could be shown, so drawing them would only add display lag. Showing the
-  // freshest frame keeps glass-to-glass latency near one vsync interval
-  // instead of growing with queue depth. The queue stays as a small burst
-  // absorber.
-  const frame = resources.takeLatestFrame();
+  // Adaptive pacing (presentOldestFrame): while the player keeps up, show
+  // the oldest of two queued frames and the other on the next vsync, so a
+  // pair that decoded within one interval is not cut to one. Otherwise
+  // present the NEWEST frame and discard the staler ones: they were
+  // superseded before they could be shown, and drawing them would only add
+  // display lag. The queue stays as a small burst absorber.
+  const { frame, reschedule } = nextPresentation(
+    resources,
+    (queued) => resources.peekTiming(queued.timestamp)?.decodedAt ?? null,
+    epochNowMs(),
+    vsync.intervalMs,
+  );
   if (!frame) return;
+  if (reschedule && !renderHandle) {
+    renderHandle = scheduleFrame((at) => renderFromQueue(generation, at));
+  }
   if (!isCurrentStreamGeneration(lifecycle, generation)) {
     frame.close();
     return;
@@ -409,7 +383,7 @@ const ensureDecoder = (spsBytes: Uint8Array, generation: number): boolean => {
       if (timing) timing.decodedAt = now;
       resources.pushFrame(frame);
       if (!renderHandle) {
-        renderHandle = scheduleFrame(() => renderFromQueue(generation));
+        renderHandle = scheduleFrame((at) => renderFromQueue(generation, at));
       }
     },
     error: (e) => {
@@ -478,24 +452,23 @@ const feedFrame = (raw: ArrayBuffer, generation: number) => {
   const spsBytes = scanned?.spsBytes ?? null;
   if (spsBytes && !ensureDecoder(spsBytes, generation)) return;
 
-  if (droppingUntilKeyframe) {
-    if (!isKey) return;
-    if (!decoder || decoder.state !== "configured") {
-      requestKeyframe(generation);
-      return;
-    }
-    droppingUntilKeyframe = false;
-  }
-
-  if (!decoder || decoder.state !== "configured") {
-    if (!isKey) requestKeyframe(generation);
+  const admission = admitDuringRecovery({
+    dropping: droppingUntilKeyframe,
+    isKey,
+    decoderReady: decoder?.state === "configured",
+    backlogged: () =>
+      streamPerformance.shouldRecover(decoder?.decodeQueueSize ?? 0, recvMs),
+  });
+  if (admission.action === "drop") {
+    if (admission.requestKeyframe) requestKeyframe(generation);
     return;
   }
-
-  if (streamPerformance.shouldRecover(decoder.decodeQueueSize, recvMs)) {
+  if (admission.action === "recover") {
     recoverToKeyframe();
     return;
   }
+  if (admission.endsDrop) droppingUntilKeyframe = false;
+  if (!decoder) return;
 
   if (!sawKeyframe) {
     if (!isKey) {
@@ -621,13 +594,14 @@ const connect = (reason: "connect" | "reconnect") => {
           Number.isFinite(msg.size.width) &&
           Number.isFinite(msg.size.height)
         ) {
+          // The new session's first frame is a key frame. Requesting another
+          // reset here would restart the encoder before it can send it.
           const generation = beginWorkerGeneration(
             "awaiting-keyframe",
             "video-session",
           );
           droppingUntilKeyframe = true;
           postEvent({ type: "session", generation, size: msg.size });
-          requestKeyframe(generation);
         }
       } catch {}
       return;
@@ -671,11 +645,14 @@ const postControlDropped = (reason: "socket-not-open" | "send-failed") => {
   });
 };
 
+const isOffscreenCanvas = (value: unknown): value is OffscreenCanvas =>
+  typeof OffscreenCanvas !== "undefined" && value instanceof OffscreenCanvas;
+
 workerPort.addEventListener("message", (e: MessageEvent) => {
-  const msg = e.data as WorkerCommand;
+  const msg = parseWorkerCommand(e.data, isOffscreenCanvas);
+  if (!msg) return;
   switch (msg.type) {
     case "init": {
-      if (!validClientEpoch(msg.clientEpoch)) return;
       activeClientEpoch = msg.clientEpoch;
       if (
         typeof VideoDecoder === "undefined" ||
@@ -698,11 +675,7 @@ workerPort.addEventListener("message", (e: MessageEvent) => {
       break;
     }
     case "connect": {
-      if (
-        !validClientEpoch(msg.clientEpoch) ||
-        msg.clientEpoch < activeClientEpoch
-      )
-        return;
+      if (msg.clientEpoch < activeClientEpoch) return;
       activeClientEpoch = msg.clientEpoch;
       if (initFailureStatus && isStreamFatalStatus(initFailureStatus)) {
         publishInitFailure(initFailureStatus);

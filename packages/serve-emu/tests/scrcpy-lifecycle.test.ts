@@ -1,32 +1,18 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { readFile } from "node:fs/promises";
 import type { ChildProcess } from "node:child_process";
 import type { Socket } from "node:net";
 import { SCRCPY_VERSION } from "../scripts/fetch-scrcpy.ts";
+import { CommandFailureError } from "../src/command-failure.ts";
 import {
   startScrcpy,
   type AdbCommandResult,
   type ScrcpyDependencies,
 } from "../src/scrcpy.ts";
+import { deferred, type Deferred } from "./helpers/deferred.ts";
 
 const SERIAL = "device-test-serial";
-
-type Deferred<T> = {
-  promise: Promise<T>;
-  resolve: (value: T) => void;
-  reject: (reason: unknown) => void;
-};
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (reason: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
 
 function ok(stdout = ""): AdbCommandResult {
   return { status: 0, stdout, stderr: "", timedOut: false, error: null };
@@ -104,6 +90,17 @@ class FakeSocket extends EventEmitter {
     return this;
   }
 
+  droppedBytes = 0;
+
+  /** Bun's semantics: data that finds no `data` listener is lost. */
+  arrive(data: Buffer): void {
+    if (this.listenerCount("data") === 0) {
+      this.droppedBytes += data.length;
+      return;
+    }
+    this.emit("data", data);
+  }
+
   destroy(): this {
     this.destroyCalls++;
     if (this.destroyed) return this;
@@ -161,10 +158,34 @@ type ConnectCall = {
   abortedAtCall: boolean;
 };
 
+// What the fake serverFingerprint reports for the local jar.
+const JAR_FINGERPRINT = "a".repeat(64);
+// sha256 of an empty file.
+const EMPTY_SHA256 =
+  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 type HarnessOptions = {
+  /**
+   * `getprop sys.boot_completed` results returned, in order, before "1". A
+   * "hang" probe never settles until aborted.
+   */
+  bootResults?: (AdbCommandResult | "hang")[];
+  /** `getprop sys.boot_completed` never settles until aborted. */
+  bootHangs?: boolean;
+  /**
+   * The video bytes arrive while the control socket connects, on a socket
+   * that drops data without a listener (as Bun's node:net does).
+   */
+  videoDataDuringControlConnect?: boolean;
   cacheInitially?: boolean;
+  /** The device cache's sha256sum; null when the file is missing. */
+  cacheDigest?: string | null;
+  /** The device has no sha256sum binary. */
+  sha256Missing?: boolean;
   deferProbe?: boolean;
   deferSocketPoll?: boolean;
+  /** Socket-poll results returned, in order, before the listing has the socket. */
+  socketPollResults?: AdbCommandResult[];
   blockConnectIndex?: number;
   deferFirstRemove?: boolean;
   dynamicResult?: AdbCommandResult;
@@ -173,6 +194,9 @@ type HarnessOptions = {
   removeResult?: AdbCommandResult;
   rmResults?: AdbCommandResult[];
   childIgnoresKill?: boolean;
+  /** Result of `adb push`; "hang" never settles until aborted. */
+  pushResult?: AdbCommandResult | "hang";
+  syncResult?: AdbCommandResult;
 };
 
 function createHarness(options: HarnessOptions = {}) {
@@ -195,11 +219,18 @@ function createHarness(options: HarnessOptions = {}) {
     sleepCalls: [] as { ms: number; signal: AbortSignal }[],
     activeForwards: new Map<number, string>(),
     events: [] as string[],
-    cachePresent: options.cacheInitially ?? false,
+    cacheDigest:
+      options.cacheDigest !== undefined
+        ? options.cacheDigest
+        : options.cacheInitially
+          ? JAR_FINGERPRINT
+          : null,
     pushCount: 0,
     fixedAttempt: 0,
     removeWasDeferred: false,
     rmAttempt: 0,
+    socketPollAttempt: 0,
+    bootAttempt: 0,
     scidIndex: 0,
   };
 
@@ -218,19 +249,37 @@ function createHarness(options: HarnessOptions = {}) {
     state.adbCalls.push(call);
     state.events.push(`adb:${args.join(" ")}`);
 
-    if (args[0] === "shell" && args[1] === "test" && args[2] === "-f") {
+    if (args[0] === "shell" && args[1] === "getprop" && args[2] === "sys.boot_completed") {
+      const next = options.bootHangs
+        ? "hang"
+        : (options.bootResults?.[state.bootAttempt++] ?? ok("1\n"));
+      if (next === "hang") {
+        return waitForDeferred(deferred<AdbCommandResult>(), commandOptions.signal);
+      }
+      return next;
+    }
+    if (args[0] === "shell" && args[1] === "sha256sum") {
       if (options.deferProbe) {
         probeReached.resolve(call);
         return waitForDeferred(probeDeferred, commandOptions.signal);
       }
-      return state.cachePresent ? ok() : failed("cache miss");
+      if (options.sha256Missing) {
+        return { ...failed("/system/bin/sh: sha256sum: inaccessible or not found"), status: 127 };
+      }
+      return state.cacheDigest === null
+        ? failed(`sha256sum: ${args[2]}: No such file or directory`)
+        : ok(`${state.cacheDigest}  ${args[2]}\n`);
     }
+    if (args[0] === "shell" && args[1] === "sync") return options.syncResult ?? ok();
     if (args[0] === "push") {
       state.pushCount++;
-      return ok("pushed");
+      if (options.pushResult === "hang") {
+        return waitForDeferred(deferred<AdbCommandResult>(), commandOptions.signal);
+      }
+      return options.pushResult ?? ok("pushed");
     }
     if (args[0] === "shell" && args[1] === "mv") {
-      state.cachePresent = true;
+      state.cacheDigest = JAR_FINGERPRINT;
       return ok();
     }
     if (args[0] === "shell" && args[1] === "cp") return ok();
@@ -284,6 +333,8 @@ function createHarness(options: HarnessOptions = {}) {
         socketPollReached.resolve(call);
         return waitForDeferred(socketPollDeferred, commandOptions.signal);
       }
+      const scripted = options.socketPollResults?.[state.socketPollAttempt++];
+      if (scripted) return scripted;
       const spawn = state.spawnCalls.at(-1);
       const scid = spawn?.args.find((arg) => arg.startsWith("scid="))?.slice(5);
       return ok(`00000000: @scrcpy_${scid}\n`);
@@ -294,7 +345,7 @@ function createHarness(options: HarnessOptions = {}) {
 
   const deps: ScrcpyDependencies = {
     ensureServer: async () => "/fake/scrcpy-server.jar",
-    serverFingerprint: async () => "a".repeat(64),
+    serverFingerprint: async () => JAR_FINGERPRINT,
     runAdb,
     spawnAdb: (serial, args) => {
       const child = new FakeChild();
@@ -318,9 +369,14 @@ function createHarness(options: HarnessOptions = {}) {
         connectBlocked.resolve(call);
         return waitForDeferred(connectDeferred, signal);
       }
+      if (options.videoDataDuringControlConnect && index % 2 === 1) {
+        state.sockets[index - 1]!.arrive(v4Stream());
+      }
       const socket = new FakeSocket(
         index % 2 === 0 ? `video-${index / 2}` : `control-${(index - 1) / 2}`,
-        index % 2 === 0 ? v4Stream() : undefined,
+        index % 2 === 0 && !options.videoDataDuringControlConnect
+          ? v4Stream()
+          : undefined,
       );
       state.sockets.push(socket);
       return socket as unknown as Socket;
@@ -337,6 +393,8 @@ function createHarness(options: HarnessOptions = {}) {
     },
     clearTimer: (timer) => clearTimeout(timer),
     timeouts: {
+      bootMs: 500,
+      bootPollMs: 500,
       pushMs: 500,
       copyMs: 500,
       forwardMs: 500,
@@ -386,8 +444,8 @@ describe("scrcpy async lifecycle", () => {
       first.localPort,
       first.localPort,
     ]);
-    expect(first.videoReader.sock).toBe(harness.state.sockets[0]);
-    expect(first.controlSocket).toBe(harness.state.sockets[1]);
+    expect(first.videoReader.sock as unknown).toBe(harness.state.sockets[0]);
+    expect(first.controlSocket as unknown).toBe(harness.state.sockets[1]);
 
     const frame = await first.readFrame();
     expect(frame).toEqual({
@@ -445,12 +503,20 @@ describe("scrcpy async lifecycle", () => {
     expect(
       harness.state.adbCalls.filter(
         (call) =>
-          call.args[0] === "shell" &&
-          call.args[1] === "test" &&
-          call.args[2] === "-f",
+          call.args[0] === "shell" && call.args[1] === "sha256sum",
       ),
     ).toHaveLength(2);
     await second.close();
+  });
+
+  test("keeps video bytes that arrive while the control socket connects (#162)", async () => {
+    const harness = createHarness({ videoDataDuringControlConnect: true });
+    const session = await startWith(harness);
+
+    expect(harness.state.sockets[0]!.droppedBytes).toBe(0);
+    expect(session.meta.deviceName).toBe("Lifecycle Device");
+    expect(await session.readFrame()).toMatchObject({ isKey: true, pts: 123n });
+    await session.close();
   });
 
   test("a deferred adb command does not block unrelated timers", async () => {
@@ -485,10 +551,26 @@ describe("scrcpy async lifecycle", () => {
     );
     const pollCall = await harness.socketPollReached.promise;
 
-    harness.state.children[0].exit(17, null);
-    expect((await outcome).error?.message).toContain(
-      "scrcpy process exited during startup (code=17, signal=none)",
+    const stderrWrite = spyOn(process.stderr, "write").mockImplementation(
+      () => true,
     );
+    try {
+      harness.state.children[0].stderr.emit(
+        "data",
+        Buffer.from("java.lang.RuntimeException at /home/me/SECRET-PATH\n"),
+      );
+    } finally {
+      stderrWrite.mockRestore();
+    }
+    harness.state.children[0].exit(17, null);
+    const { error } = await outcome;
+    // The server's stderr stays in the message for logs, not the public one.
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-failed",
+      publicMessage: "scrcpy process exited during startup (code=17, signal=none)",
+    });
+    expect(error?.message).toContain("/home/me/SECRET-PATH");
 
     expect(pollCall.signal.aborted).toBe(true);
     expect(harness.state.activeForwards.size).toBe(0);
@@ -498,6 +580,50 @@ describe("scrcpy async lifecycle", () => {
           call.args[0] === "forward" && call.args[1] === "--remove",
       ),
     ).toBe(true);
+  });
+
+  test("socket discovery retries a single transiently closed poll", async () => {
+    const harness = createHarness({
+      socketPollResults: [failed("error: closed")],
+    });
+    const session = await startWith(harness);
+
+    expect(harness.state.socketPollAttempt).toBe(2);
+    await session.close();
+  });
+
+  test("socket discovery keeps polling while a successful listing lacks the socket", async () => {
+    const harness = createHarness({
+      socketPollResults: [
+        ok("00000000: 00000002 00000000 00010000 0001 01 1 @android.net.wifi.closed\n"),
+        ok("00000000: 00000002 00000000 00010000 0001 01 2 @device.not found offline\n"),
+      ],
+    });
+    const session = await startWith(harness);
+
+    expect(harness.state.socketPollAttempt).toBe(3);
+    await session.close();
+  });
+
+  test.each([
+    ["the device goes offline", [failed("adb: device offline")]],
+    ["adb closes the device connection twice", [failed("error: closed"), failed("error: closed")]],
+  ])("socket discovery fails fast when %s", async (_, socketPollResults) => {
+    const harness = createHarness({ socketPollResults });
+
+    const error = await startWith(harness).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(error).toMatchObject({
+      code: "adb-device-unavailable",
+      publicMessage: "adb shell cat failed: the device is unavailable",
+    });
+    expect((error as Error).message).toMatch(
+      /^adb shell cat failed: the device is unavailable: adb -s device-test-serial shell cat \/proc\/net\/unix: (?:adb: device offline|error: closed)$/,
+    );
+    expect(harness.state.socketPollAttempt).toBe(socketPollResults.length);
+    expect(harness.state.activeForwards.size).toBe(0);
   });
 
   test("external cancellation during the control connection tears down acquired resources", async () => {
@@ -535,9 +661,16 @@ describe("scrcpy async lifecycle", () => {
       fixedResults: Array.from({ length: 5 }, () => failed("port busy")),
     });
 
-    await expect(startWith(harness)).rejects.toThrow(
-      "Failed to create adb forward",
+    const error = await startWith(harness).then(
+      () => null,
+      (reason: unknown) => reason,
     );
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-failed",
+      publicMessage: "adb forward failed",
+      message: "adb forward failed: localabstract:scrcpy_01234560: port busy",
+    });
 
     expect(harness.state.spawnCalls).toHaveLength(0);
     expect(harness.state.fixedAttempt).toBe(5);
@@ -550,6 +683,84 @@ describe("scrcpy async lifecycle", () => {
           call.args[2] === `tcp:${ambiguousPort}`,
       ),
     ).toBe(true);
+  });
+
+  test("a failed adb step names only its subcommand in the public message", async () => {
+    const harness = createHarness({
+      pushResult: failed(
+        "adb: error: failed to copy '/fake/scrcpy-server.jar': No space left on device",
+      ),
+    });
+
+    const error = await startWith(harness).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+
+    // The host jar path and adb's output stay in `message` for the server log.
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-failed",
+      publicMessage: "adb push failed",
+    });
+    expect((error as Error).message).toBe(
+      `adb push failed: adb -s ${SERIAL} push /fake/scrcpy-server.jar ` +
+        "/data/local/tmp/serve-emu-scrcpy-server-v" +
+        `${SCRCPY_VERSION}.jar-${"a".repeat(24)}.01234560.tmp: ` +
+        "adb: error: failed to copy '/fake/scrcpy-server.jar': No space left on device",
+    );
+    expect(harness.state.spawnCalls).toHaveLength(0);
+  });
+
+  test("an adb step past its deadline is a command timeout", async () => {
+    const harness = createHarness({ pushResult: "hang" });
+
+    const error = await startScrcpy(
+      { serial: SERIAL },
+      {
+        ...harness.deps,
+        timeouts: { ...harness.deps.timeouts, pushMs: 20 },
+      },
+    ).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-timeout",
+      publicMessage: "adb push timed out",
+    });
+    expect((error as Error).message).toContain(
+      `adb -s ${SERIAL} push /fake/scrcpy-server.jar`,
+    );
+    expect((error as Error).message).toEndWith("timed out after 20ms");
+  });
+
+  test.each<[string, HarnessOptions, number]>([
+    ["the dynamic forward", { dynamicResult: failed("adb: device offline") }, 0],
+    [
+      "a fixed-port forward",
+      {
+        dynamicResult: failed("dynamic forwards unsupported"),
+        fixedResults: [failed("adb: error: device 'emulator-5554' not found")],
+      },
+      1,
+    ],
+  ])("a lost device during %s fails at once as unavailable", async (_, options, fixedAttempts) => {
+    const harness = createHarness(options);
+
+    const error = await startWith(harness).then(
+      () => null,
+      (reason: unknown) => reason,
+    );
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect(error).toMatchObject({
+      code: "adb-device-unavailable",
+      publicMessage: "adb forward failed: the device is unavailable",
+    });
+    expect(harness.state.fixedAttempt).toBe(fixedAttempts);
+    expect(harness.state.spawnCalls).toHaveLength(0);
   });
 
   test("fixed-port fallback always uses --no-rebind", async () => {
@@ -614,6 +825,16 @@ describe("scrcpy async lifecycle", () => {
     expect(harness.state.rmAttempt).toBe(2);
   });
 
+  test("close is best-effort when the device becomes unauthorized during teardown", async () => {
+    const harness = createHarness({
+      rmResults: [failed("error: closed"), failed("adb: device unauthorized.")],
+    });
+    const session = await startWith(harness);
+
+    await expect(session.close()).resolves.toBeUndefined();
+    expect(harness.state.rmAttempt).toBe(2);
+  });
+
   test("close reports a child that cannot be reaped after SIGKILL", async () => {
     const harness = createHarness({ childIgnoresKill: true });
     harness.deps.timeouts!.processExitMs = 5;
@@ -661,5 +882,189 @@ describe("scrcpy async lifecycle", () => {
     );
     expect(source).not.toMatch(/import\s*\{[^}]*\bspawnSync\b/s);
     expect(source).not.toMatch(/\bspawnSync\s*\(/);
+  });
+});
+
+describe("device server jar cache", () => {
+  const CACHE = `/data/local/tmp/serve-emu-scrcpy-server-v${SCRCPY_VERSION}.jar-${JAR_FINGERPRINT.slice(0, 24)}`;
+
+  /** The jar-related adb commands, in order. */
+  function jarCommands(harness: ReturnType<typeof createHarness>): string[] {
+    return harness.state.adbCalls
+      .map((call) => call.args)
+      .filter(
+        (args) =>
+          args[0] === "push" ||
+          (args[0] === "shell" && ["sha256sum", "sync", "mv", "cp"].includes(args[1]!)),
+      )
+      .map((args) => args.join(" ").replace(/\.0123456\d\.tmp\b/, ".tmp"));
+  }
+
+  test("reuses a cache whose sha256 matches the local jar without pushing", async () => {
+    const harness = createHarness({ cacheInitially: true });
+    const session = await startWith(harness);
+    await session.close();
+
+    expect(harness.state.pushCount).toBe(0);
+    expect(jarCommands(harness)).toEqual([
+      `shell sha256sum ${CACHE}`,
+      `shell cp ${CACHE} /data/local/tmp/serve-emu-scrcpy-01234560.jar`,
+    ]);
+  });
+
+  test("replaces an empty or corrupt cache, flushing before the rename", async () => {
+    for (const digest of [EMPTY_SHA256, "b".repeat(64)]) {
+      const harness = createHarness({ cacheDigest: digest });
+      const session = await startWith(harness);
+      await session.close();
+
+      expect(harness.state.pushCount).toBe(1);
+      expect(jarCommands(harness)).toEqual([
+        `shell sha256sum ${CACHE}`,
+        `push /fake/scrcpy-server.jar ${CACHE}.tmp`,
+        "shell sync",
+        `shell mv -f ${CACHE}.tmp ${CACHE}`,
+        `shell cp ${CACHE} /data/local/tmp/serve-emu-scrcpy-01234560.jar`,
+      ]);
+      expect(harness.state.cacheDigest).toBe(JAR_FINGERPRINT);
+
+      // The repaired cache is reused by the next start.
+      await (await startWith(harness)).close();
+      expect(harness.state.pushCount).toBe(1);
+    }
+  });
+
+  test("a failed sync does not fail a start whose push succeeded", async () => {
+    const harness = createHarness({
+      cacheDigest: EMPTY_SHA256,
+      syncResult: failed("sync: I/O error"),
+    });
+    await (await startWith(harness)).close();
+    expect(harness.state.pushCount).toBe(1);
+    expect(jarCommands(harness)).toContain(`shell mv -f ${CACHE}.tmp ${CACHE}`);
+    expect(harness.state.cacheDigest).toBe(JAR_FINGERPRINT);
+  });
+
+  test("re-pushes on every start when the device has no sha256sum", async () => {
+    const harness = createHarness({ sha256Missing: true });
+    await (await startWith(harness)).close();
+    await (await startWith(harness)).close();
+    expect(harness.state.pushCount).toBe(2);
+  });
+
+  test("a cache probe that times out fails startup without pushing", async () => {
+    const harness = createHarness({ deferProbe: true });
+    harness.deps.timeouts!.copyMs = 20;
+    const startup = startWith(harness);
+    const probe = await harness.probeReached.promise;
+
+    await expect(startup).rejects.toThrow(
+      `shell sha256sum ${CACHE} timed out after 20ms`,
+    );
+    expect(probe.signal.aborted).toBe(true);
+    expect(harness.state.pushCount).toBe(0);
+    expect(harness.state.spawnCalls).toHaveLength(0);
+  });
+
+  test("aborting startup during the cache probe stops before pushing", async () => {
+    const harness = createHarness({ deferProbe: true });
+    const controller = new AbortController();
+    const startup = startWith(harness, { signal: controller.signal });
+    const probe = await harness.probeReached.promise;
+
+    controller.abort(new Error("cancelled during the cache probe"));
+    await expect(startup).rejects.toThrow("cancelled during the cache probe");
+    expect(probe.signal.aborted).toBe(true);
+    expect(harness.state.pushCount).toBe(0);
+    expect(harness.state.spawnCalls).toHaveLength(0);
+  });
+});
+
+describe("waiting for the device to boot", () => {
+  const BOOT_PROBE = "adb:shell getprop sys.boot_completed";
+
+  test("starts scrcpy only after the device reports sys.boot_completed=1", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createHarness({
+        bootResults: [ok(""), failed("error: closed"), ok("0\n")],
+      });
+      const session = await startWith(harness);
+
+      const firstOther = harness.state.events.findIndex((event) => event !== BOOT_PROBE);
+      expect(harness.state.events.slice(0, firstOther)).toEqual(Array(4).fill(BOOT_PROBE));
+      expect(harness.state.events.lastIndexOf(BOOT_PROBE)).toBe(3);
+      expect(harness.state.sleepCalls.slice(0, 3).map((call) => call.ms)).toEqual([500, 500, 500]);
+      expect(harness.state.spawnCalls).toHaveLength(1);
+      expect(log.mock.calls).toEqual([
+        [`[scrcpy] ${SERIAL} is still booting; waiting to start scrcpy`],
+      ]);
+      await session.close();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("a booted device starts without waiting or logging", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createHarness();
+      await (await startWith(harness)).close();
+      expect(harness.state.events.filter((event) => event === BOOT_PROBE)).toHaveLength(1);
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("a probe that hangs past its deadline is tried again", async () => {
+    const log = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const harness = createHarness({ bootResults: ["hang"] });
+      harness.deps.timeouts!.bootPollMs = 1;
+      await (await startWith(harness)).close();
+      expect(harness.state.events.filter((event) => event === BOOT_PROBE)).toHaveLength(2);
+      expect(harness.state.spawnCalls).toHaveLength(1);
+      expect(log).toHaveBeenCalledTimes(1);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  test("a device that never finishes booting times out before the jar is pushed", async () => {
+    const harness = createHarness({ bootHangs: true });
+    harness.deps.timeouts!.bootMs = 20;
+
+    const error = await startWith(harness).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(CommandFailureError);
+    expect((error as CommandFailureError).code).toBe("adb-timeout");
+    expect((error as CommandFailureError).publicMessage).toBe(
+      "waiting for the device to finish booting timed out",
+    );
+    expect(harness.state.pushCount).toBe(0);
+    expect(harness.state.spawnCalls).toHaveLength(0);
+  });
+
+  test("a device adb cannot reach fails at once instead of waiting", async () => {
+    const harness = createHarness({
+      bootResults: [failed("adb: device offline")],
+    });
+
+    const error = await startWith(harness).catch((err: unknown) => err);
+    expect((error as CommandFailureError).code).toBe("adb-device-unavailable");
+    expect(harness.state.events.filter((event) => event === BOOT_PROBE)).toHaveLength(1);
+    expect(harness.state.pushCount).toBe(0);
+  });
+
+  test("aborting startup while the device boots stops before pushing", async () => {
+    const harness = createHarness({ bootHangs: true });
+    const controller = new AbortController();
+    const startup = startWith(harness, { signal: controller.signal });
+    await Promise.resolve();
+
+    controller.abort(new Error("cancelled while booting"));
+    await expect(startup).rejects.toThrow("cancelled while booting");
+    expect(harness.state.pushCount).toBe(0);
+    expect(harness.state.spawnCalls).toHaveLength(0);
   });
 });

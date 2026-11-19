@@ -1,4 +1,4 @@
-export const HTTP_BODY_ERROR_STATUS = {
+const HTTP_BODY_ERROR_STATUS = {
   "payload-too-large": 413,
   "too-many-body-chunks": 413,
   "invalid-content-length": 400,

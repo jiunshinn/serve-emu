@@ -11,9 +11,10 @@ import {
   type ApiPath,
   type ApiRequest,
   type ApiResponse,
+  type RoutePlaybackSnapshot,
 } from "../src/shared/api-contracts.ts";
 
-const routeSnapshot = {
+const routeSnapshot: RoutePlaybackSnapshot = {
   status: "running",
   waypointCount: 2,
   totalMeters: 100,
@@ -98,12 +99,19 @@ describe("API contracts", () => {
     ) as Record<ApiPath, true>;
     expect(request.latitude).toBe(51.5072);
     expect(response.ok).toBe(true);
-    expect(Object.keys(paths).length).toBe(31);
+    expect(Object.keys(paths).length).toBe(37);
   });
 
   test("validates health and logcat network boundaries without casts", () => {
     const session = {
-      events: [],
+      eventCount: 0,
+      retainedBytes: 0,
+      limits: { maxEvents: 2_000, maxBytes: 1_048_576 },
+      droppedEvents: 0,
+      oldestEventId: null,
+      newestEventId: null,
+      oldestEventAt: null,
+      newestEventAt: null,
       recording: true,
       replaying: false,
       replayStartedAt: null,
@@ -127,6 +135,9 @@ describe("API contracts", () => {
       videoResetRequests: 0,
       lastVideoResetAt: null,
       lastVideoResetReason: null,
+      videoResetsByReason: {},
+      videoResetsLastMinute: 0,
+      contention: null,
       location: null,
       route: { ...routeSnapshot, status: "idle" },
       session,
@@ -137,23 +148,31 @@ describe("API contracts", () => {
       lastError: null,
       lastErrorCode: null,
       lastErrorMeta: null,
-      sessionGeneration: 4,
+      generation: 4,
     };
 
-    expect(parseHealthResponse(health).sessionGeneration).toBe(4);
+    expect(parseHealthResponse(health).generation).toBe(4);
     expect(() => parseHealthResponse({ ...health, clientsDetail: [{}] })).toThrow(
       "clientsDetail[0].id",
     );
-    expect(() => parseHealthResponse({ ...health, sessionGeneration: -1 })).toThrow(
+    expect(() => parseHealthResponse({ ...health, generation: -1 })).toThrow(
       "non-negative safe integer",
+    );
+    expect(() => parseHealthResponse({ ...health, generation: undefined })).toThrow(
+      "health response.generation",
     );
     expect(
       parseLogcatEventJson(
-        "log",
-        JSON.stringify({ line: "Activity started", at: health.startedAt }),
-      ),
-    ).toEqual({ line: "Activity started", at: health.startedAt });
-    expect(() => parseLogcatEventJson("ready", '{"pids":[1]}')).toThrow(
+        "logs",
+        JSON.stringify({
+          lines: [{ line: "Activity started", at: health.startedAt }],
+          dropped: 0,
+          totalDropped: 0,
+          sourceDropped: 0,
+        }),
+      ).lines,
+    ).toEqual([{ line: "Activity started", at: health.startedAt }]);
+    expect(() => parseLogcatEventJson("ready", '{"batchIntervalMs":100}')).toThrow(
       "serial",
     );
   });

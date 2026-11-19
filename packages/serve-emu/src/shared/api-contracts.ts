@@ -1,3 +1,5 @@
+import type { AvdCatalog, AvdProfile, AvdSystemImage } from "./avd-contracts";
+import { FOLD_POSTURES, type FoldPosture, type FoldableState } from "./foldable-contracts";
 import { parseGesture, type Gesture } from "./control-contracts";
 
 /** Stable error codes sent by every JSON API failure. */
@@ -13,6 +15,7 @@ export const API_ERROR_CODES = [
   "rate_limited",
   "downstream_failure",
   "service_unavailable",
+  "downstream_timeout",
   "internal_error",
 ] as const;
 
@@ -21,6 +24,8 @@ export type ApiErrorCode = (typeof API_ERROR_CODES)[number];
 export type ApiErrorDetail = {
   code: ApiErrorCode;
   message: string;
+  /** Finer-grained, stable reason within `code`, such as `upload-queue-full`. */
+  reason?: string;
 };
 
 export type ApiFailure = {
@@ -62,12 +67,29 @@ export type DeviceListResponse = ApiSuccess<{
 
 export type DeviceSelectionResponse = ApiSuccess<{
   serial: string;
+  generation: number;
   device: string;
+}>;
+
+/** scrcpy encoder settings for one device's stream. */
+export type StreamQuality = {
+  /** Longest screen edge in pixels; 0 keeps the native size. */
+  maxSize: number;
+  maxFps: number;
+  bitRate: number;
+};
+
+export type StreamQualityResponse = ApiSuccess<{
+  serial: string;
+  generation: number;
+  quality: StreamQuality;
 }>;
 
 export type AvdStartResponse = ApiSuccess<{
   serial: string;
   avd: string;
+  /** Present when the started AVD was also selected. */
+  generation?: number;
   device?: string;
 }>;
 
@@ -85,6 +107,10 @@ export type OrientationResponse = ApiSuccess<{ orientation: OrientationStatus }>
 export type NightMode = "auto" | "dark" | "light";
 export type NightModeStatus = { mode: NightMode | "unknown"; raw: string };
 export type NightModeResponse = ApiSuccess<{ nightMode: NightModeStatus }>;
+
+export type FoldableResponse = ApiSuccess<{ foldable: FoldableState }>;
+export type AvdCatalogResponse = ApiSuccess<AvdCatalog>;
+export type AvdCreateResponse = ApiSuccess<{ avd: string }>;
 
 export type FontScaleStatus = { scale: number; raw: string };
 export type FontScaleResponse = ApiSuccess<{ fontScale: FontScaleStatus }>;
@@ -151,7 +177,6 @@ export type GeoFix = {
   satellites?: number;
   velocity?: number;
 };
-export type LocationPoint = GeoFix;
 export type AppliedGeoFix = GeoFix & { appliedAt: string };
 export type LocationResponse = {
   serial: string;
@@ -168,7 +193,13 @@ export type RoutePlaybackRequest = {
   intervalMs?: number;
   loop?: boolean;
 };
-export type RoutePlaybackStatus = "idle" | "running" | "paused" | "completed" | "error";
+export type RoutePlaybackStatus =
+  | "idle"
+  | "running"
+  | "paused"
+  | "completed"
+  | "error"
+  | "closed";
 export type RoutePlaybackSnapshot = {
   status: RoutePlaybackStatus;
   waypointCount: number;
@@ -203,17 +234,65 @@ export type LocationSessionEvent = {
   kind: "location";
   location: GeoFix;
 };
-export type SessionEvent = GestureSessionEvent | LocationSessionEvent;
-export type RecordedEvent = SessionEvent;
+export type PostureSessionEvent = {
+  id: number;
+  at: string;
+  delayMs: number;
+  source: string;
+  kind: "posture";
+  posture: FoldPosture;
+};
+export type SessionEvent =
+  | GestureSessionEvent
+  | LocationSessionEvent
+  | PostureSessionEvent;
+export type SessionReplayStatus =
+  | "idle"
+  | "running"
+  | "completed"
+  | "cancelled"
+  | "error";
+/** Full recorder state, returned when replay starts or stops. */
 export type SessionSnapshot = {
   events: SessionEvent[];
+  recording: boolean;
+  replaying: boolean;
+  replayStatus: SessionReplayStatus;
+  replayStartedAt: string | null;
+  replayCompletedAt: string | null;
+  replayCancelledAt: string | null;
+  lastError: string | null;
+};
+/** Bounded recorder state without events, used by /health and clear. */
+export type SessionSummary = {
+  eventCount: number;
+  retainedBytes: number;
+  limits: { maxEvents: number; maxBytes: number };
+  droppedEvents: number;
+  oldestEventId: number | null;
+  newestEventId: number | null;
+  oldestEventAt: string | null;
+  newestEventAt: string | null;
   recording: boolean;
   replaying: boolean;
   replayStartedAt: string | null;
   replayCompletedAt: string | null;
   lastError: string | null;
 };
+/** `GET /api/session`: newest-first pages of retained events. */
+export type SessionPage = {
+  session: SessionSummary;
+  events: SessionEvent[];
+  nextBefore: number | null;
+  hasMore: boolean;
+};
+/** `GET /api/session/export`: every retained event, oldest first. */
+export type SessionExport = {
+  session: SessionSummary;
+  events: SessionEvent[];
+};
 export type SessionMutationResponse = ApiSuccess<{ session: SessionSnapshot }>;
+export type SessionClearResponse = ApiSuccess<{ session: SessionSummary }>;
 
 export type AppActionResponse = ApiSuccess<{ output: string }>;
 export type FileImportResponse = ApiSuccess<{
@@ -227,16 +306,23 @@ export type ScreenshotBase64Response = ApiSuccess<{
   data: string;
 }>;
 
+export type LogcatLine = { line: string; at: string };
 export type LogcatEventMap = {
   ready: {
     serial: string;
     package: string | null;
-    pids: string[];
     search: string | null;
+    batchIntervalMs: number;
   };
-  log: { line: string; at: string };
-  error: { line: string; at: string };
-  close: { code: number | null; signal: string | null };
+  logs: {
+    lines: LogcatLine[];
+    dropped: number;
+    totalDropped: number;
+    sourceDropped: number;
+  };
+  error: { error: string; at: string };
+  /** `code`/`signal` when logcat exits; `reason` when the server ends the stream. */
+  close: { code: number | null; signal: string | null } | { reason: string };
 };
 
 export type FrameStatsSummary = {
@@ -257,9 +343,16 @@ export type HealthClient = {
   awaitingKeyFrame: boolean;
 };
 
+export type DeviceContention = {
+  otherScrcpySessions: number;
+  checkedAt: string;
+};
+
 export type HealthResponse = {
   ok: boolean;
   status: SessionStatus;
+  /** The selected device's scrcpy transport is being reopened. */
+  recovering?: boolean;
   serial: string;
   device: string;
   codec: string;
@@ -274,9 +367,14 @@ export type HealthResponse = {
   videoResetRequests: number;
   lastVideoResetAt: string | null;
   lastVideoResetReason: string | null;
+  /** Accepted video resets by reason, since the session started. */
+  videoResetsByReason: Record<string, number>;
+  videoResetsLastMinute: number;
+  /** Other scrcpy sessions on the device; null until the first probe answers. */
+  contention: DeviceContention | null;
   location: AppliedGeoFix | null;
   route: RoutePlaybackSnapshot;
-  session: SessionSnapshot;
+  session: SessionSummary;
   clientsDetail: HealthClient[];
   startedAt: string;
   stoppedAt: string | null;
@@ -285,7 +383,7 @@ export type HealthResponse = {
   lastErrorCode: string | null;
   lastErrorMeta: Record<string, string | number> | null;
   /** Changes whenever the active scrcpy device session changes. */
-  sessionGeneration?: number;
+  generation: number;
 };
 
 export type ApiInfoResponse = {
@@ -310,6 +408,7 @@ export type SwipeRequest = {
   record?: boolean;
 };
 export type TextRequest = { text: string; record?: boolean };
+export type LocationRequest = GeoFix & { record?: boolean };
 export type KeyRequest =
   | { key: "back" | "home" | "recents" | "power"; record?: boolean }
   | { keycode: number; action?: "down" | "up"; metaState?: number; record?: boolean };
@@ -333,8 +432,23 @@ export type ApiContractMap = {
   "/api/avds/start": {
     POST: EndpointContract<{ avd: string; select?: boolean }, AvdStartResponse>;
   };
+  "/api/stream-quality": {
+    GET: EndpointContract<undefined, StreamQualityResponse>;
+    POST: EndpointContract<Partial<StreamQuality>, StreamQualityResponse>;
+  };
   "/api/avds/stop": {
     POST: EndpointContract<{ serial?: string; avd?: string }, AvdStopResponse>;
+  };
+  "/api/avds/catalog": { GET: EndpointContract<undefined, AvdCatalogResponse> };
+  "/api/avds/create": {
+    POST: EndpointContract<
+      { name: string; profile: string; image: string },
+      AvdCreateResponse
+    >;
+  };
+  "/api/foldable": {
+    GET: EndpointContract<undefined, FoldableResponse>;
+    POST: EndpointContract<{ posture: FoldPosture; record?: boolean }, FoldableResponse>;
   };
   "/api/orientation": {
     GET: EndpointContract<undefined, OrientationResponse>;
@@ -370,9 +484,10 @@ export type ApiContractMap = {
   "/api/text": { POST: EndpointContract<TextRequest, EmptyResponse> };
   "/api/key": { POST: EndpointContract<KeyRequest, EmptyResponse> };
   "/api/session": {
-    GET: EndpointContract<undefined, SessionSnapshot>;
-    DELETE: EndpointContract<undefined, SessionMutationResponse>;
+    GET: EndpointContract<undefined, SessionPage>;
+    DELETE: EndpointContract<undefined, SessionClearResponse>;
   };
+  "/api/session/export": { GET: EndpointContract<undefined, SessionExport> };
   "/api/session/replay": {
     POST: EndpointContract<{ multiplier?: number }, SessionMutationResponse>;
   };
@@ -383,6 +498,9 @@ export type ApiContractMap = {
   "/api/files/import": { POST: EndpointContract<FormData, FileImportResponse> };
   "/api/apps/launch": {
     POST: EndpointContract<{ packageName: string; activity?: string }, AppActionResponse>;
+  };
+  "/api/deep-link": {
+    POST: EndpointContract<{ url: string; packageName?: string }, AppActionResponse>;
   };
   "/api/apps/clear": {
     POST: EndpointContract<{ packageName: string }, AppActionResponse>;
@@ -395,7 +513,7 @@ export type ApiContractMap = {
   };
   "/api/location": {
     GET: EndpointContract<undefined, LocationResponse>;
-    POST: EndpointContract<GeoFix, LocationUpdateResponse>;
+    POST: EndpointContract<LocationRequest, LocationUpdateResponse>;
   };
   "/api/route": {
     GET: EndpointContract<undefined, RoutePlaybackSnapshot>;
@@ -481,7 +599,8 @@ export function parseApiFailure(value: unknown): ApiFailure {
     const code = oneOf(error.code, API_ERROR_CODES, "API failure code");
     const message = string(error.message, "API failure message");
     if (!message) fail("API failure message must not be empty");
-    return { ok: false, error: { code, message } };
+    const reason = error.reason === undefined ? undefined : string(error.reason, "API failure reason");
+    return { ok: false, error: { code, message, ...(reason ? { reason } : {}) } };
   } catch {
     throw new TypeError("invalid API failure");
   }
@@ -547,24 +666,56 @@ export function parseDeviceListResponse(value: unknown): DeviceListResponse {
   };
 }
 
+function generation(value: unknown, name: string): number {
+  const parsed = number(value, name);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    fail(`${name} must be a non-negative safe integer`);
+  }
+  return parsed;
+}
+
 function parseOkDeviceResponse(value: unknown, kind: "selection" | "avd-start"): DeviceSelectionResponse | AvdStartResponse {
   const root = record(value, `${kind} response`);
   if (root.ok !== true) fail(`${kind} response.ok must be true`);
   const serial = string(root.serial, `${kind} response.serial`);
   if (kind === "selection") {
-    return { ok: true, serial, device: string(root.device, "selection response.device") };
+    return {
+      ok: true,
+      serial,
+      generation: generation(root.generation, "selection response.generation"),
+      device: string(root.device, "selection response.device"),
+    };
   }
   const result: AvdStartResponse = {
     ok: true,
     serial,
     avd: string(root.avd, "avd-start response.avd"),
   };
+  if (root.generation !== undefined) {
+    result.generation = generation(root.generation, "avd-start response.generation");
+  }
   if (root.device !== undefined) result.device = string(root.device, "avd-start response.device");
   return result;
 }
 
 export function parseDeviceSelectionResponse(value: unknown): DeviceSelectionResponse {
   return parseOkDeviceResponse(value, "selection") as DeviceSelectionResponse;
+}
+
+function parseStreamQualityResponse(value: unknown): StreamQualityResponse {
+  const root = record(value, "stream quality response");
+  if (root.ok !== true) fail("stream quality response.ok must be true");
+  const quality = record(root.quality, "stream quality response.quality");
+  return {
+    ok: true,
+    serial: string(root.serial, "stream quality response.serial"),
+    generation: generation(root.generation, "stream quality response.generation"),
+    quality: {
+      maxSize: number(quality.maxSize, "stream quality response.quality.maxSize"),
+      maxFps: number(quality.maxFps, "stream quality response.quality.maxFps"),
+      bitRate: number(quality.bitRate, "stream quality response.quality.bitRate"),
+    },
+  };
 }
 
 export function parseAvdStartResponse(value: unknown): AvdStartResponse {
@@ -641,6 +792,60 @@ export function parseNightModeResponse(value: unknown): NightModeResponse {
       raw: string(status.raw, "nightMode.raw"),
     },
   };
+}
+
+function parseFoldableResponse(value: unknown): FoldableResponse {
+  const root = record(value, "foldable response");
+  if (root.ok !== true) fail("foldable response.ok must be true");
+  const item = record(root.foldable, "foldable");
+  return {
+    ok: true,
+    foldable: {
+      supported: boolean(item.supported, "foldable.supported"),
+      posture: oneOf(item.posture, [...FOLD_POSTURES, "unknown"] as const, "foldable.posture"),
+      ...(item.reason === undefined ? {} : { reason: string(item.reason, "foldable.reason") }),
+      ...(item.displayChanged === undefined
+        ? {}
+        : { displayChanged: boolean(item.displayChanged, "foldable.displayChanged") }),
+    },
+  };
+}
+
+function parseAvdProfile(value: unknown, index: number): AvdProfile {
+  const item = record(value, `profiles[${index}]`);
+  return {
+    id: string(item.id, `profiles[${index}].id`),
+    name: string(item.name, `profiles[${index}].name`),
+    manufacturer: string(item.manufacturer, `profiles[${index}].manufacturer`),
+    foldable: boolean(item.foldable, `profiles[${index}].foldable`),
+  };
+}
+
+function parseAvdSystemImage(value: unknown, index: number): AvdSystemImage {
+  const item = record(value, `images[${index}]`);
+  return {
+    id: string(item.id, `images[${index}].id`),
+    name: string(item.name, `images[${index}].name`),
+    abi: string(item.abi, `images[${index}].abi`),
+  };
+}
+
+function parseAvdCatalogResponse(value: unknown): AvdCatalogResponse {
+  const root = record(value, "avd catalog response");
+  if (root.ok !== true) fail("avd catalog response.ok must be true");
+  if (!Array.isArray(root.profiles)) fail("profiles must be an array");
+  if (!Array.isArray(root.images)) fail("images must be an array");
+  return {
+    ok: true,
+    profiles: root.profiles.map(parseAvdProfile),
+    images: root.images.map(parseAvdSystemImage),
+  };
+}
+
+function parseAvdCreateResponse(value: unknown): AvdCreateResponse {
+  const root = record(value, "avd create response");
+  if (root.ok !== true) fail("avd create response.ok must be true");
+  return { ok: true, avd: string(root.avd, "avd") };
 }
 
 export function parseFontScaleResponse(value: unknown): FontScaleResponse {
@@ -777,7 +982,7 @@ export function parseRoutePlaybackSnapshot(value: unknown): RoutePlaybackSnapsho
   return {
     status: oneOf(
       root.status,
-      ["idle", "running", "paused", "completed", "error"] as const,
+      ["idle", "running", "paused", "completed", "error", "closed"] as const,
       "route snapshot.status",
     ),
     waypointCount: number(root.waypointCount, "route snapshot.waypointCount"),
@@ -824,19 +1029,81 @@ function parseSessionEvent(value: unknown, index: number): SessionEvent {
       location: parseGeoFix(item.location, `session.events[${index}].location`),
     };
   }
+  if (item.kind === "posture") {
+    return {
+      ...base,
+      kind: "posture",
+      posture: oneOf(item.posture, FOLD_POSTURES, `session.events[${index}].posture`),
+    };
+  }
   return fail(`session.events[${index}].kind is invalid`);
+}
+
+function parseSessionEvents(value: unknown, name: string): SessionEvent[] {
+  if (!Array.isArray(value)) fail(`${name} must be an array`);
+  return value.map(parseSessionEvent);
+}
+
+function nullableNumber(value: unknown, name: string): number | null {
+  return value === null ? null : number(value, name);
 }
 
 export function parseSessionSnapshot(value: unknown): SessionSnapshot {
   const root = record(value, "session snapshot");
-  if (!Array.isArray(root.events)) fail("session snapshot.events must be an array");
   return {
-    events: root.events.map(parseSessionEvent),
+    events: parseSessionEvents(root.events, "session snapshot.events"),
     recording: boolean(root.recording, "session snapshot.recording"),
     replaying: boolean(root.replaying, "session snapshot.replaying"),
+    replayStatus: oneOf(
+      root.replayStatus,
+      ["idle", "running", "completed", "cancelled", "error"] as const,
+      "session snapshot.replayStatus",
+    ),
     replayStartedAt: nullableString(root.replayStartedAt, "session snapshot.replayStartedAt"),
     replayCompletedAt: nullableString(root.replayCompletedAt, "session snapshot.replayCompletedAt"),
+    replayCancelledAt: nullableString(root.replayCancelledAt, "session snapshot.replayCancelledAt"),
     lastError: nullableString(root.lastError, "session snapshot.lastError"),
+  };
+}
+
+export function parseSessionSummary(value: unknown, name = "session summary"): SessionSummary {
+  const root = record(value, name);
+  const limits = record(root.limits, `${name}.limits`);
+  return {
+    eventCount: number(root.eventCount, `${name}.eventCount`),
+    retainedBytes: number(root.retainedBytes, `${name}.retainedBytes`),
+    limits: {
+      maxEvents: number(limits.maxEvents, `${name}.limits.maxEvents`),
+      maxBytes: number(limits.maxBytes, `${name}.limits.maxBytes`),
+    },
+    droppedEvents: number(root.droppedEvents, `${name}.droppedEvents`),
+    oldestEventId: nullableNumber(root.oldestEventId, `${name}.oldestEventId`),
+    newestEventId: nullableNumber(root.newestEventId, `${name}.newestEventId`),
+    oldestEventAt: nullableString(root.oldestEventAt, `${name}.oldestEventAt`),
+    newestEventAt: nullableString(root.newestEventAt, `${name}.newestEventAt`),
+    recording: boolean(root.recording, `${name}.recording`),
+    replaying: boolean(root.replaying, `${name}.replaying`),
+    replayStartedAt: nullableString(root.replayStartedAt, `${name}.replayStartedAt`),
+    replayCompletedAt: nullableString(root.replayCompletedAt, `${name}.replayCompletedAt`),
+    lastError: nullableString(root.lastError, `${name}.lastError`),
+  };
+}
+
+export function parseSessionPage(value: unknown): SessionPage {
+  const root = record(value, "session page");
+  return {
+    session: parseSessionSummary(root.session, "session page.session"),
+    events: parseSessionEvents(root.events, "session page.events"),
+    nextBefore: nullableNumber(root.nextBefore, "session page.nextBefore"),
+    hasMore: boolean(root.hasMore, "session page.hasMore"),
+  };
+}
+
+export function parseSessionExport(value: unknown): SessionExport {
+  const root = record(value, "session export");
+  return {
+    session: parseSessionSummary(root.session, "session export.session"),
+    events: parseSessionEvents(root.events, "session export.events"),
   };
 }
 
@@ -844,6 +1111,15 @@ export function parseSessionMutationResponse(value: unknown): SessionMutationRes
   const root = record(value, "session mutation response");
   if (root.ok !== true) fail("session mutation response.ok must be true");
   return { ok: true, session: parseSessionSnapshot(root.session) };
+}
+
+export function parseSessionClearResponse(value: unknown): SessionClearResponse {
+  const root = record(value, "session clear response");
+  if (root.ok !== true) fail("session clear response.ok must be true");
+  return {
+    ok: true,
+    session: parseSessionSummary(root.session, "session clear response.session"),
+  };
 }
 
 export function parseEmptyResponse(value: unknown): EmptyResponse {
@@ -886,24 +1162,41 @@ export function parseLogcatEvent<Event extends keyof LogcatEventMap>(
 ): LogcatEventMap[Event] {
   const item = record(value, `logcat ${event} event`);
   if (event === "ready") {
-    if (!Array.isArray(item.pids)) fail("logcat ready event.pids must be an array");
     return {
       serial: string(item.serial, "logcat ready event.serial"),
       package: nullableString(item.package, "logcat ready event.package"),
-      pids: item.pids.map((pid, index) =>
-        string(pid, `logcat ready event.pids[${index}]`)
-      ),
       search: nullableString(item.search, "logcat ready event.search"),
+      batchIntervalMs: number(item.batchIntervalMs, "logcat ready event.batchIntervalMs"),
     } as LogcatEventMap[Event];
   }
-  if (event === "log" || event === "error") {
+  if (event === "logs") {
+    if (!Array.isArray(item.lines)) fail("logcat logs event.lines must be an array");
     return {
-      line: string(item.line, `logcat ${event} event.line`),
-      at: string(item.at, `logcat ${event} event.at`),
+      lines: item.lines.map((entry, index) => {
+        const line = record(entry, `logcat logs event.lines[${index}]`);
+        return {
+          line: string(line.line, `logcat logs event.lines[${index}].line`),
+          at: string(line.at, `logcat logs event.lines[${index}].at`),
+        };
+      }),
+      dropped: number(item.dropped, "logcat logs event.dropped"),
+      totalDropped: number(item.totalDropped, "logcat logs event.totalDropped"),
+      sourceDropped: number(item.sourceDropped, "logcat logs event.sourceDropped"),
+    } as LogcatEventMap[Event];
+  }
+  if (event === "error") {
+    return {
+      error: string(item.error, "logcat error event.error"),
+      at: string(item.at, "logcat error event.at"),
+    } as LogcatEventMap[Event];
+  }
+  if (item.reason !== undefined) {
+    return {
+      reason: string(item.reason, "logcat close event.reason"),
     } as LogcatEventMap[Event];
   }
   return {
-    code: item.code === null ? null : number(item.code, "logcat close event.code"),
+    code: nullableNumber(item.code, "logcat close event.code"),
     signal: nullableString(item.signal, "logcat close event.signal"),
   } as LogcatEventMap[Event];
 }
@@ -1002,6 +1295,9 @@ export function parseHealthResponse(value: unknown): HealthResponse {
   const health: HealthResponse = {
     ok: boolean(root.ok, "health response.ok"),
     status: oneOf(root.status, ["streaming", "stopped", "error"] as const, "health response.status"),
+    ...(root.recovering === undefined ? {} : {
+      recovering: boolean(root.recovering, "health response.recovering"),
+    }),
     serial: string(root.serial, "health response.serial"),
     device: string(root.device, "health response.device"),
     codec: string(root.codec, "health response.codec"),
@@ -1016,9 +1312,12 @@ export function parseHealthResponse(value: unknown): HealthResponse {
     videoResetRequests: number(root.videoResetRequests, "health response.videoResetRequests"),
     lastVideoResetAt: nullableString(root.lastVideoResetAt, "health response.lastVideoResetAt"),
     lastVideoResetReason: nullableString(root.lastVideoResetReason, "health response.lastVideoResetReason"),
+    videoResetsByReason: parseCounts(root.videoResetsByReason, "health response.videoResetsByReason"),
+    videoResetsLastMinute: number(root.videoResetsLastMinute, "health response.videoResetsLastMinute"),
+    contention: root.contention === null ? null : parseContention(root.contention),
     location: root.location === null ? null : parseAppliedGeoFix(root.location, "health response.location"),
     route: parseRoutePlaybackSnapshot(root.route),
-    session: parseSessionSnapshot(root.session),
+    session: parseSessionSummary(root.session, "health response.session"),
     clientsDetail: Array.isArray(root.clientsDetail)
       ? root.clientsDetail.map(parseHealthClient)
       : fail("health response.clientsDetail must be an array"),
@@ -1028,18 +1327,25 @@ export function parseHealthResponse(value: unknown): HealthResponse {
     lastError: nullableString(root.lastError, "health response.lastError"),
     lastErrorCode: nullableString(root.lastErrorCode, "health response.lastErrorCode"),
     lastErrorMeta: parseErrorMeta(root.lastErrorMeta),
+    generation: generation(root.generation, "health response.generation"),
   };
-  if (root.sessionGeneration !== undefined) {
-    const generation = number(
-      root.sessionGeneration,
-      "health response.sessionGeneration",
-    );
-    if (!Number.isSafeInteger(generation) || generation < 0) {
-      fail("health response.sessionGeneration must be a non-negative safe integer");
-    }
-    health.sessionGeneration = generation;
-  }
   return health;
+}
+
+function parseCounts(value: unknown, name: string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const [key, count] of Object.entries(record(value, name))) {
+    counts[key] = number(count, `${name}.${key}`);
+  }
+  return counts;
+}
+
+function parseContention(value: unknown): DeviceContention {
+  const root = record(value, "health response.contention");
+  return {
+    otherScrcpySessions: number(root.otherScrcpySessions, "health response.contention.otherScrcpySessions"),
+    checkedAt: string(root.checkedAt, "health response.contention.checkedAt"),
+  };
 }
 
 type AnySuccessParser = (value: unknown) => unknown;
@@ -1060,7 +1366,11 @@ export const API_SUCCESS_PARSERS = {
   "/api/device-grid": { GET: parseDeviceGridResponse },
   "/api/devices/select": { POST: parseDeviceSelectionResponse },
   "/api/avds/start": { POST: parseAvdStartResponse },
+  "/api/stream-quality": { GET: parseStreamQualityResponse, POST: parseStreamQualityResponse },
   "/api/avds/stop": { POST: parseAvdStopResponse },
+  "/api/avds/catalog": { GET: parseAvdCatalogResponse },
+  "/api/avds/create": { POST: parseAvdCreateResponse },
+  "/api/foldable": { GET: parseFoldableResponse, POST: parseFoldableResponse },
   "/api/orientation": { GET: parseOrientationResponse, POST: parseOrientationResponse },
   "/api/night-mode": { GET: parseNightModeResponse, POST: parseNightModeResponse },
   "/api/font-scale": { GET: parseFontScaleResponse, POST: parseFontScaleResponse },
@@ -1074,12 +1384,14 @@ export const API_SUCCESS_PARSERS = {
   "/api/swipe": { POST: parseEmptyResponse },
   "/api/text": { POST: parseEmptyResponse },
   "/api/key": { POST: parseEmptyResponse },
-  "/api/session": { GET: parseSessionSnapshot, DELETE: parseSessionMutationResponse },
+  "/api/session": { GET: parseSessionPage, DELETE: parseSessionClearResponse },
+  "/api/session/export": { GET: parseSessionExport },
   "/api/session/replay": { POST: parseSessionMutationResponse },
   "/api/session/replay/stop": { POST: parseSessionMutationResponse },
   "/api/apps/install": { POST: parseAppActionResponse },
   "/api/files/import": { POST: parseFileImportResponse },
   "/api/apps/launch": { POST: parseAppActionResponse },
+  "/api/deep-link": { POST: parseAppActionResponse },
   "/api/apps/clear": { POST: parseAppActionResponse },
   "/api/apps/force-stop": { POST: parseAppActionResponse },
   "/api/apps/grant": { POST: parseAppActionResponse },

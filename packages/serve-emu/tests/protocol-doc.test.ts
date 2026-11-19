@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { SCRCPY_VERSION } from "../scripts/fetch-scrcpy.ts";
+import packageJson from "../package.json" with { type: "json" };
+import {
+  SCRCPY_SERVER_SHA256,
+  SCRCPY_VERSION,
+} from "../scripts/fetch-scrcpy.ts";
 import {
   GOLDEN_SCRCPY_VERSION,
   PROTOCOL_GOLDEN_HEX,
@@ -16,6 +20,14 @@ describe("canonical protocol documentation", () => {
     expect(await PROTOCOL_DOC.exists()).toBe(true);
     const docs = await PROTOCOL_DOC.text();
     expect(docs).toContain(SCRCPY_VERSION_DOC_MARKER);
+  });
+
+  test("the pinned server digest and package entry follow the pinned version", async () => {
+    const docs = await PROTOCOL_DOC.text();
+    expect(docs).toMatch(
+      new RegExp(`^scrcpy-server-v${SCRCPY_VERSION}\\s+${SCRCPY_SERVER_SHA256}$`, "m"),
+    );
+    expect(packageJson.files).toContain(`vendor/scrcpy-server-v${SCRCPY_VERSION}`);
   });
 
   test("every parser golden is copied exactly into the protocol document", async () => {

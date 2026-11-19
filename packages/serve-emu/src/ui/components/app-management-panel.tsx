@@ -1,37 +1,8 @@
 import { useRef, useState, type DragEvent } from "react";
+import type { AppActionResponse, ForegroundApp } from "../../shared/api-contracts";
+import { apiErrorMessage, apiRequest } from "../lib/api-client";
 import { useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { usePoll } from "../lib/use-poll";
-
-type AppApiResult = {
-  ok?: boolean;
-  output?: string;
-  error?: string;
-  path?: string;
-  kind?: string;
-};
-
-type ForegroundApp = {
-  packageName: string | null;
-  activity: string | null;
-  pid: number | null;
-  label: string | null;
-  versionName: string | null;
-  versionCode: string | null;
-  debuggable: boolean | null;
-};
-
-async function postJson(path: string, body: Record<string, unknown>): Promise<AppApiResult> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  return await res.json() as AppApiResult;
-}
-
-function outputFor(result: AppApiResult): string {
-  return result.ok ? result.output || "OK" : result.error || "Failed";
-}
 
 function isApk(file: File): boolean {
   return file.name.toLowerCase().endsWith(".apk") || file.type === "application/vnd.android.package-archive";
@@ -49,36 +20,29 @@ export function AppManagementPanel() {
   const deviceSession = useDeviceSessionSnapshot();
 
   const { refresh: refreshForeground } = usePoll({
-    poll: async ({ signal }) => {
-      const res = await fetch("/api/foreground", { cache: "no-store", signal });
-      return await res.json() as { ok?: boolean; app?: ForegroundApp; error?: string };
-    },
-    onResult: (json) => {
-      if (json.ok && json.app) {
-        setForeground(json.app);
-        setForegroundError(null);
-      } else {
-        setForeground(null);
-        setForegroundError(json.error || "Foreground app unavailable");
-      }
+    poll: ({ signal }) =>
+      apiRequest("/api/foreground", { method: "GET", cache: "no-store", signal }),
+    onResult: ({ app }) => {
+      setForeground(app);
+      setForegroundError(null);
     },
     onError: (error) => {
       setForeground(null);
-      setForegroundError(error instanceof Error ? error.message : String(error));
+      setForegroundError(apiErrorMessage(error));
     },
     intervalMs: null,
     pollKey: deviceSession.revision,
     enabled: !deviceSession.transitioning,
   });
 
-  const run = async (label: string, request: () => Promise<AppApiResult>) => {
+  const run = async (label: string, request: () => Promise<AppActionResponse>) => {
     setStatus(`${label}...`);
     try {
       const result = await request();
-      setStatus(outputFor(result));
-      if (result.ok) refreshForeground();
+      setStatus(result.output || "OK");
+      refreshForeground();
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
+      setStatus(apiErrorMessage(err));
     }
   };
 
@@ -87,11 +51,9 @@ export function AppManagementPanel() {
     await run(apk ? "Installing" : "Importing", async () => {
       const form = new FormData();
       form.set(apk ? "apk" : "file", file);
-      const res = await fetch(apk ? "/api/apps/install" : "/api/files/import", {
-        method: "POST",
-        body: form,
-      });
-      return await res.json() as AppApiResult;
+      return apk
+        ? apiRequest("/api/apps/install", { method: "POST", body: form })
+        : apiRequest("/api/files/import", { method: "POST", body: form });
     });
   };
 
@@ -217,17 +179,30 @@ export function AppManagementPanel() {
         <button
           onClick={() =>
             void run("Launching", () =>
-              postJson("/api/apps/launch", { ...packageBody(), activity: activity.trim() || undefined }),
+              apiRequest("/api/apps/launch", {
+                method: "POST",
+                body: { ...packageBody(), activity: activity.trim() || undefined },
+              }),
             )
           }
         >
           Launch
         </button>
-        <button onClick={() => void run("Clearing", () => postJson("/api/apps/clear", packageBody()))}>
+        <button
+          onClick={() =>
+            void run("Clearing", () =>
+              apiRequest("/api/apps/clear", { method: "POST", body: packageBody() }),
+            )
+          }
+        >
           Clear
         </button>
         <button
-          onClick={() => void run("Stopping", () => postJson("/api/apps/force-stop", packageBody()))}
+          onClick={() =>
+            void run("Stopping", () =>
+              apiRequest("/api/apps/force-stop", { method: "POST", body: packageBody() }),
+            )
+          }
         >
           Stop
         </button>
@@ -243,7 +218,10 @@ export function AppManagementPanel() {
       <button
         onClick={() =>
           void run("Granting", () =>
-            postJson("/api/apps/grant", { ...packageBody(), permission: permission.trim() }),
+            apiRequest("/api/apps/grant", {
+              method: "POST",
+              body: { ...packageBody(), permission: permission.trim() },
+            }),
           )
         }
       >

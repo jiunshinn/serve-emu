@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   ApiClientError,
+  apiErrorMessage,
   createApiClient,
   type FetchLike,
 } from "../src/ui/lib/api-client.ts";
@@ -38,19 +39,81 @@ describe("API client", () => {
   test("accepts existing success responses that do not carry an ok discriminant", async () => {
     const request = createApiClient(async () =>
       jsonResponse({
+        session: {
+          eventCount: 0,
+          retainedBytes: 0,
+          limits: { maxEvents: 2_000, maxBytes: 1_048_576 },
+          droppedEvents: 0,
+          oldestEventId: null,
+          newestEventId: null,
+          oldestEventAt: null,
+          newestEventAt: null,
+          recording: true,
+          replaying: false,
+          replayStartedAt: null,
+          replayCompletedAt: null,
+          lastError: null,
+        },
         events: [],
-        recording: true,
-        replaying: false,
-        replayStartedAt: null,
-        replayCompletedAt: null,
-        lastError: null,
+        nextBefore: null,
+        hasMore: false,
       }),
     );
 
-    const session = await request("/api/session", { method: "GET" });
+    const page = await request("/api/session", { method: "GET" });
 
-    expect(session.recording).toBe(true);
-    expect(session.events).toEqual([]);
+    expect(page.session.recording).toBe(true);
+    expect(page.events).toEqual([]);
+  });
+
+  test("appends a query string while parsing with the path's contract", async () => {
+    let requested: RequestInfo | URL | undefined;
+    const request = createApiClient(async (input) => {
+      requested = input;
+      return jsonResponse({
+        session: {
+          eventCount: 0,
+          retainedBytes: 0,
+          limits: { maxEvents: 2_000, maxBytes: 1_048_576 },
+          droppedEvents: 0,
+          oldestEventId: null,
+          newestEventId: null,
+          oldestEventAt: null,
+          newestEventAt: null,
+          recording: true,
+          replaying: false,
+          replayStartedAt: null,
+          replayCompletedAt: null,
+          lastError: null,
+        },
+        events: [],
+        nextBefore: null,
+        hasMore: false,
+      });
+    });
+
+    const page = await request("/api/session", {
+      method: "GET",
+      query: { limit: 6, before: undefined },
+    });
+
+    expect(requested).toBe("/api/session?limit=6");
+    expect(page.hasMore).toBe(false);
+  });
+
+  test("turns a structured failure into its message", async () => {
+    const structured = createApiClient(async () =>
+      jsonResponse(
+        { ok: false, error: { code: "not_found", message: "API route not found" } },
+        { status: 404 },
+      ),
+    );
+
+    const structuredError = await structured("/api/orientation", { method: "GET" }).catch(
+      (error: unknown) => error,
+    );
+    expect(apiErrorMessage(structuredError)).toBe("API route not found");
+    expect(apiErrorMessage("plain")).toBe("plain");
   });
 
   test("passes FormData and AbortSignal through without a multipart content-type override", async () => {
@@ -127,15 +190,30 @@ describe("API client", () => {
     });
   });
 
-  test("supports original string failures during a rolling upgrade", async () => {
+  test("treats the retired string failure shape as an invalid response", async () => {
     const request = createApiClient(async () =>
       jsonResponse({ ok: false, error: "old server failure" }, { status: 400 }),
     );
 
     await expect(request("/api/device-grid", { method: "GET" })).rejects.toMatchObject({
       status: 400,
-      code: "legacy_error",
-      message: "old server failure",
+      code: "invalid_response",
+    });
+  });
+
+  test("keeps a failure's reason in its payload", async () => {
+    const request = createApiClient(async () =>
+      jsonResponse(
+        { ok: false, error: { code: "rate_limited", message: "upload queue is full", reason: "upload-queue-full" } },
+        { status: 429 },
+      ),
+    );
+
+    await expect(request("/api/device-grid", { method: "GET" })).rejects.toMatchObject({
+      status: 429,
+      code: "rate_limited",
+      message: "upload queue is full",
+      payload: { error: { reason: "upload-queue-full" } },
     });
   });
 
@@ -206,5 +284,20 @@ describe("API client", () => {
 
     expect(png).toBeInstanceOf(Uint8Array);
     expect(Array.from(png as Uint8Array)).toEqual([0x89, 0x50, 0x4e, 0x47]);
+  });
+
+  test("prepends a device base path to every request", async () => {
+    const urls: string[] = [];
+    const request = createApiClient(async (input) => {
+      urls.push(String(input));
+      return Response.json({
+        ok: true,
+        serial: "emulator-5556",
+        generation: 1,
+        quality: { maxSize: 480, maxFps: 15, bitRate: 8_000_000 },
+      });
+    }, "/d/emulator-5556");
+    await request("/api/stream-quality", { method: "GET" });
+    expect(urls).toEqual(["/d/emulator-5556/api/stream-quality"]);
   });
 });

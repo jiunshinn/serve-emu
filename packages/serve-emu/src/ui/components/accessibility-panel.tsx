@@ -1,19 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
+import type {
+  AccessibilityNode,
+  AccessibilitySelector,
+} from "../../shared/api-contracts";
+import { apiErrorMessage, apiRequest } from "../lib/api-client";
 import { useDeviceSessionSnapshot } from "../lib/device-session-store";
 import { usePoll } from "../lib/use-poll";
 import { AccessibilityNodeList } from "./accessibility-node-list";
-
-export type AccessibilityNode = {
-  id: string;
-  text: string;
-  contentDescription: string;
-  resourceId: string;
-  className: string;
-  packageName: string;
-  clickable: boolean;
-  enabled: boolean;
-  bounds: { left: number; top: number; right: number; bottom: number };
-};
 
 type Props = {
   enabled: boolean;
@@ -23,13 +16,6 @@ type Props = {
   onNodesChange: (nodes: AccessibilityNode[]) => void;
   onHighlight: (id: string | null) => void;
 };
-
-type AccessibilitySelector = Partial<
-  Pick<
-    AccessibilityNode,
-    "id" | "text" | "contentDescription" | "resourceId" | "className" | "packageName" | "clickable" | "enabled"
-  >
-> & { index?: number };
 
 function preferredSelectorForNode(node: AccessibilityNode): AccessibilitySelector {
   if (node.resourceId) return { resourceId: node.resourceId };
@@ -78,20 +64,15 @@ export function AccessibilityPanel({
 
   const { refresh } = usePoll({
     enabled: enabled && !deviceSession.transitioning,
-    poll: async ({ signal }) => {
+    poll: ({ signal }) => {
       setStatus("Reading...");
-      const res = await fetch("/api/accessibility", { cache: "no-store", signal });
-      return await res.json() as { ok?: boolean; nodes?: AccessibilityNode[]; error?: string };
+      return apiRequest("/api/accessibility", { method: "GET", cache: "no-store", signal });
     },
-    onResult: (json) => {
-      if (!json.ok || !json.nodes) {
-        setStatus(json.error || "AX unavailable");
-        return;
-      }
-      onNodesChange(json.nodes);
-      setStatus(`${json.nodes.length} nodes`);
+    onResult: (snapshot) => {
+      onNodesChange(snapshot.nodes);
+      setStatus(`${snapshot.nodes.length} nodes`);
     },
-    onError: (error) => setStatus(error instanceof Error ? error.message : String(error)),
+    onError: (error) => setStatus(apiErrorMessage(error)),
     intervalMs: 3000,
     pollKey: deviceSession.revision,
   });
@@ -106,20 +87,14 @@ export function AccessibilityPanel({
   const tapNode = useCallback(async (node: AccessibilityNode) => {
     setStatus("Tapping...");
     try {
-      const res = await fetch("/api/accessibility/tap", {
+      await apiRequest("/api/accessibility/tap", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selector: selectorForNode(node, nodes) }),
+        body: { selector: selectorForNode(node, nodes) },
       });
-      const json = await res.json() as { ok?: boolean; error?: string };
-      if (!res.ok || !json.ok) {
-        setStatus(json.error || "Tap failed");
-        return;
-      }
       setStatus("Tapped");
       refresh();
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : String(err));
+      setStatus(apiErrorMessage(err));
     }
   }, [nodes, refresh]);
 
