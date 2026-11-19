@@ -561,12 +561,18 @@ export async function startServer(
     return entry.slot;
   };
 
-  const closePinned = async (serial: string, reason: string) => {
+  /** Closes still in progress; stop waits for them too. */
+  const closingSlots = new Set<Promise<void>>();
+  const closePinned = (serial: string, reason: string): Promise<void> => {
     const entry = pinned.get(serial);
-    if (!entry) return;
+    if (!entry) return Promise.resolve();
     pinned.delete(serial);
-    const slot = await entry.slot.catch(() => null);
-    await slot?.close(reason);
+    const task: Promise<void> = entry.slot
+      .then((slot) => slot.close(reason), () => {})
+      .catch((err: unknown) => log(`closing ${serial} failed: ${String(err)}`))
+      .finally(() => closingSlots.delete(task));
+    closingSlots.add(task);
+    return task;
   };
 
   const idleSweep = setInterval(() => {
@@ -723,6 +729,7 @@ export async function startServer(
       ...[...pinned.keys()].map((serial) =>
         closePinned(serial, "server stopping"),
       ),
+      ...closingSlots,
       uploads.close(error),
     ]).then(() => {});
     return stopTask;
