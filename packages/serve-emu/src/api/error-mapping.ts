@@ -1,4 +1,5 @@
 import { AvdManagerError } from "../avd-manager.ts";
+import { CameraImageError } from "../camera-images.ts";
 import { commandFailureOf } from "../command-failure.ts";
 import { ControlInputError } from "../control-input-queue.ts";
 import { SessionChangedError } from "../device-session-context.ts";
@@ -83,6 +84,7 @@ export function toApiError(
   fallback: ApiErrorFallback = "invalid_request",
 ): ApiError {
   if (err instanceof ApiError) return err;
+  if (err instanceof CameraImageError) return api(err.code === "unavailable" ? "conflict" : "invalid_request", message(err), err, `camera-image-${err.code}`);
   if (err instanceof EmulatorCameraConflictError) {
     return api("conflict", "The AVD is already running. Stop it first, then start it again with the requested cameras.", err, "emulator-camera-restart-required");
   }

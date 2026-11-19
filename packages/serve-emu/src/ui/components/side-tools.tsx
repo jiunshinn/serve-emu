@@ -1,4 +1,5 @@
 import { FoldablePanel } from "./foldable-panel";
+import { CameraTool } from "./camera-panel";
 import { memo, type ComponentType } from "react";
 import type { AccessibilityNode } from "../../shared/api-contracts";
 import { AccessibilityPanel } from "./accessibility-panel";
@@ -47,6 +48,7 @@ export const SideTools = memo(function SideTools({
 }: Props) {
   return (
     <>
+      <CameraTool />
       <StaticTool id="foldable-tool" title="Foldable" panel={FoldablePanel} />
       <StaticTool id="network-tool" title="Network" panel={NetworkPanel} />
       <StaticTool id="theme-tool" title="Theme" panel={NightModePanel} />

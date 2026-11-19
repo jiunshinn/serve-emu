@@ -1,4 +1,5 @@
 import type { importMediaFile, installApk } from "../app-management.ts";
+import { MAX_CAMERA_IMAGE_BYTES } from "../camera-images.ts";
 import type { DeviceSessionManager } from "../device-session-context.ts";
 import {
   MultipartUploadError,
@@ -89,6 +90,7 @@ export function resolveUploadLimits(opts: {
   const maxRequestBodySize = Math.max(
     maxUploadFileBytes + MULTIPART_BODY_OVERHEAD_BYTES * 2,
     MAX_ROUTE_BODY_BYTES,
+    MAX_CAMERA_IMAGE_BYTES,
   );
   return {
     maxApkUploadBytes,

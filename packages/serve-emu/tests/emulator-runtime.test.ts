@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter, getEventListeners } from "node:events";
 import type { ChildProcess, spawn } from "node:child_process";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 import {
   clearEmulatorResolutionCache,
   listAvds,
@@ -828,6 +828,36 @@ const refuseSpawn = (() => {
 }) as unknown as typeof spawn;
 
 describe("emulator cameras", () => {
+  test("uploaded cameras seed an owned placeholder before spawn and clean up on stop or boot failure", async () => {
+    for (const fail of [false, true]) {
+      const paths: string[] = [];
+      const fake = fakeProcess();
+      const launch = startEmulator({ avd: "Pixel_8", emulatorPath: "/sdk/emulator", port: 5554, cameraBack: "uploaded", cameraFront: "uploaded" }, {
+        execText: bootedExec(), listAllDevices: async () => [],
+        spawn: ((command: string, args: string[], opts: unknown) => {
+          for (const flag of ["-camera-back", "-camera-front"]) {
+            const mode = args[args.indexOf(flag) + 1]!;
+            expect(mode.startsWith("imagefile:")).toBe(true);
+            const path = mode.slice("imagefile:".length);
+            paths.push(path);
+            expect(readFileSync(path).subarray(1, 4).toString()).toBe("PNG");
+          }
+          if (fail) throw new Error("spawn failed");
+          void command; void opts;
+          return fake.proc;
+        }) as unknown as typeof spawn,
+      });
+      if (fail) await expect(launch).rejects.toThrow("spawn failed");
+      else {
+        const result = await launch;
+        expect(result.cameras?.modes).toEqual({ back: "uploaded", front: "uploaded" });
+        await result.stop();
+      }
+      expect(paths).toHaveLength(2);
+      for (const path of paths) expect(existsSync(dirname(path))).toBe(false);
+    }
+  });
+
   test("lists host webcams, including device names with quotes", async () => {
     const calls: unknown[][] = [];
     const runExec = (async (command, args, options) => {
@@ -972,11 +1002,11 @@ describe("emulator cameras", () => {
     const cases = [
       [
         { cameraFront: "virtualscene" },
-        '--camera-front must be one of webcam<N>, emulated, environment, none, or videofile:/imagefile:/image360:<path> (got "virtualscene").',
+        '--camera-front must be one of webcam<N>, emulated, uploaded, environment, none, or videofile:/imagefile:/image360:<path> (got "virtualscene").',
       ],
       [
         { cameraBack: "webcam" },
-        '--camera-back must be one of webcam<N>, emulated, virtualscene, environment, none, or videofile:/imagefile:/image360:<path> (got "webcam").',
+        '--camera-back must be one of webcam<N>, emulated, uploaded, virtualscene, environment, none, or videofile:/imagefile:/image360:<path> (got "webcam").',
       ],
       [{ cameraBack: "imagefile:" }, '(got "imagefile:")'],
       [{ cameraBack: "" }, '(got "")'],

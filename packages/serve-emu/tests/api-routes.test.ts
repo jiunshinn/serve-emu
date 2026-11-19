@@ -19,6 +19,8 @@ const EXPECTED_ROUTES = [
   ["POST", "/api/devices/select"],
   ["POST", "/api/avds/start"],
   ["GET", "/api/webcams"],
+  ["GET", "/api/camera"],
+  ["PUT", "/api/camera/image"],
   ["POST", "/api/avds/stop"],
   ["GET", "/api/orientation"],
   ["POST", "/api/orientation"],
