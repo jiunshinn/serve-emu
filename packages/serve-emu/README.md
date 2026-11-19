@@ -439,6 +439,10 @@ sidebar. **Fold**, **Half-open**, and **Unfold** use the emulator’s native
 hinge/posture controls, so Android receives actual device-state changes. The
 panel reads Android’s committed posture; non-foldable and physical devices show
 setup guidance. Video and touch coordinates follow the active display size.
+After **Fold**, the response's `displayChanged` says
+whether the screen size changed. Some emulator images keep one display when
+folded: Android reports the posture, but apps keep the inner screen. The panel
+then shows a warning.
 Half-open selects a hinge posture; the app decides whether to show a tabletop
 or two-pane layout.
 
@@ -528,6 +532,9 @@ curl "$BASE/api/orientation"
 curl -X POST "$BASE/api/orientation" \
   -H 'Content-Type: application/json' \
   -d '{"orientation":"landscape"}'
+
+`portrait` and `landscape` follow the natural orientation of the display from
+`wm size`, so they stay correct on tablets whose rotation 0 is landscape.
 
 curl "$BASE/api/night-mode"
 curl -X POST "$BASE/api/night-mode" \

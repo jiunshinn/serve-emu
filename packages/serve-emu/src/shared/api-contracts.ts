@@ -768,6 +768,9 @@ function parseFoldableResponse(value: unknown): FoldableResponse {
       supported: boolean(item.supported, "foldable.supported"),
       posture: oneOf(item.posture, [...FOLD_POSTURES, "unknown"] as const, "foldable.posture"),
       ...(item.reason === undefined ? {} : { reason: string(item.reason, "foldable.reason") }),
+      ...(item.displayChanged === undefined
+        ? {}
+        : { displayChanged: boolean(item.displayChanged, "foldable.displayChanged") }),
     },
   };
 }

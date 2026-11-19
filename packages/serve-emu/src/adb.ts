@@ -70,16 +70,43 @@ export function screencapPng(serial: string, deps: AdbDeps = {}): Promise<Buffer
   );
 }
 
-function orientationFromRotation(mode: "free" | "lock" | "unknown", rotation: number | null): OrientationStatus["orientation"] {
-  if (mode === "free") return "auto";
-  if (rotation === 0 || rotation === 2) return "portrait";
-  if (rotation === 1 || rotation === 3) return "landscape";
-  return "unknown";
-}
+export type DisplaySize = { width: number; height: number };
 
-export async function getUserRotation(
+/** The display size in its natural (rotation 0) orientation, as `wm size` reports it. */
+export async function getDisplaySize(
   serial: string,
   deps: AdbDeps = {},
+): Promise<DisplaySize | null> {
+  const stdout = await adbText(serial, ["shell", "wm", "size"], query("wm size"), deps);
+  const match =
+    stdout.match(/Override size:\s*(\d+)x(\d+)/) ?? stdout.match(/Physical size:\s*(\d+)x(\d+)/);
+  return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
+}
+
+// Orientation still works without a size; it then assumes a portrait-natural display.
+function displaySizeOrNull(serial: string, deps: AdbDeps): Promise<DisplaySize | null> {
+  return getDisplaySize(serial, deps).catch(() => null);
+}
+
+// Rotation 0 is the natural orientation, which is landscape on most tablets.
+function isNaturalLandscape(size: DisplaySize | null): boolean {
+  return size !== null && size.width > size.height;
+}
+
+function orientationFromRotation(
+  mode: "free" | "lock" | "unknown",
+  rotation: number | null,
+  naturalLandscape: boolean,
+): OrientationStatus["orientation"] {
+  if (mode === "free") return "auto";
+  if (rotation === null || ![0, 1, 2, 3].includes(rotation)) return "unknown";
+  return (rotation % 2 === 1) !== naturalLandscape ? "landscape" : "portrait";
+}
+
+async function readUserRotation(
+  serial: string,
+  size: DisplaySize | null,
+  deps: AdbDeps,
 ): Promise<OrientationStatus> {
   const stdout = await adbText(
     serial,
@@ -94,7 +121,19 @@ export async function getUserRotation(
   }
   const mode = match[1] as "free" | "lock";
   const rotation = match[2] === undefined ? null : Number(match[2]);
-  return { mode, rotation, orientation: orientationFromRotation(mode, rotation), raw };
+  return {
+    mode,
+    rotation,
+    orientation: orientationFromRotation(mode, rotation, isNaturalLandscape(size)),
+    raw,
+  };
+}
+
+export async function getUserRotation(
+  serial: string,
+  deps: AdbDeps = {},
+): Promise<OrientationStatus> {
+  return readUserRotation(serial, await displaySizeOrNull(serial, deps), deps);
 }
 
 export async function setUserRotation(
@@ -102,12 +141,14 @@ export async function setUserRotation(
   orientation: OrientationMode,
   deps: AdbDeps = {},
 ): Promise<OrientationStatus> {
+  const size = await displaySizeOrNull(serial, deps);
+  const naturalOrientation = isNaturalLandscape(size) ? "landscape" : "portrait";
   const args =
     orientation === "auto"
       ? ["cmd", "window", "user-rotation", "free"]
-      : ["cmd", "window", "user-rotation", "lock", orientation === "portrait" ? "0" : "1"];
+      : ["cmd", "window", "user-rotation", "lock", orientation === naturalOrientation ? "0" : "1"];
   await adbText(serial, ["shell", ...args], mutation("cmd window user-rotation"), deps);
-  return getUserRotation(serial, deps);
+  return readUserRotation(serial, size, deps);
 }
 
 export async function getFontScale(

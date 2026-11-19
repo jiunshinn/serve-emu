@@ -43,3 +43,23 @@ test("native command errors remain visible after a state refresh", async ({ page
   await expect(panel.getByRole("status")).toHaveText("Unfolded");
   await expect(panel.getByRole("alert")).toContainText("adb emu fold failed");
 });
+
+test("warns when Android changes posture but the display keeps its size", async ({ page }) => {
+  let posture = "unfolded";
+  await page.route("**/api/foldable", async (route) => {
+    const post = route.request().method() === "POST";
+    if (post) posture = route.request().postDataJSON().posture;
+    await route.fulfill({ json: { ok: true, foldable: { supported: true, posture, ...(post ? { displayChanged: posture !== "folded" } : {}) } } });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Foldable", exact: true }).click();
+  const panel = page.getByRole("region", { name: "Foldable controls" });
+  await panel.getByRole("button", { name: "Fold", exact: true }).click();
+  await expect(panel.getByRole("note")).toContainText("Android reports folded, but the screen size did not change");
+  await panel.getByRole("button", { name: "Refresh posture", exact: true }).click();
+  await expect(panel.getByRole("status")).toHaveText("Folded");
+  await expect(panel.getByRole("note")).toBeVisible();
+  await panel.getByRole("button", { name: "Unfold", exact: true }).click();
+  await expect(panel.getByRole("status")).toHaveText("Unfolded");
+  await expect(panel.getByRole("note")).toHaveCount(0);
+});

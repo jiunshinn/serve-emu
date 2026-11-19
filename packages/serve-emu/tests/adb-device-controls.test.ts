@@ -171,14 +171,50 @@ describe("ADB display controls", () => {
       const calls: string[] = [];
       const runExec = (async (_command, args) => {
         calls.push(args.slice(3).join(" "));
-        return result(calls.length === 1 ? "" : entry.observed);
+        if (calls.length === 1) return result("Physical size: 1080x2400\n");
+        return result(calls.length === 2 ? "" : entry.observed);
       }) as typeof execText;
       const status = await setUserRotation("device-1", entry.requested, { execText: runExec });
       expect(calls).toEqual([
+        "wm size",
         `cmd window user-rotation ${entry.command}`,
         "cmd window user-rotation",
       ]);
       expect(status.raw).toBe(entry.observed);
+    }
+  });
+
+  test("labels rotations by the natural orientation of the display", async () => {
+    const tablet = (rotation: string, size = "Physical size: 2560x1600") =>
+      (async (_command, args) =>
+        result(args.includes("wm") ? `${size}\n` : rotation)) as typeof execText;
+    const cases = [
+      { rotation: "lock 0", orientation: "landscape" },
+      { rotation: "lock 2", orientation: "landscape" },
+      { rotation: "lock 1", orientation: "portrait" },
+      { rotation: "lock 3", orientation: "portrait" },
+      { rotation: "lock 7", orientation: "unknown" },
+    ] as const;
+    for (const entry of cases) {
+      expect((await getUserRotation("tablet", { execText: tablet(entry.rotation) })).orientation)
+        .toBe(entry.orientation);
+    }
+    const overridden = tablet("lock 0", "Physical size: 2560x1600\nOverride size: 1600x2560");
+    expect((await getUserRotation("tablet", { execText: overridden })).orientation).toBe("portrait");
+  });
+
+  test("locks a landscape-natural display to the rotation that matches the request", async () => {
+    for (const [requested, command] of [["landscape", "lock 0"], ["portrait", "lock 1"]] as const) {
+      const calls: string[] = [];
+      const runExec = (async (_command, args) => {
+        calls.push(args.slice(3).join(" "));
+        if (args.includes("wm")) return result("Physical size: 2560x1600\n");
+        return result(calls.length === 2 ? "" : command);
+      }) as typeof execText;
+      const status = await setUserRotation("tablet", requested, { execText: runExec });
+      expect(calls[1]).toBe(`cmd window user-rotation ${command}`);
+      expect(status.orientation).toBe(requested);
+      expect(calls.filter((call) => call === "wm size")).toHaveLength(1);
     }
   });
 
