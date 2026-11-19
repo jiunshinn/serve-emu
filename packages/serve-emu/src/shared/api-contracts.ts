@@ -337,6 +337,8 @@ export type DeviceContention = {
 export type HealthResponse = {
   ok: boolean;
   status: SessionStatus;
+  /** The selected device's scrcpy transport is being reopened. */
+  recovering?: boolean;
   serial: string;
   device: string;
   codec: string;
@@ -1259,6 +1261,9 @@ export function parseHealthResponse(value: unknown): HealthResponse {
   const health: HealthResponse = {
     ok: boolean(root.ok, "health response.ok"),
     status: oneOf(root.status, ["streaming", "stopped", "error"] as const, "health response.status"),
+    ...(root.recovering === undefined ? {} : {
+      recovering: boolean(root.recovering, "health response.recovering"),
+    }),
     serial: string(root.serial, "health response.serial"),
     device: string(root.device, "health response.device"),
     codec: string(root.codec, "health response.codec"),

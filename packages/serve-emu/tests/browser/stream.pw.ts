@@ -128,18 +128,20 @@ test("a late-joining tab renders from the server's cached SPS/PPS", async ({
 }) => {
   // Resets are ignored, so the encoder never resends its config: the only
   // way a second tab can decode is the cached config the server prepends to
-  // the next periodic IDR.
+  // a cached or periodic IDR.
   await request.post("/__test/control", {
     data: { encoder: { answerResets: false, keyframeIntervalFrames: 20 } },
   });
   await page.goto("/");
   await streaming(page);
   const configsBefore = (await encoderStats(request)).configs;
+  const resetsBefore = (await (await request.get("/health")).json()).videoResetRequests;
   const late = await context.newPage();
   await late.goto("/");
   await streaming(late);
   await expect.poll(async () => isRed(await centerColor(late)) || isGreen(await centerColor(late))).toBe(true);
   expect((await encoderStats(request)).configs).toBe(configsBefore);
+  expect((await (await request.get("/health")).json()).videoResetRequests).toBe(resetsBefore);
 });
 
 test("another tab's device switch refreshes both device lists", async ({

@@ -23,6 +23,7 @@ export type SessionRecoveryWatchdogOptions<
   clock?: RecoveryWatchdogClock;
   clients: () => Iterable<TClient>;
   requestReset: (reason: string, nowMs: number) => boolean;
+  shouldRetryAwaiting?: (client: TClient, sourceQuiet: boolean) => boolean;
   startedMs?: number;
   intervalMs?: number;
   sessionResetCooldownMs?: number;
@@ -95,6 +96,7 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
   #clock: RecoveryWatchdogClock;
   #clients: () => Iterable<TClient>;
   #requestReset: (reason: string, nowMs: number) => boolean;
+  #shouldRetryAwaiting: SessionRecoveryWatchdogOptions<TClient>["shouldRetryAwaiting"];
   #intervalMs: number;
   #sessionResetCooldownMs: number;
   #firstFrameResetMs: number;
@@ -122,6 +124,7 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
     this.#clock = options.clock ?? SYSTEM_RECOVERY_WATCHDOG_CLOCK;
     this.#clients = options.clients;
     this.#requestReset = options.requestReset;
+    this.#shouldRetryAwaiting = options.shouldRetryAwaiting;
     this.startedMs = options.startedMs ?? this.#clock.now();
     this.#lastFpsSampleMs = this.startedMs;
     this.#intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -320,6 +323,8 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
       }
     }
 
+    const sourceQuiet = this.#lastFrameMs === null ||
+      now - this.#lastFrameMs >= this.#sourceStallResetMs;
     const awaitingRetry = clients.some((client) => {
       if (
         !client.awaitingKeyFrame ||
@@ -329,7 +334,8 @@ export class SessionRecoveryWatchdog<TClient extends RecoveryClientState> {
       }
       const retryFrom =
         client.lastKeyFrameRequestMs ?? client.awaitingKeyFrameSinceMs;
-      return now - retryFrom >= this.#awaitingKeyFrameResetMs;
+      return now - retryFrom >= this.#awaitingKeyFrameResetMs &&
+        (this.#shouldRetryAwaiting?.(client, sourceQuiet) ?? true);
     });
     if (awaitingRetry) {
       this.requestVideoReset("client awaiting keyframe");

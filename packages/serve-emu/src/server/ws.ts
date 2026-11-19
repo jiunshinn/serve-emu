@@ -6,7 +6,6 @@ import {
 } from "../control-input-queue.ts";
 import type { DeviceSessionManager } from "../device-session-context.ts";
 import type { Gesture } from "../input.ts";
-import type { SessionRecoveryWatchdog } from "../session-recovery-watchdog.ts";
 import { shouldRecordPayload } from "../session-api.ts";
 import { epochNowMs } from "../shared/frame-meta.ts";
 import {
@@ -16,6 +15,8 @@ import {
 import type { Client, DeviceContext, WsData } from "./types.ts";
 
 const MAX_WS_MESSAGE_BYTES = 16 * 1024;
+type KeyGesture = Extract<Gesture, { type: "key" }>;
+type HeldKey = { owner: Client; gesture: KeyGesture; record: boolean };
 
 export function sendJson(ws: ServerWebSocket<WsData>, value: unknown) {
   try {
@@ -41,13 +42,11 @@ function inputErrorPayload(err: unknown, status: "rejected" | "failed") {
 
 /**
  * The `/ws` endpoint: the upgrade, then each client's control messages
- * (gestures, key frame requests, clock sync) and its touch release on close.
+ * (gestures, key frame requests, clock sync) and held-input release on close.
  */
 export function createWebSocketEndpoint(deps: {
   sessions: DeviceSessionManager<DeviceContext>;
-  recovery: (
-    context: DeviceContext,
-  ) => SessionRecoveryWatchdog<Client> | undefined;
+  join: (client: Client) => void;
   enqueueGesture: (
     context: DeviceContext,
     gesture: Gesture,
@@ -55,16 +54,39 @@ export function createWebSocketEndpoint(deps: {
     record?: boolean,
   ) => ControlInputHandle;
   enqueueVideoReset: (
-    context: DeviceContext,
+    client: Client,
     reason: string,
   ) => ControlPacketHandle;
   /** The body of the 503 an upgrade gets while the session is not streaming. */
   health: (context: DeviceContext) => unknown;
 }) {
-  const { sessions, recovery, enqueueGesture, enqueueVideoReset, health } =
+  const { sessions, join, enqueueGesture, enqueueVideoReset, health } =
     deps;
   let nextId = 1;
   let nextTouchId = 1;
+  const heldKeys = new WeakMap<DeviceContext, Map<number, HeldKey>>();
+
+  const enqueueClientKey = (
+    client: Client,
+    gesture: KeyGesture,
+    recordRequested: boolean,
+  ) => {
+    const { context } = client;
+    const keys = heldKeys.get(context) ?? new Map<number, HeldKey>();
+    const previous = keys.get(gesture.keycode);
+    if (previous && (previous.owner !== client || gesture.action === undefined)) {
+      throw new Error("key is already held");
+    }
+    const record = previous?.record ?? recordRequested;
+    const accepted = enqueueGesture(context, gesture, "ws", record);
+    if (gesture.action === "down" && !previous) {
+      keys.set(gesture.keycode, { owner: client, gesture, record });
+      heldKeys.set(context, keys);
+    } else if (gesture.action === "up") {
+      keys.delete(gesture.keycode);
+    }
+    return accepted;
+  };
 
   const enqueueClientGesture = (
     ws: ServerWebSocket<WsData>,
@@ -72,9 +94,12 @@ export function createWebSocketEndpoint(deps: {
     recordRequested: boolean,
   ) => {
     const client = ws.data.handle;
-    if (gesture.type !== "touch")
+    if (gesture.type !== "touch" && gesture.type !== "key")
       return enqueueGesture(ws.data.context, gesture, "ws", recordRequested);
     if (!client) throw new Error("WebSocket client is not open");
+    if (gesture.type === "key") {
+      return enqueueClientKey(client, gesture, recordRequested);
+    }
     const sourceId = gesture.pointerId ?? 0;
     const previous = client.touches.get(sourceId);
     if (gesture.action === "down" ? previous : !previous) {
@@ -100,23 +125,27 @@ export function createWebSocketEndpoint(deps: {
     return accepted;
   };
 
-  const releaseClientTouches = (client: Client) => {
+  const releaseClientInputs = (client: Client) => {
     // The input queue reserves an UP slot for every admitted DOWN, even when full.
     // Never redirect a late disconnect's releases onto a replacement session.
-    if (sessions.isCurrent(client.context)) {
-      for (const { gesture, record } of client.touches.values()) {
-        try {
-          const accepted = enqueueGesture(
-            client.context,
-            { ...gesture, action: "up" },
-            "ws:disconnect",
-            record,
-          );
-          void accepted.completion.catch(() => {});
-        } catch {}
-      }
+    const release = (gesture: Gesture, record: boolean) => {
+      if (!sessions.isCurrent(client.context)) return;
+      try {
+        const accepted = enqueueGesture(client.context, gesture, "ws:disconnect", record);
+        void accepted.completion.catch(() => {});
+      } catch {}
+    };
+    for (const { gesture, record } of client.touches.values()) {
+      release({ ...gesture, action: "up" }, record);
     }
     client.touches.clear();
+    const keys = heldKeys.get(client.context);
+    if (!keys) return;
+    for (const [keycode, { owner, gesture, record }] of keys) {
+      if (owner !== client) continue;
+      keys.delete(keycode);
+      release({ ...gesture, action: "up" }, record);
+    }
   };
 
   const handlers: WebSocketHandler<WsData> = {
@@ -147,9 +176,7 @@ export function createWebSocketEndpoint(deps: {
       };
       context.clients.add(handle);
       ws.data.handle = handle;
-      const watchdog = recovery(context);
-      watchdog?.markAwaiting(handle);
-      watchdog?.requestVideoReset("client opened");
+      join(handle);
     },
     message(ws, raw) {
       const context = ws.data.context;
@@ -183,8 +210,10 @@ export function createWebSocketEndpoint(deps: {
           return;
         }
         if (msg.type === "reset-video") {
+          const client = ws.data.handle;
+          if (!client) throw new Error("WebSocket client is not open");
           const accepted = enqueueVideoReset(
-            context,
+            client,
             "client requested keyframe",
           );
           void accepted.completion
@@ -224,7 +253,7 @@ export function createWebSocketEndpoint(deps: {
     },
     close(ws) {
       if (ws.data.handle) {
-        releaseClientTouches(ws.data.handle);
+        releaseClientInputs(ws.data.handle);
         ws.data.context.clients.delete(ws.data.handle);
       }
     },

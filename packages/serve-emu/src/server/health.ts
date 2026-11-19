@@ -16,6 +16,7 @@ export type HealthSources = {
   responseMetrics: Record<string, JsonResponseMetric>;
   uploads: UploadManagerSnapshot;
   executor: ExecSnapshot;
+  recovering?: boolean;
 };
 
 /** The `/health` body for one device session: a pure read of its state. */
@@ -36,6 +37,7 @@ export function buildHealthSnapshot(context: DeviceContext, sources: HealthSourc
   const snapshot = {
     ok: context.status === "streaming",
     status: context.status,
+    recovering: sources.recovering ?? false,
     generation: context.generation,
     serial: context.serial,
     device: context.scrcpy.meta.deviceName,

@@ -320,6 +320,7 @@ export type ManagedDeviceSession = {
   readonly serial: string;
   readonly generation: number;
   readonly signal: AbortSignal;
+  readonly stoppedByClient?: boolean;
   dispose(reason: string, opts?: DisposeDeviceSessionOpts): Promise<void>;
 };
 
@@ -333,6 +334,7 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
   #lastGeneration: number;
   #tail: Promise<void> = Promise.resolve();
   #transitionController: AbortController | null = null;
+  #recoveryController: AbortController | null = null;
   #closing = false;
   #closed = false;
 
@@ -382,15 +384,25 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
       signal: AbortSignal,
     ) => Promise<TContext>,
     activate?: (context: TContext) => void,
+    recover?: TContext,
   ): Promise<TContext> {
-    return this.#enqueue(async () => {
+    // Explicit selection or stop takes precedence over an automatic reopen,
+    // even if scrcpy is still preparing the replacement.
+    this.#cancelRecovery();
+    const recovery = recover ? new AbortController() : null;
+    if (recovery) this.#recoveryController = recovery;
+    const operation = this.#enqueue(async () => {
       if (this.#closing) throw new Error("device session manager is closed");
       const previous = this.#current;
+      recovery?.signal.throwIfAborted();
+      if (recover && (previous !== recover || recover.stoppedByClient)) {
+        throw new SessionChangedError(recover.generation, previous.generation);
+      }
       if (previous.serial === serial && !previous.signal.aborted) return previous;
 
       // Candidate startup happens while the old context remains published. A
       // failed preparation therefore leaves the working device untouched.
-      const transition = new AbortController();
+      const transition = recovery ?? new AbortController();
       this.#transitionController = transition;
       let next: TContext;
       try {
@@ -403,6 +415,10 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
       if (this.#closing) {
         await next.dispose("server stopped during device switch");
         throw new Error("device session manager is closed");
+      }
+      if (recovery?.signal.aborted) {
+        await next.dispose("automatic recovery superseded");
+        recovery.signal.throwIfAborted();
       }
 
       // Publication is one synchronous assignment. From here on every health
@@ -418,6 +434,11 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
       await previous.dispose("device switched", { clientCode: 1012 });
       return next;
     });
+    return recovery
+      ? operation.finally(() => {
+          if (this.#recoveryController === recovery) this.#recoveryController = null;
+        })
+      : operation;
   }
 
   stop(
@@ -425,6 +446,7 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
     reason: string,
     opts: DisposeDeviceSessionOpts = {},
   ): Promise<void> {
+    if (this.isPublished(context)) this.#cancelRecovery();
     return this.#enqueue(async () => {
       this.assertPublished(context);
       await context.dispose(reason, opts);
@@ -433,6 +455,7 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
 
   close(reason: string): Promise<void> {
     this.#closing = true;
+    this.#cancelRecovery();
     this.#transitionController?.abort(
       new SessionChangedError(this.#current.generation, null),
     );
@@ -451,6 +474,13 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
         await this.#current.dispose(reason, { clientCode: 1001 });
       }
     });
+  }
+
+  #cancelRecovery(): void {
+    this.#recoveryController?.abort(
+      new SessionChangedError(this.#current.generation, null),
+    );
+    this.#recoveryController = null;
   }
 
   #enqueue<TResult>(operation: () => Promise<TResult>): Promise<TResult> {

@@ -53,7 +53,8 @@
     "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "prepack": "bun run scripts/fetch-scrcpy.ts",
     "prepublishOnly": "bun run check",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "bench:stream": "bun run scripts/bench-stream.ts"
   },
   "files": [
     "src",

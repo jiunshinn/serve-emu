@@ -14,9 +14,19 @@ import {
 
 const port = Number(process.env.SERVE_EMU_FIXTURE_PORT ?? 33117);
 const token = process.env.SERVE_EMU_FIXTURE_TOKEN || undefined;
+const benchmark = process.env.SERVE_EMU_FIXTURE_BENCHMARK === "1";
 const gop = loadGop(
   Buffer.from(await Bun.file(new URL("gop-red-green.h264", import.meta.url)).arrayBuffer()),
 );
+if (benchmark) {
+  // An Annex-B filler NAL makes the fixture exercise transport at roughly
+  // 8 Mbps and 30 fps while keeping its tiny, repeatable H.264 picture.
+  const filler = Buffer.alloc(32 * 1024, 0xff);
+  filler.set([0, 0, 0, 1, 12], 0);
+  filler[filler.length - 1] = 0x80;
+  gop.idr = Buffer.concat([gop.idr, filler]);
+  gop.deltas = gop.deltas.map((delta) => Buffer.concat([delta, filler]));
+}
 let encoderOptions: EncoderOptions = { ...DEFAULT_ENCODER_OPTIONS };
 const encoders = new Map<string, FakeEncoder>();
 let rejectInput = false;
@@ -31,7 +41,7 @@ const sessions = new Map<string, ControlInputQueue>();
 // production FramedReader/readFrame, as for a real scrcpy server.
 const openScrcpy = async (serial: string): Promise<ScrcpySession> => {
   encoders.get(serial)?.stop();
-  const encoder = new FakeEncoder(gop, { width: 64, height: 64 });
+  const encoder = new FakeEncoder(gop, { width: 64, height: 64 }, benchmark ? 33 : 100);
   encoder.options = { ...encoderOptions };
   encoders.set(serial, encoder);
   const reader = new FramedReader(encoder.socket as unknown as Socket);
@@ -148,5 +158,6 @@ const started = await startServer(
     },
   },
 );
+if (benchmark) process.send?.(started.server.port);
 process.on("SIGTERM", () => void started.stop().then(() => process.exit(0)));
 process.on("SIGINT", () => void started.stop().then(() => process.exit(0)));
