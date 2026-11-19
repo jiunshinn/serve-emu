@@ -52,7 +52,9 @@ export function DeviceGrid() {
             const set = await request("/api/stream-quality", { method: "POST", body: target });
             current.current.set(serial, set.quality);
           }
-          if (!cancelled) setReady((prev) => new Set(prev).add(serial));
+          if (cancelled) return;
+          setReady((prev) => new Set(prev).add(serial));
+          setTileErrors(({ [serial]: _cleared, ...rest }) => rest);
         } catch (err) {
           if (!cancelled) setTileErrors((prev) => ({ ...prev, [serial]: apiErrorMessage(err) }));
         }
