@@ -1,4 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
+import { getDisplaySize } from "./adb.ts";
 import { adbText, type AdbDeps } from "./adb-command.ts";
 import { CommandFailureError } from "./command-failure.ts";
 import type { FoldPosture, FoldableState } from "./shared/foldable-contracts.ts";
@@ -99,6 +100,13 @@ export async function setFoldPosture(
   try {
     const state = await getFoldableState(serial, deps);
     if (!state.supported) throw new FoldableError("unsupported", state.reason!);
+    // Folding switches to the cover display only when the image has one.
+    const expectsResize =
+      state.posture !== "unknown" &&
+      state.posture !== posture &&
+      (state.posture === "folded" || posture === "folded");
+    const displaySize = () => getDisplaySize(serial, deps).catch(() => null);
+    const before = expectsResize ? await displaySize() : null;
     const args =
       posture === "folded" ? ["fold"] : posture === "unfolded" ? ["unfold"] : ["posture", "2"];
     await emulatorConsole(serial, args, deps);
@@ -107,7 +115,13 @@ export async function setFoldPosture(
     const wait = deps.sleep ?? ((ms, signal) => sleep(ms, undefined, { signal }));
     for (let attempt = 0; attempt < CONFIRM_ATTEMPTS; attempt++) {
       if (parseFoldPosture(await deviceState(serial, deps)) === posture) {
-        return { supported: true, posture };
+        const after = before ? await displaySize() : null;
+        if (!before || !after) return { supported: true, posture };
+        return {
+          supported: true,
+          posture,
+          displayChanged: before.width !== after.width || before.height !== after.height,
+        };
       }
       await wait(CONFIRM_INTERVAL_MS, deps.signal);
     }

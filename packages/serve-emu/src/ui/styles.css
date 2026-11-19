@@ -846,3 +846,12 @@ input[type="checkbox"] {
     max-height: 60vh;
   }
 }
+.foldable-notice {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #5c4a1f;
+  border-radius: 8px;
+  background: #2a2212;
+  color: #f0d79a;
+  font-size: 12px;
+}

@@ -3,14 +3,15 @@ import { FoldableError, getFoldableState, parseFoldPosture, setFoldPosture } fro
 import { CommandFailureError } from "../src/command-failure.ts";
 import type { execText } from "../src/exec.ts";
 
-function fixture({ supported = true, reject = false, settle = true } = {}) {
+function fixture({ supported = true, reject = false, settle = true, sizes = {} as Record<string, string> } = {}) {
   const calls: string[][] = [];
   let name = "OPENED";
   const exec: typeof execText = async (_command, args, opts) => {
     if (opts?.signal?.aborted) return { status: null, signal: null, stdout: "", stderr: "", error: new Error("aborted"), timedOut: false };
     calls.push(args);
     let stdout = `Committed state: DeviceState{identifier=9, name='${name}'}`;
-    if (args.includes("sensor")) stdout = `hinge-angle0: ${supported ? "enabled" : "disabled"}.\r\nOK`;
+    if (args.includes("wm")) stdout = sizes[name] ?? "";
+    else if (args.includes("sensor")) stdout = `hinge-angle0: ${supported ? "enabled" : "disabled"}.\r\nOK`;
     else if (args[2] === "emu") {
       if (settle) name = args[3] === "fold" ? "CLOSED" : args[3] === "unfold" ? "OPENED" : "HALF_OPENED";
       stdout = reject ? "KO: Failed to set posture" : "OK";
@@ -61,5 +62,18 @@ describe("native foldable control", () => {
     const first = setFoldPosture("emulator-5558", "folded", fixture().deps);
     await expect(setFoldPosture("emulator-5558", "unfolded", fixture().deps)).rejects.toBeInstanceOf(FoldableError);
     await first;
+  });
+  test("reports whether folding changed the display size", async () => {
+    const twoDisplays = fixture({ sizes: { OPENED: "Physical size: 1768x2208", CLOSED: "Physical size: 884x2208" } });
+    expect(await setFoldPosture("emulator-5560", "folded", twoDisplays.deps)).toEqual({ supported: true, posture: "folded", displayChanged: true });
+    const oneDisplay = fixture({ sizes: { OPENED: "Physical size: 1768x2208", CLOSED: "Physical size: 1768x2208" } });
+    expect(await setFoldPosture("emulator-5560", "folded", oneDisplay.deps)).toEqual({ supported: true, posture: "folded", displayChanged: false });
+    expect(oneDisplay.calls.filter((args) => args.includes("wm"))).toHaveLength(2);
+  });
+  test("skips the display check when the posture cannot switch displays", async () => {
+    const { deps, calls } = fixture({ sizes: { OPENED: "Physical size: 1768x2208", HALF_OPENED: "Physical size: 1768x2208" } });
+    expect(await setFoldPosture("emulator-5562", "half-open", deps)).toEqual({ supported: true, posture: "half-open" });
+    expect(await setFoldPosture("emulator-5562", "half-open", deps)).toEqual({ supported: true, posture: "half-open" });
+    expect(calls.filter((args) => args.includes("wm"))).toHaveLength(0);
   });
 });
