@@ -34,6 +34,7 @@ import { setEmulatorLocationAsync, type GeoFix } from "./location.ts";
 import { stageMultipartUpload } from "./multipart-upload.ts";
 import {
   closeScrcpySession,
+  SCRCPY_DEFAULTS,
   startScrcpy,
   type ScrcpySession,
 } from "./scrcpy.ts";
@@ -60,7 +61,11 @@ import {
   SYSTEM_RECOVERY_WATCHDOG_CLOCK,
   type RecoveryWatchdogClock,
 } from "./session-recovery-watchdog.ts";
-import type { DeviceSelectionResponse } from "./shared/api-contracts.ts";
+import type {
+  DeviceSelectionResponse,
+  StreamQuality,
+  StreamQualityResponse,
+} from "./shared/api-contracts.ts";
 import {
   UploadManager,
   UploadManagerError,
@@ -128,7 +133,11 @@ export {
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 
 export type ServerDependencies = {
-  openScrcpy?: (serial: string, signal?: AbortSignal) => Promise<ScrcpySession>;
+  openScrcpy?: (
+    serial: string,
+    signal?: AbortSignal,
+    quality?: StreamQuality,
+  ) => Promise<ScrcpySession>;
   serve?: typeof Bun.serve;
   listDevices?: typeof listAllDevices;
   startEmulator?: typeof startEmulator;
@@ -187,13 +196,13 @@ export async function startServer(
   if (opts.token) assertValidToken(opts.token);
   const openScrcpy =
     dependencies.openScrcpy ??
-    ((serial: string, signal?: AbortSignal) =>
+    ((serial: string, signal?: AbortSignal, quality?: StreamQuality) =>
       startScrcpy({
         serial,
         signal,
-        maxFps: opts.maxFps,
-        bitRate: opts.bitRate,
-        maxSize: opts.maxSize,
+        maxFps: quality?.maxFps ?? opts.maxFps,
+        bitRate: quality?.bitRate ?? opts.bitRate,
+        maxSize: quality?.maxSize ?? opts.maxSize,
         keyFrameInterval: opts.keyFrameInterval,
         repeatFrameMs: opts.repeatFrameMs,
       }));
@@ -276,8 +285,9 @@ export async function startServer(
     generation: number,
     signal?: AbortSignal,
     previousRecorder?: DeviceContext["recorder"],
+    quality?: StreamQuality,
   ): Promise<DeviceContext> => {
-    const scrcpy = await openScrcpy(serial, signal);
+    const scrcpy = await openScrcpy(serial, signal, quality);
     try {
       return createContext(serial, generation, scrcpy, previousRecorder);
     } catch (err) {
@@ -301,6 +311,11 @@ export async function startServer(
   // generations from this one sequence.
   let lastGeneration = 0;
   const allocateGeneration = () => ++lastGeneration;
+  const defaultQuality: StreamQuality = {
+    maxSize: opts.maxSize ?? SCRCPY_DEFAULTS.maxSize,
+    maxFps: opts.maxFps ?? SCRCPY_DEFAULTS.maxFps,
+    bitRate: opts.bitRate ?? SCRCPY_DEFAULTS.bitRate,
+  };
   const maxDevices = opts.maxDevices ?? DEFAULT_MAX_DEVICES;
   if (!Number.isInteger(maxDevices) || maxDevices < 1) {
     throw new TypeError("maxDevices must be a positive integer");
@@ -321,13 +336,14 @@ export async function startServer(
   function createSlot(initial: DeviceContext, pinnedSerial: string | null) {
     const sessions = new DeviceSessionManager(initial, allocateGeneration);
     let closing = false;
+    let quality: StreamQuality = { ...defaultQuality };
     const deviceRecovery = createDeviceRecovery({
       current: () => sessions.current,
       reopen: async (failed) => {
         const context = await sessions.switch(
           failed.serial,
           (serial, generation, signal) =>
-            prepareSelection(serial, generation, signal, failed.recorder),
+            prepareSelection(serial, generation, signal, failed.recorder, quality),
           activate,
           failed,
         );
@@ -383,9 +399,7 @@ export async function startServer(
       importMediaFile: dependencies.importMediaFile ?? importMediaFile,
     });
 
-    const switchSession = async (
-      serial: string,
-    ): Promise<DeviceSelectionResponse> => {
+    const assertCanSwitch = () => {
       if (pinnedSerial !== null) {
         throw new ApiError(
           409,
@@ -394,11 +408,28 @@ export async function startServer(
           { reason: "device-pinned" },
         );
       }
+    };
+    const switchSession = async (
+      serial: string,
+    ): Promise<DeviceSelectionResponse> => {
+      assertCanSwitch();
       // Uploads for the previous generation are cancelled by its context
       // cleanup (see createContext) once the switch commits. Cancelling here,
       // before the candidate is prepared, would strand the still-current
       // session's uploads whenever the switch fails.
-      const context = await sessions.switch(serial, prepareSelection, activate);
+      // Quality belongs to a device, so a newly selected one starts at defaults.
+      // Reselecting the streaming device opens nothing and keeps its quality.
+      const next = { ...defaultQuality };
+      let reopened = false;
+      const context = await sessions.switch(
+        serial,
+        (target, generation, signal) => {
+          reopened = true;
+          return prepareSelection(target, generation, signal, undefined, next);
+        },
+        activate,
+      );
+      if (reopened) quality = next;
       logReady(context);
       // The selected device now streams here; one scrcpy per device.
       void closePinned(context.serial, "device selected");
@@ -408,6 +439,34 @@ export async function startServer(
         generation: context.generation,
         device: context.scrcpy.meta.deviceName,
       };
+    };
+
+    const qualityResponse = (context: DeviceContext): StreamQualityResponse => ({
+      ok: true,
+      serial: context.serial,
+      generation: context.generation,
+      quality: { ...quality },
+    });
+    const setStreamQuality = async (
+      context: DeviceContext,
+      patch: Partial<StreamQuality>,
+    ): Promise<StreamQualityResponse> => {
+      sessions.assertPublished(context);
+      const next = { ...quality, ...patch };
+      const switched = await sessions.switch(
+        context.serial,
+        (serial, generation, signal) =>
+          prepareSelection(serial, generation, signal, context.recorder, next),
+        // Publish the quality with its stream: a later patch merges onto it.
+        (published) => {
+          activate(published);
+          quality = next;
+        },
+        undefined,
+        context,
+      );
+      logReady(switched);
+      return qualityResponse(switched);
     };
 
     const apiServices: Omit<
@@ -422,9 +481,15 @@ export async function startServer(
       listDevices,
       avds: dependencies.avds ?? avdManager,
       switchSession,
+      assertCanSwitch,
+      streamQuality: qualityResponse,
+      setStreamQuality,
       launchEmulator: emulators.launchEmulator,
       listActiveAvds,
-      killEmulator: emulators.killEmulator,
+      killEmulator: async (serial: string) => {
+        await stopOtherStreams(serial, sessions);
+        return emulators.killEmulator(serial);
+      },
       uploads: uploadEndpoints,
       responseMetrics,
     };
@@ -470,6 +535,7 @@ export async function startServer(
     generation: number,
     signal: AbortSignal,
     previousRecorder?: DeviceContext["recorder"],
+    quality?: StreamQuality,
   ) {
     const device = (await listDevices({ signal })).find(
       (candidate) => candidate.serial === targetSerial,
@@ -479,7 +545,7 @@ export async function startServer(
     if (device.state !== "device") {
       throw new Error(`${targetSerial} is ${device.state}, not ready.`);
     }
-    return openContext(targetSerial, generation, signal, previousRecorder);
+    return openContext(targetSerial, generation, signal, previousRecorder, quality);
   }
 
   const openPinned = async (serial: string): Promise<DeviceSlot> => {
@@ -557,12 +623,38 @@ export async function startServer(
     return entry.slot;
   };
 
-  const closePinned = async (serial: string, reason: string) => {
+  /**
+   * Before an emulator is killed through `caller`, stops the other slots
+   * streaming it, so the selected one counts as stopped by a client.
+   */
+  const stopOtherStreams = async (
+    serial: string,
+    caller: DeviceSessionManager<DeviceContext>,
+  ) => {
+    const selected = primary.sessions;
+    if (selected !== caller && selected.current.serial === serial) {
+      await selected.stop(selected.current, "current emulator stopped", {
+        byClient: true,
+      });
+    }
     const entry = pinned.get(serial);
-    if (!entry) return;
+    if (entry?.ready && entry.ready.sessions !== caller) {
+      await closePinned(serial, "emulator stopped");
+    }
+  };
+
+  /** Closes still in progress; stop waits for them too. */
+  const closingSlots = new Set<Promise<void>>();
+  const closePinned = (serial: string, reason: string): Promise<void> => {
+    const entry = pinned.get(serial);
+    if (!entry) return Promise.resolve();
     pinned.delete(serial);
-    const slot = await entry.slot.catch(() => null);
-    await slot?.close(reason);
+    const task: Promise<void> = entry.slot
+      .then((slot) => slot.close(reason), () => {})
+      .catch((err: unknown) => log(`closing ${serial} failed: ${String(err)}`))
+      .finally(() => closingSlots.delete(task));
+    closingSlots.add(task);
+    return task;
   };
 
   const idleSweep = setInterval(() => {
@@ -649,6 +741,10 @@ export async function startServer(
       if (target?.serial === null) {
         return routeToSlot(primary, requestContext, req, url, url.pathname, srv);
       }
+      // A device's own UI is the same page; it finds its prefix in the URL.
+      if (target && (target.path === "/" || target.path === "/index.html")) {
+        return serveStaticFile(uiDir, "/");
+      }
       if (!target || !isServicePath(target.path)) {
         return new Response("not found", { status: 404 });
       }
@@ -656,6 +752,15 @@ export async function startServer(
       let slot: DeviceSlot;
       try {
         slot = await resolveSlot(target.serial);
+        // The selected device may have switched away while this resolved.
+        if (slot.sessions.current.serial !== target.serial) {
+          slot = await resolveSlot(target.serial);
+        }
+        if (slot.sessions.current.serial !== target.serial) {
+          throw new ApiError(409, "conflict", "device session changed", {
+            reason: "session-changed",
+          });
+        }
       } catch (err) {
         return errorResponse(err, req, "internal_error");
       }
@@ -719,6 +824,7 @@ export async function startServer(
       ...[...pinned.keys()].map((serial) =>
         closePinned(serial, "server stopping"),
       ),
+      ...closingSlots,
       uploads.close(error),
     ]).then(() => {});
     return stopTask;

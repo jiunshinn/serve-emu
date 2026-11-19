@@ -71,6 +71,20 @@ export type DeviceSelectionResponse = ApiSuccess<{
   device: string;
 }>;
 
+/** scrcpy encoder settings for one device's stream. */
+export type StreamQuality = {
+  /** Longest screen edge in pixels; 0 keeps the native size. */
+  maxSize: number;
+  maxFps: number;
+  bitRate: number;
+};
+
+export type StreamQualityResponse = ApiSuccess<{
+  serial: string;
+  generation: number;
+  quality: StreamQuality;
+}>;
+
 export type AvdStartResponse = ApiSuccess<{
   serial: string;
   avd: string;
@@ -418,6 +432,10 @@ export type ApiContractMap = {
   "/api/avds/start": {
     POST: EndpointContract<{ avd: string; select?: boolean }, AvdStartResponse>;
   };
+  "/api/stream-quality": {
+    GET: EndpointContract<undefined, StreamQualityResponse>;
+    POST: EndpointContract<Partial<StreamQuality>, StreamQualityResponse>;
+  };
   "/api/avds/stop": {
     POST: EndpointContract<{ serial?: string; avd?: string }, AvdStopResponse>;
   };
@@ -682,6 +700,22 @@ function parseOkDeviceResponse(value: unknown, kind: "selection" | "avd-start"):
 
 export function parseDeviceSelectionResponse(value: unknown): DeviceSelectionResponse {
   return parseOkDeviceResponse(value, "selection") as DeviceSelectionResponse;
+}
+
+function parseStreamQualityResponse(value: unknown): StreamQualityResponse {
+  const root = record(value, "stream quality response");
+  if (root.ok !== true) fail("stream quality response.ok must be true");
+  const quality = record(root.quality, "stream quality response.quality");
+  return {
+    ok: true,
+    serial: string(root.serial, "stream quality response.serial"),
+    generation: generation(root.generation, "stream quality response.generation"),
+    quality: {
+      maxSize: number(quality.maxSize, "stream quality response.quality.maxSize"),
+      maxFps: number(quality.maxFps, "stream quality response.quality.maxFps"),
+      bitRate: number(quality.bitRate, "stream quality response.quality.bitRate"),
+    },
+  };
 }
 
 export function parseAvdStartResponse(value: unknown): AvdStartResponse {
@@ -1332,6 +1366,7 @@ export const API_SUCCESS_PARSERS = {
   "/api/device-grid": { GET: parseDeviceGridResponse },
   "/api/devices/select": { POST: parseDeviceSelectionResponse },
   "/api/avds/start": { POST: parseAvdStartResponse },
+  "/api/stream-quality": { GET: parseStreamQualityResponse, POST: parseStreamQualityResponse },
   "/api/avds/stop": { POST: parseAvdStopResponse },
   "/api/avds/catalog": { GET: parseAvdCatalogResponse },
   "/api/avds/create": { POST: parseAvdCreateResponse },

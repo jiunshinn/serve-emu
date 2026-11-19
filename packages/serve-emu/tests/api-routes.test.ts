@@ -30,6 +30,8 @@ const EXPECTED_ROUTES = [
   ["GET", "/api/logcat"],
   ["GET", "/api/screenshot"],
   ["POST", "/api/screenshot"],
+  ["GET", "/api/stream-quality"],
+  ["POST", "/api/stream-quality"],
   ["GET", "/api/foreground"],
   ["GET", "/api/accessibility"],
   ["POST", "/api/accessibility/tap"],

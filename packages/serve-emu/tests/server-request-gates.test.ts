@@ -319,6 +319,7 @@ describe("server HTTP and WebSocket boundaries", () => {
       ["GET", "/api/devices/select"],
       ["GET", "/api/avds/start"],
       ["GET", "/api/avds/stop"],
+      ["PUT", "/api/stream-quality"],
       ["PATCH", "/api/orientation"],
       ["PATCH", "/api/night-mode"],
       ["PATCH", "/api/font-scale"],
@@ -458,6 +459,9 @@ describe("server HTTP and WebSocket boundaries", () => {
       ["/api/devices/select", {}],
       ["/api/avds/start", {}],
       ["/api/avds/stop", {}],
+      ["/api/stream-quality", {}],
+      ["/api/stream-quality", { maxFps: 0 }],
+      ["/api/stream-quality", { maxSize: 720, codec: "h265" }],
       ["/api/avds/create", { name: "../escape", profile: "pixel_fold", image: "x" }],
       ["/api/foldable", { posture: "tent" }],
       ["/api/orientation", { orientation: "upside-down" }],
@@ -512,6 +516,11 @@ describe("server HTTP and WebSocket boundaries", () => {
       const index = await response(harness.request("/"));
       expect(index.status).toBe(200);
       expect(await index.text()).toBe("<!doctype html>fixture ui");
+      for (const page of ["/grid", "/grid/", "/d/emulator-5556/", "/d/emulator-5556/index.html"]) {
+        const ui = await response(harness.request(page));
+        expect(ui.status, page).toBe(200);
+        expect(await ui.text()).toBe("<!doctype html>fixture ui");
+      }
 
       const existing = await response(harness.request(`/${fixtureName}`));
       expect(existing.status).toBe(200);

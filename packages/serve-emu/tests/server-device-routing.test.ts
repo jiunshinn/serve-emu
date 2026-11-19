@@ -13,6 +13,7 @@ import {
 /** Fresh fake scrcpy per open, so a prefixed stream never shares one. */
 async function multiDeviceHarness(
   options: Parameters<typeof createHarness>[0] = {},
+  overrides: Parameters<typeof createHarness>[1] = {},
 ) {
   const opened: FakeScrcpy[] = [];
   const h = await createHarness(
@@ -23,6 +24,7 @@ async function multiDeviceHarness(
         opened.push(session);
         return session;
       },
+      ...overrides,
     },
   );
   const opensOf = (serial: string) => opened.filter((s) => s.serial === serial);
@@ -97,13 +99,13 @@ describe("startServer multi-device routing", () => {
     expect(context.clients.size).toBe(0);
   });
 
-  test("rejects unknown serials, malformed prefixes, and prefixed UI files", async () => {
+  test("rejects unknown serials, malformed prefixes, and prefixed UI assets", async () => {
     const h = await multiDeviceHarness();
     const unknown = await json(h.request("/d/Z/health"));
     expect(unknown.status).toBe(404);
     expect(unknown.body.error).toMatchObject({ code: "not_found", reason: "unknown-device" });
     expect((await response(h.request("/d/%E0/health"))).status).toBe(404);
-    expect((await response(h.request("/d/B/index.html"))).status).toBe(404);
+    expect((await response(h.request("/d/B/assets/app.js"))).status).toBe(404);
     expect(h.opensOf("B")).toHaveLength(0);
   });
 
@@ -156,6 +158,140 @@ describe("startServer multi-device routing", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toMatchObject({ code: "conflict", reason: "device-pinned" });
     expect(h.opensOf("C")).toHaveLength(0);
+  });
+
+  test("a prefixed stream refuses to boot an emulator it would select", async () => {
+    const launched: string[] = [];
+    const h = await multiDeviceHarness(
+      {},
+      {
+        startEmulator: async (opts) => {
+          launched.push(opts.avd);
+          throw new Error("must not launch");
+        },
+      },
+    );
+    const res = await json(
+      h.request("/d/B/api/avds/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avd: "pixel" }),
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatchObject({ reason: "device-pinned" });
+    expect(launched).toEqual([]);
+  });
+
+  test("stopping an emulator through another prefix stops its streams", async () => {
+    const killed: string[] = [];
+    const h = await multiDeviceHarness(
+      { serials: ["emulator-5554", "emulator-5556", "emulator-5558"] },
+      {
+        stopEmulator: async (serial) => {
+          killed.push(serial);
+        },
+      },
+    );
+    const stopVia = (prefix: string, serial: string) =>
+      response(
+        h.request(`${prefix}/api/avds/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ serial }),
+        }),
+      );
+    await response(h.request("/d/emulator-5558/health"));
+    expect((await stopVia("/d/emulator-5556", "emulator-5558")).status).toBe(200);
+    expect(h.opensOf("emulator-5558")[0]!.closeCalls).toBe(1);
+
+    expect((await stopVia("/d/emulator-5556", "emulator-5554")).status).toBe(200);
+    expect(h.started.deviceSerial).toBeNull();
+    expect(killed).toEqual(["emulator-5558", "emulator-5554"]);
+  });
+
+  test("sets stream quality per device and restarts only that device", async () => {
+    const qualities: Array<[string, unknown]> = [];
+    const opened: FakeScrcpy[] = [];
+    const h = await createHarness(
+      { serials: ["A", "B"] },
+      {
+        openScrcpy: async (serial, _signal, quality) => {
+          qualities.push([serial, quality]);
+          const session = fakeScrcpy(serial);
+          opened.push(session);
+          return session;
+        },
+      },
+    );
+    await response(h.request("/d/B/health"));
+    const set = await json(
+      h.request("/d/B/api/stream-quality", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxSize: 480, maxFps: 15 }),
+      }),
+    );
+    expect(set.status).toBe(200);
+    expect(set.body).toMatchObject({ serial: "B", quality: { maxSize: 480, maxFps: 15 } });
+    expect(qualities.at(-1)).toEqual(["B", expect.objectContaining({ maxSize: 480, maxFps: 15 })]);
+    expect(opened.filter((s) => s.serial === "B")[0]!.closeCalls).toBe(1);
+    expect(opened[0]!.closeCalls).toBe(0);
+
+    const b = await json(h.request("/d/B/api/stream-quality"));
+    expect(b.body.quality).toMatchObject({ maxSize: 480, maxFps: 15 });
+    expect(b.body.generation).toBe(set.body.generation);
+    const a = await json(h.request("/api/stream-quality"));
+    expect(a.body).toMatchObject({ serial: "A", quality: { maxSize: 1280, maxFps: 60 } });
+  });
+
+  test("reselecting the streaming device keeps its quality", async () => {
+    const h = await multiDeviceHarness();
+    const post = (path: string, body: unknown) =>
+      json(
+        h.request(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    expect((await post("/api/stream-quality", { maxSize: 480 })).status).toBe(200);
+    expect((await post("/api/devices/select", { serial: "A" })).status).toBe(200);
+    const read = await json(h.request("/api/stream-quality"));
+    expect(read.body.quality).toMatchObject({ maxSize: 480 });
+  });
+
+  test("a quality change queued behind a selection fails instead of reverting it", async () => {
+    let releaseB!: () => void;
+    const bGate = new Promise<void>((resolve) => {
+      releaseB = resolve;
+    });
+    const h = await createHarness(
+      { serials: ["A", "B"] },
+      {
+        openScrcpy: async (serial) => {
+          if (serial === "B") await bGate;
+          return fakeScrcpy(serial);
+        },
+      },
+    );
+    const post = (path: string, body: unknown) =>
+      json(
+        h.request(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+    const select = post("/api/devices/select", { serial: "B" });
+    await Bun.sleep(5);
+    const quality = post("/api/stream-quality", { maxFps: 15 });
+    await Bun.sleep(5);
+    releaseB();
+    expect((await select).status).toBe(200);
+    const res = await quality;
+    expect(res.status).toBe(409);
+    expect(h.started.deviceSerial).toBe("B");
   });
 
   test("selecting a prefixed device closes its prefixed stream", async () => {
