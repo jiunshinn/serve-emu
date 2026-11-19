@@ -23,7 +23,6 @@ import {
   reduceStreamLifecycle,
   type StreamGenerationReason,
   type StreamFatalStatus,
-  type StreamLifecycleState,
   type StreamPhase,
 } from "./stream-lifecycle";
 
