@@ -3,7 +3,6 @@ import {
   parseAccessibilitySnapshot,
   parseAccessibilityTapResponse,
   parseApiInfoResponse,
-  parseApiResult,
   parseApiSuccess,
   parseAppActionResponse,
   parseAvdStartResponse,
@@ -390,23 +389,6 @@ describe("complete API success contracts", () => {
 });
 
 describe("generic and detailed API contracts", () => {
-  test("routes success and failure envelopes through parseApiResult", () => {
-    const parseValue = (value: unknown) => {
-      const root = value as { ok: true; value: number };
-      return { ok: true as const, value: root.value };
-    };
-    expect(parseApiResult({ ok: true, value: 4 }, parseValue)).toEqual({
-      ok: true,
-      value: 4,
-    });
-    expect(
-      parseApiResult(
-        { ok: false, error: { code: "conflict", message: "busy" } },
-        parseValue,
-      ),
-    ).toEqual({ ok: false, error: { code: "conflict", message: "busy" } });
-  });
-
   test("parses health diagnostics including frame stats, clients, and error metadata", () => {
     const health = parseHealthResponse({
       ok: true,

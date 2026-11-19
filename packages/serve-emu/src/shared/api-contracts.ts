@@ -34,7 +34,6 @@ export type ApiFailure = {
 };
 
 export type ApiSuccess<T extends object = Record<never, never>> = { ok: true } & T;
-export type ApiResult<T extends object = Record<never, never>> = ApiSuccess<T> | ApiFailure;
 
 export type SessionStatus = "streaming" | "stopped" | "error";
 export type DeviceSize = { width: number; height: number };
@@ -613,15 +612,6 @@ export function isApiFailure(value: unknown): value is ApiFailure {
   } catch {
     return false;
   }
-}
-
-export function parseApiResult<T extends object>(
-  value: unknown,
-  parseSuccess: (value: unknown) => ApiSuccess<T>,
-): ApiResult<T> {
-  return isRecord(value) && value.ok === false
-    ? parseApiFailure(value)
-    : parseSuccess(value);
 }
 
 function parseDeviceSize(value: unknown, name = "size"): DeviceSize {
