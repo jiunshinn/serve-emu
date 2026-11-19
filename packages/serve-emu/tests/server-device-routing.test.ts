@@ -99,13 +99,13 @@ describe("startServer multi-device routing", () => {
     expect(context.clients.size).toBe(0);
   });
 
-  test("rejects unknown serials, malformed prefixes, and prefixed UI files", async () => {
+  test("rejects unknown serials, malformed prefixes, and prefixed UI assets", async () => {
     const h = await multiDeviceHarness();
     const unknown = await json(h.request("/d/Z/health"));
     expect(unknown.status).toBe(404);
     expect(unknown.body.error).toMatchObject({ code: "not_found", reason: "unknown-device" });
     expect((await response(h.request("/d/%E0/health"))).status).toBe(404);
-    expect((await response(h.request("/d/B/index.html"))).status).toBe(404);
+    expect((await response(h.request("/d/B/assets/app.js"))).status).toBe(404);
     expect(h.opensOf("B")).toHaveLength(0);
   });
 

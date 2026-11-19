@@ -1,3 +1,4 @@
+import { PAGE_BASE } from "../lib/base-path";
 import { useEffect, useRef, useState } from "react";
 import { settledSessionKey, useDeviceSessionSnapshot } from "../lib/device-session-store";
 import {
@@ -62,7 +63,7 @@ export function LogcatPanel() {
     const params = new URLSearchParams();
     if (packageName.trim()) params.set("package", packageName.trim());
     if (search.trim()) params.set("search", search.trim());
-    const source = new EventSource(`/api/logcat?${params}`);
+    const source = new EventSource(`${PAGE_BASE}/api/logcat?${params}`);
     eventSourceRef.current = source;
     setEnabled(true);
     setPaused(false);

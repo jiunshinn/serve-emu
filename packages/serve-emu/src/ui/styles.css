@@ -855,3 +855,61 @@ input[type="checkbox"] {
   color: #f0d79a;
   font-size: 12px;
 }
+
+.grid-page {
+  grid-row: 1 / -1;
+  overflow: auto;
+}
+.grid-quality {
+  font-size: 13px;
+}
+.grid-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+  padding: 16px;
+}
+.grid-tile {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #1f1f24;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #000;
+}
+.grid-tile > header {
+  padding: 8px 12px;
+  font-size: 13px;
+  background: #0b0b0e;
+}
+.grid-tile iframe {
+  border: 0;
+  width: 100%;
+  aspect-ratio: 9 / 19;
+}
+.grid-message {
+  margin: 0;
+  padding: 16px;
+  font-size: 13px;
+}
+.tile-view {
+  grid-row: 1 / -1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  overflow: hidden;
+}
+.tile-view canvas {
+  max-height: 100vh;
+}
+.tile-status {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.6);
+}
