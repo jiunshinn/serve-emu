@@ -1,4 +1,8 @@
-import type { NightMode, OrientationMode } from "../../shared/api-contracts.ts";
+import type {
+  NightMode,
+  OrientationMode,
+  StreamQuality,
+} from "../../shared/api-contracts.ts";
 import type { ApiDependencies } from "../dependencies.ts";
 import type { ApiRoute } from "../router.ts";
 
@@ -468,5 +472,66 @@ export function deviceRoutes(): ApiRoute<ApiDependencies>[] {
         }
       },
     },
+    {
+      method: "GET",
+      path: "/api/stream-quality",
+      handler: async ({ deps }) =>
+        Response.json(deps.streamQuality(deps.requestContext)),
+    },
+    {
+      method: "POST",
+      path: "/api/stream-quality",
+      handler: async ({ request: req, deps }) => {
+        const {
+          readJsonBody,
+          MAX_JSON_BODY_BYTES,
+          requestContext,
+          setStreamQuality,
+          errorResponse,
+        } = deps;
+        try {
+          const payload = await readJsonBody(
+            req,
+            MAX_JSON_BODY_BYTES,
+            requestContext,
+            false,
+          );
+          return Response.json(
+            await setStreamQuality(requestContext, parseQualityPatch(payload)),
+          );
+        } catch (err) {
+          return errorResponse(err);
+        }
+      },
+    },
   ];
+}
+
+/** Inclusive bounds for each stream quality field. */
+const QUALITY_LIMITS = {
+  maxSize: [0, 8192],
+  maxFps: [1, 120],
+  bitRate: [100_000, 100_000_000],
+} as const satisfies Record<keyof StreamQuality, readonly [number, number]>;
+
+function parseQualityPatch(payload: unknown): Partial<StreamQuality> {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error("stream quality payload must be an object");
+  }
+  const body = payload as Record<string, unknown>;
+  const patch: Partial<StreamQuality> = {};
+  for (const key of Object.keys(body)) {
+    if (!(key in QUALITY_LIMITS)) throw new Error(`unknown stream quality field ${key}`);
+    const name = key as keyof StreamQuality;
+    const [min, max] = QUALITY_LIMITS[name];
+    const value = body[key];
+    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+      throw new Error(`${name} must be an integer from ${min} to ${max}`);
+    }
+    patch[name] = value;
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new Error("set at least one of maxSize, maxFps, or bitRate");
+  }
+  return patch;
 }

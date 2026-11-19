@@ -18,6 +18,8 @@ import type {
   Device,
   DeviceGridResponse,
   DeviceSelectionResponse,
+  StreamQuality,
+  StreamQualityResponse,
 } from "../shared/api-contracts.ts";
 
 /** Session-bound services consumed by the production HTTP routes. */
@@ -53,6 +55,12 @@ export type ApiDependencies = {
   switchSession: (serial: string) => Promise<DeviceSelectionResponse>;
   /** Throws when this request's stream is pinned to one device. */
   assertCanSwitch: () => void;
+  streamQuality: (context: DeviceContext) => StreamQualityResponse;
+  /** Restarts this device's scrcpy with `patch` applied to its quality. */
+  setStreamQuality: (
+    context: DeviceContext,
+    patch: Partial<StreamQuality>,
+  ) => Promise<StreamQualityResponse>;
   launchEmulator: (opts: StartEmulatorOpts) => Promise<EmulatorLaunch>;
   listActiveAvds: () => Promise<RunningAvd[]>;
   killEmulator: (serial: string) => Promise<void>;

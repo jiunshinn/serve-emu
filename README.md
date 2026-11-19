@@ -391,6 +391,17 @@ Selecting a device that already streams under a prefix closes the prefixed
 stream; its URLs then reach the selected stream. Unprefixed URLs always reach
 the selected device.
 
+Each device has its own stream quality. `GET /api/stream-quality` reads it and
+`POST` sets any of `maxSize` (0–8192, 0 = native), `maxFps` (1–120), and
+`bitRate` (100000–100000000), then restarts only that device's scrcpy (its
+viewers reconnect). It starts from `--max-size`, `--max-fps`, and `--bit-rate`,
+and a newly selected device starts from them again:
+
+```sh
+curl -X POST "$BASE/d/emulator-5556/api/stream-quality" \
+  -H 'Content-Type: application/json' -d '{"maxSize":720,"maxFps":30}'
+```
+
 ### Emulators
 
 Create an emulator from **Add emulator** in the Devices panel. Choose a name,
