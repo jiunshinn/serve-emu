@@ -4,7 +4,7 @@ import type { DeviceService } from "../src/device-service.ts";
 import type { execText } from "../src/exec.ts";
 import type { RecoveryWatchdogClock } from "../src/session-recovery-watchdog.ts";
 import { startServer } from "../src/server.ts";
-import { startContentionProbe } from "../src/server/contention.ts";
+import { DeviceInUseError, startContentionProbe } from "../src/server/contention.ts";
 import type { DeviceContext } from "../src/server/types.ts";
 import { parseHealthResponse } from "../src/shared/api-contracts.ts";
 import { createHarness, fakeScrcpy, fakeWebSocket, response } from "./helpers/server-harness.ts";
@@ -298,5 +298,99 @@ describe("/health contention and reset reasons (#76)", () => {
       videoResetsByReason: { "client opened": 1, "client requested keyframe": 2 },
       videoResetsLastMinute: 2,
     });
+  });
+});
+
+describe("refusing a device another scrcpy session streams", () => {
+  const OTHER = "scrcpy_1a2b3c4d";
+  const post = (body: unknown): RequestInit => ({
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  /** Two devices; `others` lists foreign sessions per serial, and the fake
+   * device also lists every session this server opened, closed or not. */
+  async function guardedHarness(
+    others: Record<string, string[]>,
+    options: { refuseSharedDevice?: boolean; failProbe?: boolean } = {},
+  ) {
+    const opened: Array<{ serial: string; scid: string }> = [];
+    const h = await createHarness(
+      { serials: ["A", "B"], refuseSharedDevice: options.refuseSharedDevice ?? true },
+      {
+        openScrcpy: async (serial) => {
+          const scid = (opened.length + 1).toString(16).padStart(8, "0");
+          opened.push({ serial, scid });
+          return Object.assign(fakeScrcpy(serial), { scid });
+        },
+        deviceService: deviceService(async (serial) => {
+          if (options.failProbe) throw new Error("adb: device offline");
+          return [
+            ...(others[serial] ?? []),
+            ...opened.filter((o) => o.serial === serial).map((o) => `scrcpy_${o.scid}`),
+          ];
+        }),
+      },
+    );
+    return { h, opened };
+  }
+
+  test("startup fails before scrcpy opens", async () => {
+    let opens = 0;
+    const started = startServer(
+      { serial: "emulator-5554", host: "127.0.0.1", port: 0, refuseSharedDevice: true },
+      {
+        log: () => {},
+        openScrcpy: async (serial) => {
+          opens++;
+          return fakeScrcpy(serial);
+        },
+        deviceService: deviceService(async () => [OTHER]),
+      },
+    );
+    await expect(started).rejects.toThrow(/already streamed by another scrcpy session/);
+    await expect(started).rejects.toBeInstanceOf(DeviceInUseError);
+    expect(opens).toBe(0);
+  });
+
+  test("a device switch answers 409 device-in-use and keeps the current device", async () => {
+    const { h, opened } = await guardedHarness({ B: [OTHER] });
+    const res = await response(h.request("/api/devices/select", post({ serial: "B" })));
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toMatchObject({ ok: false, error: { code: "conflict", reason: "device-in-use" } });
+    expect(JSON.stringify(body)).not.toContain(OTHER);
+    expect(opened.map((o) => o.serial)).toEqual(["A"]);
+    expect((await response(h.request("/health"))).status).toBe(200);
+  });
+
+  test("a /d/<serial>/ stream answers 409 device-in-use", async () => {
+    const { h, opened } = await guardedHarness({ B: [OTHER] });
+    const res = await response(h.request("/d/B/health"));
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: { code: "conflict", reason: "device-in-use" } });
+    expect(opened.map((o) => o.serial)).toEqual(["A"]);
+  });
+
+  test("the server's own sessions, open or closed, never count", async () => {
+    const { h, opened } = await guardedHarness({});
+    expect((await response(h.request("/api/devices/select", post({ serial: "B" })))).status).toBe(200);
+    // A's closed session still lists on the device; switching back reopens.
+    expect((await response(h.request("/api/devices/select", post({ serial: "A" })))).status).toBe(200);
+    expect((await response(h.request("/d/B/health"))).status).toBe(200);
+    expect(opened.map((o) => o.serial)).toEqual(["A", "B", "A", "B"]);
+  });
+
+  test("a failed probe lets the stream open", async () => {
+    const { h, opened } = await guardedHarness({}, { failProbe: true });
+    expect((await response(h.request("/d/B/health"))).status).toBe(200);
+    expect(opened.map((o) => o.serial)).toEqual(["A", "B"]);
+  });
+
+  test("without refuseSharedDevice a shared device streams", async () => {
+    const { h, opened } = await guardedHarness({ A: [OTHER], B: [OTHER] }, { refuseSharedDevice: false });
+    expect((await response(h.request("/d/B/health"))).status).toBe(200);
+    expect(opened.map((o) => o.serial)).toEqual(["A", "B"]);
   });
 });

@@ -42,6 +42,7 @@ export function parseCliArgs(argv: string[]) {
       host: { type: "string" },
       token: { type: "string" },
       "unsafe-no-auth": { type: "boolean" },
+      "allow-shared-device": { type: "boolean" },
       "allowed-host": { type: "string", multiple: true },
       serial: { type: "string", short: "s" },
       "max-fps": { type: "string", default: String(SCRCPY_DEFAULTS.maxFps) },
@@ -152,6 +153,7 @@ export function serverOptions(
     uploadQueueTimeoutMs: numberOption(values, "upload-queue-timeout-ms", DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS),
     emulator: settings,
     probeDeviceContention: true,
+    refuseSharedDevice: !values["allow-shared-device"],
   };
 }
 
@@ -204,6 +206,11 @@ Options:
                          addresses, localhost, and --host are always accepted;
                          other names are rejected to block DNS rebinding.
   -s, --serial <serial>  adb device serial (defaults to the only booted device)
+      --allow-shared-device
+                         Stream a device even when another scrcpy session
+                         (another serve-emu or a desktop scrcpy) already
+                         encodes it. Each session slows every stream, so
+                         serve-emu refuses by default.
       --max-fps <n>      Cap source frame rate (default: ${SCRCPY_DEFAULTS.maxFps})
       --bit-rate <bps>   H.264 bit rate (default: ${SCRCPY_DEFAULTS.bitRate})
       --max-size <px>    Cap longest screen edge in pixels; 0 = native. The

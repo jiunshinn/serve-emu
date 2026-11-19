@@ -32,5 +32,6 @@ test("bench-server usage accepts the equals form of a flag-valued server argumen
   expect(await child.exited).toBe(2);
   expect(stderr).toContain("usage: bench-server");
   expect(stderr).toContain("--server-args=--host-capture");
+  expect(stderr).toContain("--single-server");
   expect(stderr).not.toContain("ambiguous");
 });

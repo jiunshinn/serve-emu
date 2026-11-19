@@ -2,8 +2,10 @@ import { expect, spyOn, test } from "bun:test";
 import { startHostCaptureSession, openCaptureSession } from "../src/host-capture.ts";
 import type { ScreenshotFrame } from "../src/emulator-grpc.ts";
 import type { VideoPacket } from "../src/scrcpy.ts";
-import { fakeScrcpy, waitFor } from "./helpers/server-harness.ts";
+import { createDeviceService } from "../src/device-service.ts";
+import { createHarness, fakeScrcpy, response, waitFor } from "./helpers/server-harness.ts";
 import { deferred } from "./helpers/deferred.ts";
+import { ManualClock } from "./helpers/manual-clock.ts";
 
 class Feed<T> implements AsyncIterableIterator<T> {
   values: Array<{ value?: T; error?: Error; done?: boolean }> = [];
@@ -126,6 +128,50 @@ test("successful host capture does not open a second scrcpy session", async () =
   });
   expect(result.transport).toBe("host-capture");
   await result.close();
+});
+
+test("host capture preserves control-only socket identity for the sharing guard and contention probe", async () => {
+  const captures: ReturnType<typeof harness>[] = [];
+  const clock = new ManualClock(1_000);
+  let foreignSession = false;
+  const server = await createHarness({ serials: ["emulator-5554"], hostCapture: true, refuseSharedDevice: true, probeDeviceContention: true }, {
+    recoveryClock: clock,
+    deviceService: {
+      ...createDeviceService(),
+      scrcpySockets: async () => [
+        ...captures.map((capture) => `scrcpy_${capture.control.scid}`),
+        ...(foreignSession ? ["scrcpy_deadbeef"] : []),
+      ],
+    },
+    openScrcpy: async (serial, signal, quality) => {
+      const capture = harness();
+      capture.control.scid = (captures.length + 1).toString(16).padStart(8, "0");
+      captures.push(capture);
+      return openCaptureSession({ serial, signal, ...quality, hostCapture: true }, {
+        platform: "darwin", startHost: (opts) => startHostCaptureSession(opts, capture.deps),
+        startScrcpy: async () => { throw new Error("unexpected fallback"); },
+      });
+    },
+  });
+  const health = async () => (await response(server.request("/health"))).json();
+  const changeQuality = () => response(server.request("/api/stream-quality", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ maxFps: 15 }),
+  }));
+  try {
+    expect(captures[0]!.video).toBe(false);
+    clock.advance(2_000);
+    clock.fireActive();
+    await waitFor(async () => (await health()).contention !== null);
+    expect(await health()).toMatchObject({ stream: { capture: "host" }, contention: { otherScrcpySessions: 0 } });
+    foreignSession = true;
+    expect((await changeQuality()).status).toBe(409);
+    expect(captures).toHaveLength(1);
+    foreignSession = false;
+    expect((await changeQuality()).status).toBe(200);
+    expect(captures).toHaveLength(2);
+    expect(captures[0]!.control.closeCalls).toBe(1);
+    expect(captures[1]!.video).toBe(false);
+  } finally { await server.started.stop(); }
 });
 
 test.each(["grpc", "encoder"])("propagates %s stream failure through readFrame", async (failure) => {

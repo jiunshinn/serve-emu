@@ -39,7 +39,11 @@ import {
   type ScrcpySession,
 } from "./scrcpy.ts";
 import { createRequestGate } from "./server/auth.ts";
-import { startContentionProbe } from "./server/contention.ts";
+import {
+  assertDeviceNotShared,
+  DeviceInUseError,
+  startContentionProbe,
+} from "./server/contention.ts";
 import { createDeviceRecovery } from "./server/device-recovery.ts";
 import { createEmulatorRegistry } from "./server/emulators.ts";
 import { buildHealthSnapshot } from "./server/health.ts";
@@ -113,6 +117,11 @@ export type ServerOpts = {
    * The CLI turns it on; off, `/health` reports `contention: null`.
    */
   probeDeviceContention?: boolean;
+  /**
+   * Refuse to stream a device that another scrcpy session already encodes.
+   * The CLI turns it on unless `--allow-shared-device`.
+   */
+  refuseSharedDevice?: boolean;
   /** Devices streamed at once: the selected one plus `/d/<serial>/` ones. */
   maxDevices?: number;
   /** A `/d/<serial>/` stream with no viewer or request closes after this. */
@@ -281,6 +290,9 @@ export async function startServer(
     return context;
   };
 
+  // Every session this server opened, kept after it closes: a closing
+  // session's socket can outlive it on the device.
+  const ownScrcpySockets = new Set<string>();
   /** Opens scrcpy and wraps it in a session; scrcpy closes if that fails. */
   const openContext = async (
     serial: string,
@@ -289,7 +301,16 @@ export async function startServer(
     previousRecorder?: DeviceContext["recorder"],
     quality?: StreamQuality,
   ): Promise<DeviceContext> => {
+    if (opts.refuseSharedDevice) {
+      await assertDeviceNotShared(
+        serial,
+        device,
+        ownScrcpySockets,
+        signal ?? lifetime.signal,
+      );
+    }
     const scrcpy = await openScrcpy(serial, signal, quality);
+    ownScrcpySockets.add(`scrcpy_${scrcpy.scid}`);
     try {
       return createContext(serial, generation, scrcpy, previousRecorder);
     } catch (err) {
@@ -569,6 +590,7 @@ export async function startServer(
     try {
       context = await openContext(serial, allocateGeneration(), signal);
     } catch (cause) {
+      if (cause instanceof DeviceInUseError) throw cause;
       throw new ApiError(503, "service_unavailable", "Could not start the device stream", {
         cause,
         reason: "device-open-failed",

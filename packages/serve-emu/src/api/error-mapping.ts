@@ -4,6 +4,7 @@ import { ControlInputError } from "../control-input-queue.ts";
 import { SessionChangedError } from "../device-session-context.ts";
 import { FoldableError } from "../foldable.ts";
 import { MultipartUploadError } from "../multipart-upload.ts";
+import { DeviceInUseError } from "../server/contention.ts";
 import { HttpBodyError } from "../request-body.ts";
 import {
   RoutePlaybackApplyError,
@@ -83,6 +84,9 @@ export function toApiError(
   if (err instanceof ApiError) return err;
   if (err instanceof SessionChangedError) {
     return api("conflict", message(err), err, err.code);
+  }
+  if (err instanceof DeviceInUseError) {
+    return api("conflict", message(err), err, "device-in-use");
   }
   if (err instanceof HttpBodyError) {
     switch (err.code) {

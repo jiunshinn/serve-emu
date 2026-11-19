@@ -1,7 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  isWsClientMessage,
-  parseWsClientJson,
   parseWsClientMessage,
   parseWsServerMessage,
   type WsServerMessage,
@@ -23,11 +21,10 @@ describe("WebSocket contracts", () => {
     });
   });
 
-  test("validates JSON and option types", () => {
-    expect(parseWsClientJson('{"type":"home"}')).toEqual({ type: "home" });
-    expect(() => parseWsClientJson("{" )).toThrow("valid JSON");
+  test("validates messages and option types", () => {
+    expect(parseWsClientMessage({ type: "home" })).toEqual({ type: "home" });
     expect(() => parseWsClientMessage({ type: "home", ack: "no" })).toThrow("ack must be a boolean");
-    expect(isWsClientMessage({ type: "tap", x: 2, y: 0 })).toBe(false);
+    expect(() => parseWsClientMessage({ type: "tap", x: 2, y: 0 })).toThrow("between 0 and 1");
   });
 
   test("parses every server text envelope", () => {

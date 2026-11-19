@@ -22,11 +22,12 @@ const { values } = parseArgs({
     motion: { type: "string", default: "swipe" },
     "server-args": { type: "string", default: "" },
     out: { type: "string" },
+    "single-server": { type: "boolean", default: false },
   },
 });
 
 if (!values.serials) {
-  console.error("usage: bench-server --serials <s1,s2,...> [--clients 1,5,10,25] [--duration 20] [--warmup 5] [--motion swipe|none] [--server-args=--host-capture] [--out report.json]");
+  console.error("usage: bench-server --serials <s1,s2,...> [--clients 1,5,10,25] [--duration 20] [--warmup 5] [--motion swipe|none] [--single-server] [--server-args=--host-capture] [--out report.json]");
   process.exit(2);
 }
 const serials = values.serials.split(",").map((s) => s.trim()).filter(Boolean);
@@ -34,7 +35,10 @@ const clientSteps = values.clients.split(",").map(Number).filter((n) => n > 0);
 const durationMs = Number(values.duration) * 1000;
 const warmupMs = Number(values.warmup) * 1000;
 const basePort = Number(values["base-port"]);
+const singleServer = values["single-server"] === true;
 const extraServerArgs = values["server-args"].split(" ").filter(Boolean);
+// One process streams every serial under /d/<serial>/, so it must allow them all.
+if (singleServer) extraServerArgs.push("--max-devices", String(serials.length));
 const CLK_TCK = 100;
 let macProcesses: ReturnType<typeof readMacProcesses> | undefined;
 const refreshProcesses = () => { if (process.platform === "darwin") macProcesses = readMacProcesses(); };
@@ -99,30 +103,46 @@ const findPids = (pattern: RegExp) =>
       }
     });
 
-type Server = { serial: string; port: number; base: string; proc: ReturnType<typeof Bun.spawn> };
+/** One device's endpoints; with --single-server every device shares one proc. */
+type Server = {
+  serial: string;
+  port: number;
+  /** Base URL for /health, /api, and /ws: `/d/<serial>` with --single-server. */
+  base: string;
+  proc: ReturnType<typeof Bun.spawn>;
+};
 
 const servers: Server[] = [];
 
-async function startServer(serial: string, port: number): Promise<void> {
-  const base = `http://127.0.0.1:${port}`;
-  const occupied = await fetch(`${base}/health`).then(() => true, () => false);
+/** Starts one serve-emu on `port` for `devices`; the first is its -s serial. */
+async function startServer(devices: string[], port: number): Promise<void> {
+  const origin = `http://127.0.0.1:${port}`;
+  const occupied = await fetch(`${origin}/health`).then(() => true, () => false);
   if (occupied) throw new Error(`Port ${port} is already serving; pick another --base-port`);
   const proc = Bun.spawn(
-    ["bun", "run", new URL("../src/cli.ts", import.meta.url).pathname, "-p", String(port), "-s", serial, ...extraServerArgs],
+    ["bun", "run", new URL("../src/cli.ts", import.meta.url).pathname, "-p", String(port), "-s", devices[0]!, ...extraServerArgs],
     { stdout: "ignore", stderr: "ignore", env: { ...process.env, SERVE_EMU_UPDATE_CHECK: "0" } },
   );
-  const server = { serial, port, base, proc };
-  servers.push(server);
+  const started = devices.map((serial) => ({
+    serial,
+    port,
+    base: singleServer ? `${origin}/d/${encodeURIComponent(serial)}` : origin,
+    proc,
+  }));
+  servers.push(...started);
   const deadline = Date.now() + 90_000;
-  while (Date.now() < deadline) {
-    if (proc.exitCode !== null) throw new Error(`serve-emu for ${serial} exited with code ${proc.exitCode}`);
-    try {
-      const health = (await (await fetch(`${base}/health`)).json()) as { status?: string; frames?: number };
-      if (health.status === "streaming") return;
-    } catch {}
-    await Bun.sleep(500);
+  // With --single-server, the first /d/<serial>/health also opens that stream.
+  for (const server of started) {
+    for (;;) {
+      if (Date.now() > deadline) throw new Error(`${server.serial} did not reach streaming on :${port}`);
+      if (proc.exitCode !== null) throw new Error(`serve-emu on :${port} exited with code ${proc.exitCode}`);
+      try {
+        const health = (await (await fetch(`${server.base}/health`)).json()) as { status?: string };
+        if (health.status === "streaming") break;
+      } catch {}
+      await Bun.sleep(500);
+    }
   }
-  throw new Error(`serve-emu for ${serial} did not reach streaming on :${port}`);
 }
 
 type ClientStat = { frames: number; bytes: number; intervals: number[]; transit: number[]; last: number; closed: string | null };
@@ -133,7 +153,7 @@ function openClients(server: Server, count: number) {
   const window = { counting: false };
   for (let i = 0; i < count; i++) {
     const stat: ClientStat = { frames: 0, bytes: 0, intervals: [], transit: [], last: 0, closed: null };
-    const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws?frame-meta=1`);
+    const ws = new WebSocket(`${server.base.replace(/^http/, "ws")}/ws?frame-meta=1`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (event) => {
       if (typeof event.data === "string" || !window.counting) return;
@@ -233,6 +253,8 @@ async function runStep(servers: Server[], clientsPerServer: number) {
   for (const g of groups) g.close();
   await Promise.all(motion);
   const cpuPct = (delta: number) => round((delta / CLK_TCK / elapsedS) * 100);
+  // Indexes of one device per server process, so shared processes count once.
+  const perProcess = [...new Map(servers.map((s, i) => [s.proc.pid, i])).values()];
 
   return {
     clientsPerServer,
@@ -256,6 +278,9 @@ async function runStep(servers: Server[], clientsPerServer: number) {
         closedClients: closedDuringRun[i]!,
       };
     }),
+    serverProcesses: perProcess.length,
+    serverCpuPctTotal: cpuPct(perProcess.reduce((sum, i) => sum + after.servers[i]! - before.servers[i]!, 0)),
+    serverRssMbTotal: round(perProcess.reduce((sum, i) => sum + Math.max(...rssSamples[i]!), 0)),
     adbCpuPct: cpuPct(after.adb - before.adb),
     emulatorsCpuPct: cpuPct(after.emulators - before.emulators),
     benchCpuPct: round(((after.bench.user + after.bench.system) / 1e6 / elapsedS) * 100),
@@ -269,8 +294,9 @@ process.on("SIGINT", () => {
 });
 
 try {
-  await Promise.all(serials.map((serial, i) => startServer(serial, basePort + i)));
-  servers.sort((a, b) => a.port - b.port);
+  if (singleServer) await startServer(serials, basePort);
+  else await Promise.all(serials.map((serial, i) => startServer([serial], basePort + i)));
+  servers.sort((a, b) => serials.indexOf(a.serial) - serials.indexOf(b.serial));
   const steps = [];
   for (const n of clientSteps) {
     const step = await runStep(servers, n);
@@ -281,12 +307,15 @@ try {
           `interval p95 ${s.frameIntervalMs.p95}ms transit p95 ${s.transitMs.p95}ms /health p95 ${s.healthLatencyMs.p95}ms ` +
           `drops ${s.droppedFrames} bp ${s.backpressureEvents} resets ${s.videoResets} closed ${s.closedClients}`,
       );
+    console.log(
+      `clients=${n} ${step.serverProcesses} server process(es): cpu ${step.serverCpuPctTotal}% rss ${step.serverRssMbTotal}MB`,
+    );
     console.log(`clients=${n} adb ${step.adbCpuPct}% emulators ${step.emulatorsCpuPct}% bench ${step.benchCpuPct}%`);
   }
   const report = {
     at: new Date().toISOString(),
     host: { cpus: cpus().length, model: cpus()[0]?.model ?? null },
-    config: { serials, clientSteps, durationMs, warmupMs, motion: values.motion, extraServerArgs },
+    config: { serials, clientSteps, durationMs, warmupMs, motion: values.motion, singleServer, extraServerArgs },
     steps,
   };
   if (values.out) writeFileSync(values.out, JSON.stringify(report, null, 2));
