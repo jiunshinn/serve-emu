@@ -37,3 +37,12 @@ export function isServicePath(pathname: string): boolean {
     path === "/ws"
   );
 }
+
+export function uiPagePath(
+  url: URL,
+  target = splitDevicePath(url.pathname),
+): "/index.html" | "/compact.html" | null {
+  if (url.pathname === "/grid" || url.pathname === "/grid/") return "/compact.html";
+  if (target?.path !== "/" && target?.path !== "/index.html") return null;
+  return url.searchParams.has("tile") ? "/compact.html" : "/index.html";
+}

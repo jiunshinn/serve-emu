@@ -57,6 +57,17 @@ async function centerColor(page: Page): Promise<number[]> {
 const isRed = ([r, g, b]: number[]) => r! > 200 && g! < 60 && b! < 60;
 const isGreen = ([r, g, b]: number[]) => g! > 200 && r! < 60 && b! < 60;
 
+test("the compact grid streams both devices without mounting full controls", async ({ page }) => {
+  await page.goto("/grid/");
+  await expect(page.getByRole("heading", { name: "serve-emu devices" })).toBeVisible();
+  for (const serial of ["device-a", "device-b"]) {
+    const tile = page.frameLocator(`iframe[title="${serial}"]`);
+    await expect(tile.locator("canvas")).toBeVisible();
+    await expect(tile.locator(".tile-status")).toContainText("streaming");
+    await expect(tile.getByLabel("Devices sidebar")).toHaveCount(0);
+  }
+});
+
 /** Loads the stream worker with the fixture's never-outputting VideoDecoder. */
 async function useSlowDecoder(page: Page) {
   await page.addInitScript(() => {

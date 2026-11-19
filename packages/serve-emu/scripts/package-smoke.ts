@@ -42,6 +42,7 @@ const REQUIRED_PACKAGE_FILES = [
   "CHANGELOG.md",
   "LICENSE",
   "README.md",
+  "dist/ui/compact.html",
   "dist/ui/index.html",
   "package.json",
   "scripts/fetch-scrcpy.ts",
