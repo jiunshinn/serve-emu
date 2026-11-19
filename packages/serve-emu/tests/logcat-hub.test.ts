@@ -3,7 +3,6 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import {
   LogcatHub,
-  type LogcatClock,
 } from "../src/logcat.ts";
 import { ManualClock } from "./helpers/manual-clock.ts";
 

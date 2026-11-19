@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   SessionRecoveryWatchdog,
   type RecoveryClientState,
-  type RecoveryWatchdogClock,
 } from "../src/session-recovery-watchdog.ts";
 import { ManualClock } from "./helpers/manual-clock.ts";
 

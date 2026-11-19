@@ -3,7 +3,6 @@ import {
   bindPollVisibility,
   createPollController,
   shouldApplyPollResult,
-  type PollScheduler,
   type VisibilitySource,
 } from "../src/ui/lib/polling.ts";
 import { createDeviceSessionStore } from "../src/ui/lib/device-session-store.ts";
