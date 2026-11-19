@@ -120,12 +120,13 @@ type ClientStat = { frames: number; bytes: number; intervals: number[]; transit:
 function openClients(server: Server, count: number) {
   const stats: ClientStat[] = [];
   const sockets: WebSocket[] = [];
+  const window = { counting: false };
   for (let i = 0; i < count; i++) {
     const stat: ClientStat = { frames: 0, bytes: 0, intervals: [], transit: [], last: 0, closed: null };
     const ws = new WebSocket(`ws://127.0.0.1:${server.port}/ws?frame-meta=1`);
     ws.binaryType = "arraybuffer";
     ws.onmessage = (event) => {
-      if (typeof event.data === "string") return;
+      if (typeof event.data === "string" || !window.counting) return;
       const now = performance.now();
       const packet = parseFramePacket(event.data as ArrayBuffer);
       if (stat.last > 0) stat.intervals.push(now - stat.last);
@@ -140,7 +141,7 @@ function openClients(server: Server, count: number) {
     stats.push(stat);
     sockets.push(ws);
   }
-  return { stats, close: () => sockets.forEach((ws) => ws.close()) };
+  return { stats, window, close: () => sockets.forEach((ws) => ws.close()) };
 }
 
 async function driveMotion(server: Server, until: number) {
@@ -183,7 +184,6 @@ async function runStep(servers: Server[], clientsPerServer: number) {
   const motion = values.motion === "swipe" ? servers.map((s) => driveMotion(s, motionUntil)) : [];
   await Bun.sleep(warmupMs);
 
-  for (const g of groups) for (const s of g.stats) Object.assign(s, { frames: 0, bytes: 0, intervals: [], transit: [] });
   const trees = servers.map((s) => procTree(s.proc.pid));
   const adbPids = findPids(/^adb .*fork-server/);
   const emuPids = findPids(/qemu-system/);
@@ -196,6 +196,7 @@ async function runStep(servers: Server[], clientsPerServer: number) {
     health: await Promise.all(servers.map(health)),
   };
   const rssSamples: number[][] = servers.map(() => []);
+  for (const g of groups) g.window.counting = true;
   const started = performance.now();
   const end = Date.now() + durationMs;
   const sampler = (async () => {
@@ -206,6 +207,7 @@ async function runStep(servers: Server[], clientsPerServer: number) {
   })();
   const probes = await Promise.all(servers.map((s) => probeHealth(s, end)));
   await sampler;
+  for (const g of groups) g.window.counting = false;
   const elapsedS = (performance.now() - started) / 1000;
   const after = {
     servers: trees.map(ticks),
