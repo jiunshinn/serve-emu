@@ -210,6 +210,41 @@ describe("startServer multi-device routing", () => {
     expect(killed).toEqual(["emulator-5558", "emulator-5554"]);
   });
 
+  test("sets stream quality per device and restarts only that device", async () => {
+    const qualities: Array<[string, unknown]> = [];
+    const opened: FakeScrcpy[] = [];
+    const h = await createHarness(
+      { serials: ["A", "B"] },
+      {
+        openScrcpy: async (serial, _signal, quality) => {
+          qualities.push([serial, quality]);
+          const session = fakeScrcpy(serial);
+          opened.push(session);
+          return session;
+        },
+      },
+    );
+    await response(h.request("/d/B/health"));
+    const set = await json(
+      h.request("/d/B/api/stream-quality", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxSize: 480, maxFps: 15 }),
+      }),
+    );
+    expect(set.status).toBe(200);
+    expect(set.body).toMatchObject({ serial: "B", quality: { maxSize: 480, maxFps: 15 } });
+    expect(qualities.at(-1)).toEqual(["B", expect.objectContaining({ maxSize: 480, maxFps: 15 })]);
+    expect(opened.filter((s) => s.serial === "B")[0]!.closeCalls).toBe(1);
+    expect(opened[0]!.closeCalls).toBe(0);
+
+    const b = await json(h.request("/d/B/api/stream-quality"));
+    expect(b.body.quality).toMatchObject({ maxSize: 480, maxFps: 15 });
+    expect(b.body.generation).toBe(set.body.generation);
+    const a = await json(h.request("/api/stream-quality"));
+    expect(a.body).toMatchObject({ serial: "A", quality: { maxSize: 1280, maxFps: 60 } });
+  });
+
   test("selecting a prefixed device closes its prefixed stream", async () => {
     const h = await multiDeviceHarness();
     await response(h.request("/d/B/health"));

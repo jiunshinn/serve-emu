@@ -34,6 +34,7 @@ import { setEmulatorLocationAsync, type GeoFix } from "./location.ts";
 import { stageMultipartUpload } from "./multipart-upload.ts";
 import {
   closeScrcpySession,
+  SCRCPY_DEFAULTS,
   startScrcpy,
   type ScrcpySession,
 } from "./scrcpy.ts";
@@ -60,7 +61,11 @@ import {
   SYSTEM_RECOVERY_WATCHDOG_CLOCK,
   type RecoveryWatchdogClock,
 } from "./session-recovery-watchdog.ts";
-import type { DeviceSelectionResponse } from "./shared/api-contracts.ts";
+import type {
+  DeviceSelectionResponse,
+  StreamQuality,
+  StreamQualityResponse,
+} from "./shared/api-contracts.ts";
 import {
   UploadManager,
   UploadManagerError,
@@ -128,7 +133,11 @@ export {
 const MAX_JSON_BODY_BYTES = 8 * 1024;
 
 export type ServerDependencies = {
-  openScrcpy?: (serial: string, signal?: AbortSignal) => Promise<ScrcpySession>;
+  openScrcpy?: (
+    serial: string,
+    signal?: AbortSignal,
+    quality?: StreamQuality,
+  ) => Promise<ScrcpySession>;
   serve?: typeof Bun.serve;
   listDevices?: typeof listAllDevices;
   startEmulator?: typeof startEmulator;
@@ -187,13 +196,13 @@ export async function startServer(
   if (opts.token) assertValidToken(opts.token);
   const openScrcpy =
     dependencies.openScrcpy ??
-    ((serial: string, signal?: AbortSignal) =>
+    ((serial: string, signal?: AbortSignal, quality?: StreamQuality) =>
       startScrcpy({
         serial,
         signal,
-        maxFps: opts.maxFps,
-        bitRate: opts.bitRate,
-        maxSize: opts.maxSize,
+        maxFps: quality?.maxFps ?? opts.maxFps,
+        bitRate: quality?.bitRate ?? opts.bitRate,
+        maxSize: quality?.maxSize ?? opts.maxSize,
         keyFrameInterval: opts.keyFrameInterval,
         repeatFrameMs: opts.repeatFrameMs,
       }));
@@ -276,8 +285,9 @@ export async function startServer(
     generation: number,
     signal?: AbortSignal,
     previousRecorder?: DeviceContext["recorder"],
+    quality?: StreamQuality,
   ): Promise<DeviceContext> => {
-    const scrcpy = await openScrcpy(serial, signal);
+    const scrcpy = await openScrcpy(serial, signal, quality);
     try {
       return createContext(serial, generation, scrcpy, previousRecorder);
     } catch (err) {
@@ -301,6 +311,11 @@ export async function startServer(
   // generations from this one sequence.
   let lastGeneration = 0;
   const allocateGeneration = () => ++lastGeneration;
+  const defaultQuality: StreamQuality = {
+    maxSize: opts.maxSize ?? SCRCPY_DEFAULTS.maxSize,
+    maxFps: opts.maxFps ?? SCRCPY_DEFAULTS.maxFps,
+    bitRate: opts.bitRate ?? SCRCPY_DEFAULTS.bitRate,
+  };
   const maxDevices = opts.maxDevices ?? DEFAULT_MAX_DEVICES;
   if (!Number.isInteger(maxDevices) || maxDevices < 1) {
     throw new TypeError("maxDevices must be a positive integer");
@@ -321,13 +336,14 @@ export async function startServer(
   function createSlot(initial: DeviceContext, pinnedSerial: string | null) {
     const sessions = new DeviceSessionManager(initial, allocateGeneration);
     let closing = false;
+    let quality: StreamQuality = { ...defaultQuality };
     const deviceRecovery = createDeviceRecovery({
       current: () => sessions.current,
       reopen: async (failed) => {
         const context = await sessions.switch(
           failed.serial,
           (serial, generation, signal) =>
-            prepareSelection(serial, generation, signal, failed.recorder),
+            prepareSelection(serial, generation, signal, failed.recorder, quality),
           activate,
           failed,
         );
@@ -401,7 +417,15 @@ export async function startServer(
       // cleanup (see createContext) once the switch commits. Cancelling here,
       // before the candidate is prepared, would strand the still-current
       // session's uploads whenever the switch fails.
-      const context = await sessions.switch(serial, prepareSelection, activate);
+      // Quality belongs to a device, so a newly selected one starts at defaults.
+      const next = { ...defaultQuality };
+      const context = await sessions.switch(
+        serial,
+        (target, generation, signal) =>
+          prepareSelection(target, generation, signal, undefined, next),
+        activate,
+      );
+      quality = next;
       logReady(context);
       // The selected device now streams here; one scrcpy per device.
       void closePinned(context.serial, "device selected");
@@ -411,6 +435,31 @@ export async function startServer(
         generation: context.generation,
         device: context.scrcpy.meta.deviceName,
       };
+    };
+
+    const qualityResponse = (context: DeviceContext): StreamQualityResponse => ({
+      ok: true,
+      serial: context.serial,
+      generation: context.generation,
+      quality: { ...quality },
+    });
+    const setStreamQuality = async (
+      context: DeviceContext,
+      patch: Partial<StreamQuality>,
+    ): Promise<StreamQualityResponse> => {
+      sessions.assertPublished(context);
+      const next = { ...quality, ...patch };
+      const switched = await sessions.switch(
+        context.serial,
+        (serial, generation, signal) =>
+          prepareSelection(serial, generation, signal, context.recorder, next),
+        activate,
+        undefined,
+        true,
+      );
+      quality = next;
+      logReady(switched);
+      return qualityResponse(switched);
     };
 
     const apiServices: Omit<
@@ -426,6 +475,8 @@ export async function startServer(
       avds: dependencies.avds ?? avdManager,
       switchSession,
       assertCanSwitch,
+      streamQuality: qualityResponse,
+      setStreamQuality,
       launchEmulator: emulators.launchEmulator,
       listActiveAvds,
       killEmulator: async (serial: string) => {
@@ -477,6 +528,7 @@ export async function startServer(
     generation: number,
     signal: AbortSignal,
     previousRecorder?: DeviceContext["recorder"],
+    quality?: StreamQuality,
   ) {
     const device = (await listDevices({ signal })).find(
       (candidate) => candidate.serial === targetSerial,
@@ -486,7 +538,7 @@ export async function startServer(
     if (device.state !== "device") {
       throw new Error(`${targetSerial} is ${device.state}, not ready.`);
     }
-    return openContext(targetSerial, generation, signal, previousRecorder);
+    return openContext(targetSerial, generation, signal, previousRecorder, quality);
   }
 
   const openPinned = async (serial: string): Promise<DeviceSlot> => {

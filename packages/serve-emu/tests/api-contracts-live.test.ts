@@ -196,6 +196,17 @@ describe("shared API contracts against real server responses", () => {
     expect(
       await call("/api/devices/select", "POST", { serial: "emulator-5556" }),
     ).toMatchObject({ serial: "emulator-5556", generation: 1 });
+    expect(await call("/api/stream-quality", "GET")).toMatchObject({
+      serial: "emulator-5556",
+      quality: { maxSize: 1280, maxFps: 60 },
+    });
+    expect(
+      await call("/api/stream-quality", "POST", { maxSize: 720, maxFps: 30 }),
+    ).toMatchObject({
+      serial: "emulator-5556",
+      generation: 2,
+      quality: { maxSize: 720, maxFps: 30 },
+    });
     expect(
       await call("/api/avds/start", "POST", { avd: "Selected_AVD" }),
     ).toMatchObject({ serial: "emulator-5556", avd: "Selected_AVD" });
@@ -204,7 +215,7 @@ describe("shared API contracts against real server responses", () => {
     expect(health.status).toBe(200);
     expect(parseHealthResponse(await health.json())).toMatchObject({
       serial: "emulator-5556",
-      generation: 1,
+      generation: 2,
       session: { eventCount: 0 },
     });
   });
