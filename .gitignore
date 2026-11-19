@@ -15,3 +15,6 @@ test-results/
 # Use `git add -f` for a deliberate small fixture.
 *.mov
 *.mp4
+
+# open-pr drafts and captures
+runs/
