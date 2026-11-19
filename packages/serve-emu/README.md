@@ -758,6 +758,25 @@ bun run packages/serve-emu/src/cli.ts
 
 Useful manual checks include first video frame, browser refresh recovery, multiple tabs, tap/swipe/text/key input, screenshots, logcat SSE, app management, location, route playback, and session replay.
 
+### Server-cost benchmark
+
+`bench:server` measures what the server costs as clients and devices grow. It
+starts one serve-emu per serial on consecutive ports from `--base-port`
+(default `3400`), opens `--clients` headless `/ws?frame-meta=1` clients per
+server for each step, and scrolls each device with `/api/swipe` (`--motion
+none` to skip). For each server it reports CPU and peak RSS of the process tree,
+source fps, per-client fps, frame-interval and transit percentiles, `/health`
+latency (a proxy for event-loop lag), drops, backpressure events, and video
+resets, plus host CPU for adb and the emulators.
+
+```sh
+bun run --filter serve-emu bench:server -- \
+  --serials emulator-5554,emulator-5556 --clients 1,10,25 \
+  --duration 15 --warmup 4 --out bench.json
+# pass serve-emu flags to every server
+bun run --filter serve-emu bench:server -- --serials emulator-5554 "--server-args=--max-size 720"
+```
+
 ## Package Rename
 
 The project and npm package are named `serve-emu` again, starting with version
