@@ -1,8 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseGesture } from "../src/shared/control-contracts.ts";
 import {
-  isWsClientMessage,
-  isWsServerMessage,
   parseWsClientMessage,
   parseWsServerJson,
   parseWsServerMessage,
@@ -30,14 +28,13 @@ describe("WebSocket contract rejection boundaries", () => {
   test("rejects non-object messages and invalid recording flags", () => {
     for (const value of [null, [], "{}"] as const) {
       expect(() => parseWsClientMessage(value)).toThrow("must be an object");
-      expect(isWsClientMessage(value)).toBe(false);
     }
     expect(() => parseWsClientMessage({ type: "home", record: 1 })).toThrow(
       "record must be a boolean",
     );
   });
 
-  test("validates server JSON, unsupported envelopes, and type guards", () => {
+  test("validates server JSON and unsupported envelopes", () => {
     expect(parseWsServerJson('{"ok":true}')).toEqual({ ok: true });
     expect(() => parseWsServerJson("{")).toThrow(
       "WebSocket server message must be valid JSON",
@@ -45,7 +42,12 @@ describe("WebSocket contract rejection boundaries", () => {
     expect(() => parseWsServerMessage({ ok: false, error: 1 })).toThrow(
       "unsupported WebSocket server message",
     );
-    expect(isWsServerMessage({ ok: false, error: "denied" })).toBe(true);
-    expect(isWsServerMessage({ ok: "yes" })).toBe(false);
+    expect(parseWsServerMessage({ ok: false, error: "denied" })).toEqual({
+      ok: false,
+      error: "denied",
+    });
+    expect(() => parseWsServerMessage({ ok: "yes" })).toThrow(
+      "unsupported WebSocket server message",
+    );
   });
 });
