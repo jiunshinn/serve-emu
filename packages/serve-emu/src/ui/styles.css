@@ -187,7 +187,7 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
-input {
+input, .camera-picker select {
   box-sizing: border-box;
   width: 100%;
   background: #111116;

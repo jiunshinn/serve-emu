@@ -83,7 +83,7 @@ export function toApiError(
 ): ApiError {
   if (err instanceof ApiError) return err;
   if (err instanceof EmulatorCameraConflictError) {
-    return api("conflict", message(err), err, "emulator-camera-restart-required");
+    return api("conflict", "The AVD is already running. Stop it first, then start it again with the requested cameras.", err, "emulator-camera-restart-required");
   }
   if (err instanceof SessionChangedError) {
     return api("conflict", message(err), err, err.code);

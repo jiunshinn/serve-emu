@@ -43,7 +43,7 @@ test("running AVD camera conflicts are structured 409 responses", async () => {
   try {
     const res = await response(h.request("/api/avds/start", post({ avd: "pixel", select: false, cameraBack: "emulated" })));
     expect(res.status).toBe(409);
-    expect(await res.json()).toMatchObject({ ok: false, error: { code: "conflict", reason: "emulator-camera-restart-required", message: expect.stringContaining("already running") } });
+    expect(await res.json()).toMatchObject({ ok: false, error: { code: "conflict", reason: "emulator-camera-restart-required", message: "The AVD is already running. Stop it first, then start it again with the requested cameras." } });
   } finally { await h.started.stop(); }
 });
 
