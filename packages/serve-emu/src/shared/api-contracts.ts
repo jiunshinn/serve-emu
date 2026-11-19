@@ -702,7 +702,7 @@ export function parseDeviceSelectionResponse(value: unknown): DeviceSelectionRes
   return parseOkDeviceResponse(value, "selection") as DeviceSelectionResponse;
 }
 
-export function parseStreamQualityResponse(value: unknown): StreamQualityResponse {
+function parseStreamQualityResponse(value: unknown): StreamQualityResponse {
   const root = record(value, "stream quality response");
   if (root.ok !== true) fail("stream quality response.ok must be true");
   const quality = record(root.quality, "stream quality response.quality");
