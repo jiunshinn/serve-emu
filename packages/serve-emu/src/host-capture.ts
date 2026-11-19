@@ -99,8 +99,12 @@ export async function startHostCaptureSession(opts: StartOpts, deps: Dependencie
             enqueue({ type: "frame", ...packet });
           }
           if (encoder === current && !closed) finish(null);
-        } catch {
-          if (encoder === current && !closed) finish(new Error("Host encoder stream failed"));
+        } catch (cause) {
+          if (encoder === current && !closed && terminal === undefined) {
+            const error = new Error("Host encoder stream failed", { cause });
+            console.error("[host-capture]", error);
+            finish(error);
+          }
         }
       })();
     };

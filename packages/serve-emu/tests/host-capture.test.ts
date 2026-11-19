@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { startHostCaptureSession, openCaptureSession } from "../src/host-capture.ts";
 import type { ScreenshotFrame } from "../src/emulator-grpc.ts";
 import type { VideoPacket } from "../src/scrcpy.ts";
@@ -123,12 +123,26 @@ test("successful host capture does not open a second scrcpy session", async () =
 
 test.each(["grpc", "encoder"])("propagates %s stream failure through readFrame", async (failure) => {
   const h = harness();
+  const token = crypto.randomUUID();
+  h.deps.discover = async () => ({ port: 8554, token });
   const session = await startHostCaptureSession({ serial: "emulator-5554" }, h.deps);
-  for (let i = 0; i < 3; i++) await session.readFrame();
-  if (failure === "grpc") h.frames.fail(new Error("private-token"));
-  else h.encoders[0]!.packets.fail(new Error("encoder failed"));
-  await expect(session.readFrame()).rejects.toThrow(failure === "grpc" ? "Host screenshot stream failed" : "Host encoder stream failed");
-  await session.close();
+  const log = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    for (let i = 0; i < 3; i++) await session.readFrame();
+    const cause = new Error(failure === "grpc" ? token : "Host encoder exited (1): Encoder output failed: -1");
+    if (failure === "grpc") h.frames.fail(cause);
+    else h.encoders[0]!.packets.fail(cause);
+    const error = await session.readFrame().catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(failure === "grpc" ? "Host screenshot stream failed" : "Host encoder stream failed");
+    if (failure === "encoder") {
+      expect((error as Error).cause).toBe(cause);
+      await expect(session.readFrame()).rejects.toBe(error);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(log).toHaveBeenCalledWith("[host-capture]", error);
+    } else expect(log).not.toHaveBeenCalled();
+    expect(Bun.inspect(log.mock.calls)).not.toContain(token);
+  } finally { await session.close(); log.mockRestore(); }
 });
 
 test("clean gRPC EOF ends readFrame and close interrupts idle readers", async () => {

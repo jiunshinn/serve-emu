@@ -24,12 +24,20 @@ func packet(_ data: Data, _ flags: UInt8, _ pts: UInt64) {
 
 let startCode = Data([0, 0, 0, 1])
 let outputLock = NSLock()
-let callback: VTCompressionOutputCallback = { _, _, status, _, sample in
-    guard status == noErr, let sample, let format = CMSampleBufferGetFormatDescription(sample),
+let keyFrameLock = NSLock()
+var forceKey = true
+var keyFrameRequestedAfterPTS: UInt64 = 0
+let callback: VTCompressionOutputCallback = { _, _, status, infoFlags, sample in
+    check(status, "Encoder output failed")
+    guard !infoFlags.contains(.frameDropped), let sample else { return }
+    guard let format = CMSampleBufferGetFormatDescription(sample),
           let block = CMSampleBufferGetDataBuffer(sample) else { fail("Encoder output failed: \(status)") }
     let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[String: Any]]
     let key = attachments?.first?[kCMSampleAttachmentKey_NotSync as String] as? Bool != true
     let pts = UInt64(max(0, CMTimeConvertScale(CMSampleBufferGetPresentationTimeStamp(sample), timescale: 1_000_000, method: .default).value))
+    keyFrameLock.lock()
+    if key && pts > keyFrameRequestedAfterPTS { forceKey = false }
+    keyFrameLock.unlock()
     outputLock.lock()
     defer { outputLock.unlock() }
     if key {
@@ -94,7 +102,6 @@ for (key, value) in [
 check(VTCompressionSessionPrepareToEncodeFrames(session), "Prepare encoder")
 
 var lastFrame: CVPixelBuffer?
-var forceKey = true
 var lastEncode = DispatchTime.now().uptimeNanoseconds
 let epoch = lastEncode
 var previousPTS: UInt64 = 0
@@ -103,8 +110,9 @@ func encode() {
     let now = DispatchTime.now().uptimeNanoseconds
     let pts = max(previousPTS + 1, (now - epoch) / 1000)
     previousPTS = pts
+    keyFrameLock.lock()
     let properties = forceKey ? [kVTEncodeFrameOptionKey_ForceKeyFrame: true] as CFDictionary : nil
-    forceKey = false
+    keyFrameLock.unlock()
     check(VTCompressionSessionEncodeFrame(session, imageBuffer: frame, presentationTimeStamp: CMTime(value: Int64(pts), timescale: 1_000_000), duration: .invalid, frameProperties: properties, sourceFrameRefcon: nil, infoFlagsOut: nil), "Encode frame")
     lastEncode = now
 }
@@ -133,7 +141,10 @@ while true {
             lastFrame = pixel
             encode()
         } else if command == 107 {
+            keyFrameLock.lock()
             forceKey = true
+            keyFrameRequestedAfterPTS = previousPTS
+            keyFrameLock.unlock()
             encode()
         }
     }

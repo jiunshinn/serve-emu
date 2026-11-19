@@ -115,3 +115,25 @@ test.skipIf(process.platform !== "darwin")("real VideoToolbox encoder emits conf
     expect(nals((await packets.next()).value!.data)).toContain(5);
   } finally { await encoder.close(); await rm(directory, { recursive: true, force: true }); }
 }, 60_000);
+
+test.skipIf(process.platform !== "darwin")("real VideoToolbox encoder survives native-resolution bursts and still honours keyframe requests", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "host-encoder-burst-"));
+  const path = join(directory, "pixels");
+  await writeFile(path, Buffer.alloc(2208 * 1840 * 4, 255));
+  const encoder = await startHostEncoder({ mmapPath: path, width: 2208, height: 1840, bitRate: 8_000_000, maxFps: 60 });
+  try {
+    const packets = encoder.packets();
+    encoder.pushFrame();
+    expect((await packets.next()).value!.isConfig).toBe(true);
+    expect(nals((await packets.next()).value!.data)).toContain(5);
+    for (let frame = 0; frame < 120; frame++) encoder.pushFrame();
+    encoder.requestKeyFrame();
+    let next = (await packets.next()).value!;
+    while (!next.isConfig) next = (await packets.next()).value!;
+    expect(nals(next.data)).toEqual([7, 8]);
+    expect(nals((await packets.next()).value!.data)).toContain(5);
+  } finally {
+    await encoder.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+}, 60_000);
