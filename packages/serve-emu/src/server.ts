@@ -428,7 +428,10 @@ export async function startServer(
       assertCanSwitch,
       launchEmulator: emulators.launchEmulator,
       listActiveAvds,
-      killEmulator: emulators.killEmulator,
+      killEmulator: async (serial: string) => {
+        await stopOtherStreams(serial, sessions);
+        return emulators.killEmulator(serial);
+      },
       uploads: uploadEndpoints,
       responseMetrics,
     };
@@ -559,6 +562,26 @@ export async function startServer(
       },
     );
     return entry.slot;
+  };
+
+  /**
+   * Before an emulator is killed through `caller`, stops the other slots
+   * streaming it, so the selected one counts as stopped by a client.
+   */
+  const stopOtherStreams = async (
+    serial: string,
+    caller: DeviceSessionManager<DeviceContext>,
+  ) => {
+    const selected = primary.sessions;
+    if (selected !== caller && selected.current.serial === serial) {
+      await selected.stop(selected.current, "current emulator stopped", {
+        byClient: true,
+      });
+    }
+    const entry = pinned.get(serial);
+    if (entry?.ready && entry.ready.sessions !== caller) {
+      await closePinned(serial, "emulator stopped");
+    }
   };
 
   /** Closes still in progress; stop waits for them too. */

@@ -183,6 +183,33 @@ describe("startServer multi-device routing", () => {
     expect(launched).toEqual([]);
   });
 
+  test("stopping an emulator through another prefix stops its streams", async () => {
+    const killed: string[] = [];
+    const h = await multiDeviceHarness(
+      { serials: ["emulator-5554", "emulator-5556", "emulator-5558"] },
+      {
+        stopEmulator: async (serial) => {
+          killed.push(serial);
+        },
+      },
+    );
+    const stopVia = (prefix: string, serial: string) =>
+      response(
+        h.request(`${prefix}/api/avds/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ serial }),
+        }),
+      );
+    await response(h.request("/d/emulator-5558/health"));
+    expect((await stopVia("/d/emulator-5556", "emulator-5558")).status).toBe(200);
+    expect(h.opensOf("emulator-5558")[0]!.closeCalls).toBe(1);
+
+    expect((await stopVia("/d/emulator-5556", "emulator-5554")).status).toBe(200);
+    expect(h.started.deviceSerial).toBeNull();
+    expect(killed).toEqual(["emulator-5558", "emulator-5554"]);
+  });
+
   test("selecting a prefixed device closes its prefixed stream", async () => {
     const h = await multiDeviceHarness();
     await response(h.request("/d/B/health"));
