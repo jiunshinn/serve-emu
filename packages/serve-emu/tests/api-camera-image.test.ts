@@ -104,6 +104,41 @@ test("camera UI response parsers reject malformed state, paths and image results
   }
 });
 
+test("camera restart falls back from a private activity to the package launcher and reports launcher failures", async () => {
+  for (const scenario of ["fallback", "both-fail", "no-activity"] as const) {
+    const cameras = await createCameraImages("pixel", "uploaded");
+    const calls: (string | undefined)[] = [];
+    const activity = scenario === "no-activity" ? null : "com.example.PrivateCamera";
+    const h = await createHarness({ initialEmulatorLaunch: { serial: "emulator-5554", ownsProcess: true, proc: null, cameras, stop: async () => {} } }, {
+      deviceService: { ...createDeviceService(),
+        foregroundApp: async () => ({ packageName: "com.example", activity, pid: null, label: null, versionName: null, versionCode: null, debuggable: null }),
+        forceStopApp: async () => ({ ok: true, output: "" }),
+        launchApp: async (serial, pkg, target, signal) => {
+          expect(serial).toBe("emulator-5554");
+          expect(pkg).toBe("com.example");
+          expect(signal.aborted).toBe(false);
+          calls.push(target);
+          if (target || scenario !== "fallback") throw new Error("private launch failure");
+          return { ok: true, output: "" };
+        },
+      },
+    });
+    try {
+      const res = await response(h.request("/api/camera/image?restartApp=true", put()));
+      expect(calls).toEqual(activity ? [activity, undefined] : [undefined]);
+      if (scenario === "fallback") {
+        expect(res.status).toBe(200);
+        expect(parseApiResponse("/api/camera/image", "PUT", await res.json())).toMatchObject({ restartedApp: "com.example" });
+      } else {
+        expect(res.status).toBe(500);
+        const body = await res.json();
+        expect(body).toMatchObject({ ok: false, error: { code: "internal_error" } });
+        expect(JSON.stringify(body)).not.toContain("private launch failure");
+      }
+    } finally { await h.started.stop(); await cameras.cleanup(); }
+  }
+});
+
 test("camera upload restart handles no foreground app and downstream restart failures", async () => {
   const cameras = await createCameraImages("pixel", "uploaded");
   let packageName: string | null = null;

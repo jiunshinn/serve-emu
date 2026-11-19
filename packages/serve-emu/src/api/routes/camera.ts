@@ -35,7 +35,12 @@ export function cameraRoutes(): ApiRoute<ApiDependencies>[] {
             await images.write(camera, bytes, signal);
             if (app?.packageName) {
               await deps.device.forceStopApp(context.serial, app.packageName, signal);
-              await deps.device.launchApp(context.serial, app.packageName, app.activity ?? undefined, signal);
+              try {
+                await deps.device.launchApp(context.serial, app.packageName, app.activity ?? undefined, signal);
+              } catch (error) {
+                if (!app.activity || signal.aborted) throw error;
+                await deps.device.launchApp(context.serial, app.packageName, undefined, signal);
+              }
             }
             return Response.json({ ok: true, camera, ...size, bytes: bytes.length, ...(app?.packageName ? { restartedApp: app.packageName } : {}) });
           }, request.signal);
