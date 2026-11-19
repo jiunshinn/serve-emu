@@ -1,3 +1,4 @@
+import { PAGE_BASE } from "./base-path";
 import { deviceSessionStore, type DeviceSessionHealthRequest } from "./device-session-store";
 import { bindPollVisibility, createPollController } from "./polling";
 import { parseStreamHealth, type StreamHealth } from "./stream-state";
@@ -109,7 +110,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
     let lifecycleTimer: ReturnType<typeof setInterval> | null = null;
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${location.host}/ws?frame-meta=1`;
+    const url = `${proto}//${location.host}${PAGE_BASE}/ws?frame-meta=1`;
 
     let worker = workerByCanvas.get(canvas);
     const isNewWorker = !worker;
@@ -304,7 +305,7 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
         signal.addEventListener("abort", abort, { once: true });
         const requestTimeout = setTimeout(abort, HEALTH_REQUEST_TIMEOUT_MS);
         try {
-          const response = await fetch("/health", { signal: controller.signal });
+          const response = await fetch(`${PAGE_BASE}/health`, { signal: controller.signal });
           return { data: parseStreamHealth(await response.json()), sessionRequest };
         } finally {
           clearTimeout(requestTimeout);

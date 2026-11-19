@@ -393,6 +393,12 @@ Selecting a device that already streams under a prefix closes the prefixed
 stream; its URLs then reach the selected stream. Unprefixed URLs always reach
 the selected device.
 
+Open `/grid` for live tiles of every online device. Tiles run at low quality
+(480 px, 15 fps by default; switch with the Tile quality menu) so the emulators
+keep CPU for the device in use, and each device's quality is restored when you
+open it or leave the grid. **Open** loads that device's full UI at
+`/d/<serial>/`, where every panel acts on that device.
+
 Each device has its own stream quality. `GET /api/stream-quality` reads it and
 `POST` sets any of `maxSize` (0–8192, 0 = native), `maxFps` (1–120), and
 `bitRate` (100000–100000000), then restarts only that device's scrcpy (its

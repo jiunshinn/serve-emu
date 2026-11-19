@@ -8,6 +8,7 @@ import {
   type ApiResponse,
   type ApiSuccessResponse,
 } from "../../shared/api-contracts";
+import { PAGE_BASE } from "./base-path";
 
 export type { ApiSuccessResponse } from "../../shared/api-contracts";
 
@@ -90,7 +91,11 @@ function requestBody(body: unknown, headers: Headers): BodyInit | undefined {
   return JSON.stringify(body);
 }
 
-export function createApiClient(fetcher: FetchLike = globalThis.fetch) {
+/** `basePath` (e.g. `/d/<serial>`) is prepended to every API path. */
+export function createApiClient(
+  fetcher: FetchLike = globalThis.fetch,
+  basePath = "",
+) {
   return async function apiRequest<
     P extends ApiClientPath,
     M extends ApiMethod<P>,
@@ -102,7 +107,7 @@ export function createApiClient(fetcher: FetchLike = globalThis.fetch) {
     const headers = new Headers(requestOptions.headers);
     let response: Response;
     try {
-      response = await fetcher(withQuery(path, query), {
+      response = await fetcher(basePath + withQuery(path, query), {
         ...requestOptions,
         method,
         headers,
@@ -180,7 +185,7 @@ export function createApiClient(fetcher: FetchLike = globalThis.fetch) {
   };
 }
 
-export const apiRequest = createApiClient();
+export const apiRequest = createApiClient(globalThis.fetch, PAGE_BASE);
 
 /** A display string for any failure: client errors already carry one. */
 export function apiErrorMessage(error: unknown): string {

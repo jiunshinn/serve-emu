@@ -516,6 +516,11 @@ describe("server HTTP and WebSocket boundaries", () => {
       const index = await response(harness.request("/"));
       expect(index.status).toBe(200);
       expect(await index.text()).toBe("<!doctype html>fixture ui");
+      for (const page of ["/grid", "/grid/", "/d/emulator-5556/", "/d/emulator-5556/index.html"]) {
+        const ui = await response(harness.request(page));
+        expect(ui.status, page).toBe(200);
+        expect(await ui.text()).toBe("<!doctype html>fixture ui");
+      }
 
       const existing = await response(harness.request(`/${fixtureName}`));
       expect(existing.status).toBe(200);

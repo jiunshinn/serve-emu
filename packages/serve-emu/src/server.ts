@@ -738,6 +738,10 @@ export async function startServer(
       if (target?.serial === null) {
         return routeToSlot(primary, requestContext, req, url, url.pathname, srv);
       }
+      // A device's own UI is the same page; it finds its prefix in the URL.
+      if (target && (target.path === "/" || target.path === "/index.html")) {
+        return serveStaticFile(uiDir, "/");
+      }
       if (!target || !isServicePath(target.path)) {
         return new Response("not found", { status: 404 });
       }

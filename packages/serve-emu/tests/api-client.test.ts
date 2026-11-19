@@ -285,4 +285,19 @@ describe("API client", () => {
     expect(png).toBeInstanceOf(Uint8Array);
     expect(Array.from(png as Uint8Array)).toEqual([0x89, 0x50, 0x4e, 0x47]);
   });
+
+  test("prepends a device base path to every request", async () => {
+    const urls: string[] = [];
+    const request = createApiClient(async (input) => {
+      urls.push(String(input));
+      return Response.json({
+        ok: true,
+        serial: "emulator-5556",
+        generation: 1,
+        quality: { maxSize: 480, maxFps: 15, bitRate: 8_000_000 },
+      });
+    }, "/d/emulator-5556");
+    await request("/api/stream-quality", { method: "GET" });
+    expect(urls).toEqual(["/d/emulator-5556/api/stream-quality"]);
+  });
 });
