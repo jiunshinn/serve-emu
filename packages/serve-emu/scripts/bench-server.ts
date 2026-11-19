@@ -4,10 +4,12 @@
 // proxy), and the frames each client received.
 //
 //   bun run bench:server -- --serials emulator-5554,emulator-5556 --clients 1,5,10
+//   bun run bench:server -- --serials emulator-5554 --server-args=--host-capture
 import { parseArgs } from "node:util";
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { cpus } from "node:os";
 import { parseFramePacket, epochNowMs } from "../src/shared/frame-meta.ts";
+import { readMacProcesses } from "./bench-processes.ts";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -24,7 +26,7 @@ const { values } = parseArgs({
 });
 
 if (!values.serials) {
-  console.error("usage: bench-server --serials <s1,s2,...> [--clients 1,5,10,25] [--duration 20] [--warmup 5] [--motion swipe|none] [--out report.json]");
+  console.error("usage: bench-server --serials <s1,s2,...> [--clients 1,5,10,25] [--duration 20] [--warmup 5] [--motion swipe|none] [--server-args=--host-capture] [--out report.json]");
   process.exit(2);
 }
 const serials = values.serials.split(",").map((s) => s.trim()).filter(Boolean);
@@ -34,6 +36,8 @@ const warmupMs = Number(values.warmup) * 1000;
 const basePort = Number(values["base-port"]);
 const extraServerArgs = values["server-args"].split(" ").filter(Boolean);
 const CLK_TCK = 100;
+let macProcesses: ReturnType<typeof readMacProcesses> | undefined;
+const refreshProcesses = () => { if (process.platform === "darwin") macProcesses = readMacProcesses(); };
 
 const pct = (sorted: number[], q: number) =>
   sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))]! : null;
@@ -45,7 +49,9 @@ const summary = (values: number[]) => {
 
 function procTree(root: number): number[] {
   const parents = new Map<number, number>();
-  for (const name of readdirSync("/proc")) {
+  if (macProcesses) {
+    for (const [pid, process] of macProcesses) parents.set(pid, process.ppid);
+  } else for (const name of readdirSync("/proc")) {
     if (!/^\d+$/.test(name)) continue;
     try {
       const stat = readFileSync(`/proc/${name}/stat`, "utf8");
@@ -59,6 +65,7 @@ function procTree(root: number): number[] {
 }
 
 function cpuTicks(pid: number): number {
+  if (macProcesses) return macProcesses.get(pid)?.cpuTicks ?? 0;
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
@@ -69,6 +76,7 @@ function cpuTicks(pid: number): number {
 }
 
 function rssMb(pid: number): number {
+  if (macProcesses) return macProcesses.get(pid)?.rssMb ?? 0;
   try {
     const m = readFileSync(`/proc/${pid}/status`, "utf8").match(/VmRSS:\s+(\d+)/);
     return m ? Number(m[1]) / 1024 : 0;
@@ -78,7 +86,9 @@ function rssMb(pid: number): number {
 }
 
 const findPids = (pattern: RegExp) =>
-  readdirSync("/proc")
+  macProcesses
+    ? [...macProcesses].filter(([, process]) => pattern.test(process.command)).map(([pid]) => pid)
+    : readdirSync("/proc")
     .filter((n) => /^\d+$/.test(n))
     .map(Number)
     .filter((pid) => {
@@ -184,8 +194,9 @@ async function runStep(servers: Server[], clientsPerServer: number) {
   const motion = values.motion === "swipe" ? servers.map((s) => driveMotion(s, motionUntil)) : [];
   await Bun.sleep(warmupMs);
 
+  refreshProcesses();
   const trees = servers.map((s) => procTree(s.proc.pid));
-  const adbPids = findPids(/^adb .*fork-server/);
+  const adbPids = findPids(process.platform === "darwin" ? /(?:^|\/)adb .*fork-server/ : /^adb .*fork-server/);
   const emuPids = findPids(/qemu-system/);
   const ticks = (pids: number[]) => pids.reduce((sum, pid) => sum + cpuTicks(pid), 0);
   const before = {
@@ -201,6 +212,7 @@ async function runStep(servers: Server[], clientsPerServer: number) {
   const end = Date.now() + durationMs;
   const sampler = (async () => {
     while (Date.now() < end) {
+      refreshProcesses();
       trees.forEach((tree, i) => rssSamples[i]!.push(tree.reduce((sum, pid) => sum + rssMb(pid), 0)));
       await Bun.sleep(1000);
     }
@@ -209,6 +221,7 @@ async function runStep(servers: Server[], clientsPerServer: number) {
   await sampler;
   for (const g of groups) g.window.counting = false;
   const elapsedS = (performance.now() - started) / 1000;
+  refreshProcesses();
   const after = {
     servers: trees.map(ticks),
     adb: ticks(adbPids),

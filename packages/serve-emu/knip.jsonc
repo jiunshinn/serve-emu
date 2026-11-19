@@ -19,5 +19,5 @@
   // a constant or function only when another module imports it.
   "ignoreExportsUsedInFile": { "type": true, "interface": true },
   "includeEntryExports": true,
-  "ignoreBinaries": ["adb", "tsc", "xcrun"]
+  "ignoreBinaries": ["adb", "ps", "tsc", "xcrun"]
 }

@@ -830,6 +830,7 @@ none` to skip). For each server it reports CPU and peak RSS of the process tree,
 source fps, per-client fps, frame-interval and transit percentiles, `/health`
 latency (a proxy for event-loop lag), drops, backpressure events, and video
 resets, plus host CPU for adb and the emulators.
+Process CPU and RSS sampling supports Linux and macOS.
 
 ```sh
 bun run --filter serve-emu bench:server -- \
@@ -837,6 +838,8 @@ bun run --filter serve-emu bench:server -- \
   --duration 15 --warmup 4 --out bench.json
 # pass serve-emu flags to every server
 bun run --filter serve-emu bench:server -- --serials emulator-5554 "--server-args=--max-size 720"
+# use = when the value starts with --, otherwise argument parsing is ambiguous
+bun run --filter serve-emu bench:server -- --serials emulator-5554 --server-args=--host-capture
 ```
 
 ## Package Rename
