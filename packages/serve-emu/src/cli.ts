@@ -239,7 +239,7 @@ Options:
       --camera-back <mode>
                          Experimental. Back camera for --avd launches. webcam<N>
                          shows a host webcam (see --webcam-list); emulated,
-                         virtualscene, none, and imagefile:<path> also work. The
+                         uploaded, virtualscene, none, and imagefile:<path> also work. The
                          emulator picks cameras at boot, so add --restart-avd if
                          the AVD is already running.
       --camera-front <mode>
@@ -355,6 +355,7 @@ async function main(values: CliValues) {
     signal: lifecycle.signal,
   });
   const port = options.port;
+  options.initialEmulatorLaunch = emulatorLaunch ?? undefined;
   const startupTask = lifecycle.trackServer(startServer(options));
   let activeServer: ActiveServer;
   try {

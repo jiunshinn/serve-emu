@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { createDeviceService } from "../src/device-service.ts";
+import { createCameraImages } from "../src/camera-images.ts";
 import type { ExecResult } from "../src/exec.ts";
 import { LogcatHub } from "../src/logcat.ts";
 import { RoutePlayback } from "../src/route-playback.ts";
@@ -136,6 +137,20 @@ async function liveHarness() {
 }
 
 describe("shared API contracts against real server responses", () => {
+  test("camera state and raw PNG upload endpoints", async () => {
+    const cameras = await createCameraImages("pixel", "uploaded", "none");
+    const h = await createHarness({ initialEmulatorLaunch: { serial: "emulator-5554", proc: null, ownsProcess: true, cameras, stop: async () => {} } });
+    try {
+      const state = await response(h.request("/api/camera"));
+      expect(state.status).toBe(200);
+      expect(parseApiResponse("/api/camera", "GET", await state.json())).toEqual({ ok: true, back: "uploaded", front: "none" });
+      const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGNsaGhgYGBgYmBgYGBgAAASKgGEzwCOrgAAAABJRU5ErkJggg==", "base64");
+      const upload = await response(h.request("/api/camera/image", { method: "PUT", body: png }));
+      expect(upload.status).toBe(200);
+      expect(parseApiResponse("/api/camera/image", "PUT", await upload.json())).toEqual({ ok: true, camera: "back", width: 2, height: 2, bytes: png.length });
+    } finally { await h.started.stop(); await cameras.cleanup(); }
+  });
+
   test("device, input, accessibility, and upload endpoints", async () => {
     const { h, call, uploadPayload, stopped } = await liveHarness();
 

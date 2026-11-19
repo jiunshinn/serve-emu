@@ -29,6 +29,7 @@ import {
   startEmulator,
   stopEmulator,
   type StartEmulatorOpts,
+  type EmulatorLaunch,
 } from "./emulator.ts";
 import { getExecSnapshot } from "./exec.ts";
 import { JsonResponseTracker } from "./json-response.ts";
@@ -109,6 +110,7 @@ export type ServerOpts = {
    * ones the CLI uses for --avd: the emulator binary, `-gpu`, and the window.
    */
   emulator?: Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window">;
+  initialEmulatorLaunch?: EmulatorLaunch;
   /**
    * Check the device for other scrcpy sessions in the background (#76).
    * The CLI turns it on; off, `/health` reports `contention: null`.
@@ -219,6 +221,7 @@ export async function startServer(
     startEmulator: dependencies.startEmulator ?? startEmulator,
     stopEmulator: dependencies.stopEmulator ?? stopEmulator,
     settings: emulatorSettings,
+    initialLaunch: opts.initialEmulatorLaunch,
   });
   const listActiveAvds = dependencies.listRunningAvds ?? listRunningAvds;
   const availableAvds = dependencies.listAvds ?? listAvds;
@@ -488,6 +491,7 @@ export async function startServer(
       streamQuality: qualityResponse,
       setStreamQuality,
       launchEmulator: emulators.launchEmulator,
+      cameraImages: emulators.cameraImages,
       validateCameras: (cameras) => { cameraArgs(cameras, false); },
       webcams: (signal) => (dependencies.listWebcams ?? listWebcams)(emulatorSettings.emulatorPath, {}, signal),
       listActiveAvds,

@@ -14,6 +14,7 @@ export function createEmulatorRegistry(deps: {
   stopEmulator: typeof stopEmulator;
   /** The CLI's emulator binary, `-gpu`, and window, for every launch here. */
   settings?: Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window">;
+  initialLaunch?: EmulatorLaunch;
 }) {
   const {
     startEmulator: startEmulatorProcess,
@@ -92,5 +93,10 @@ export function createEmulatorRegistry(deps: {
     ]).then(() => {});
   };
 
-  return { launchEmulator, killEmulator, shutdown };
+  const cameraImages = (serial: string) => {
+    const launch = launchedEmulators.get(serial) ?? (deps.initialLaunch?.serial === serial && deps.initialLaunch.ownsProcess ? deps.initialLaunch : undefined);
+    if (launch?.proc && (launch.proc.exitCode !== null || launch.proc.signalCode !== null)) return undefined;
+    return launch?.cameras;
+  };
+  return { launchEmulator, killEmulator, shutdown, cameraImages };
 }

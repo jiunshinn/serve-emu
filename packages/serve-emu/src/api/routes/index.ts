@@ -1,6 +1,7 @@
 import type { ApiDependencies } from "../dependencies.ts";
 import type { ApiRoute } from "../router.ts";
 import { applicationRoutes } from "./applications.ts";
+import { cameraRoutes } from "./camera.ts";
 import { avdRoutes } from "./avds.ts";
 import { foldableRoutes } from "./foldable.ts";
 import { deviceRoutes } from "./devices.ts";
@@ -12,6 +13,7 @@ import { sessionRoutes } from "./session.ts";
 export function createApiRoutes(): ApiRoute<ApiDependencies>[] {
   return [
     ...avdRoutes(),
+    ...cameraRoutes(),
     ...foldableRoutes(),
     ...deviceRoutes(),
     ...inspectionRoutes(),

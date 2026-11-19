@@ -239,9 +239,25 @@ The flags also accept the emulator's other camera modes, listed by `emulator -he
 
 On macOS, the first time an Android app opens the webcam, macOS asks whether the app that launched `serve-emu` (usually your terminal) may use the camera. If you denied it, turn it back on under **System Settings → Privacy & Security → Camera**. The emulator can't open a webcam that another app is using.
 
-In the browser's device panel, expand **Cameras** on a stopped AVD row to choose the back and front camera before **Start**. **AVD default** keeps that AVD's own setting; CLI camera flags do not override UI launches. The picker offers emulated, none, host webcams, and virtual scene (back only). If webcam discovery fails, the other choices remain available.
+In the browser's device panel, expand **Cameras** on a stopped AVD row to choose the back and front camera before **Start**. **AVD default** keeps that AVD's own setting; CLI camera flags do not override UI launches. The picker offers emulated, none, **Uploaded image**, host webcams, and virtual scene (back only). If webcam discovery fails, the other choices remain available.
 
-Agents can discover host cameras with `GET /api/webcams`, which returns `{ "ok": true, "webcams": [{ "name": "webcam0", "device": "Host camera" }] }`, then send optional `cameraBack` and `cameraFront` strings to `POST /api/avds/start`. API modes are `emulated`, `none`, `environment`, `webcam<N>`, and `virtualscene` (back only). Omit either field to keep its AVD default. Both cameras cannot use the same webcam. Requesting cameras for an already-running AVD returns a structured `409 conflict`; stop it first.
+Agents can discover host cameras with `GET /api/webcams`, which returns `{ "ok": true, "webcams": [{ "name": "webcam0", "device": "Host camera" }] }`, then send optional `cameraBack` and `cameraFront` strings to `POST /api/avds/start`. API modes are `emulated`, `none`, `uploaded`, `environment`, `webcam<N>`, and `virtualscene` (back only). Omit either field to keep its AVD default. Both cameras cannot use the same webcam. Requesting cameras for an already-running AVD returns a structured `409 conflict`; stop it first.
+
+For QR/scanner tests, launch with `--camera-back uploaded` (or `--camera-front uploaded`), or select **Uploaded image** in the browser. API example:
+
+```sh
+curl -X POST -H 'Content-Type: application/json' \
+  -d '{"avd":"pixel","cameraBack":"uploaded","cameraFront":"none"}' \
+  http://127.0.0.1:3300/api/avds/start
+curl http://127.0.0.1:3300/api/camera
+curl -X PUT --data-binary @qr.png 'http://127.0.0.1:3300/api/camera/image?restartApp=true'
+```
+
+`uploaded` seeds a neutral gray PNG in a private serve-emu-owned temporary directory before boot, then removes it when the launch stops. Clients never choose a host path. `GET /api/camera` reports `{ "ok": true, "back": "uploaded", "front": "none" }` for this example; unknown/not-owned camera modes are `null`, and CLI file modes are reported without paths.
+
+`PUT /api/camera/image?camera=back|front` (default `back`) accepts a raw PNG body up to **8 MiB**, with IHDR dimensions **1–4096** pixels, and replaces the staged image atomically. JPEG is rejected with `400`; a camera not launched with `uploaded` returns `409`. The response includes `camera`, `width`, `height`, and `bytes`. **The emulator reloads the image only when the Android app reopens its camera**, not while its existing preview stays open. Optional `restartApp=true` force-stops and relaunches the foreground app and adds `restartedApp` to the response; this can discard unsaved app state. Camera image uploads, like APK uploads, are not recorded/replayed in session recordings.
+
+The right-side **Camera** panel appears only when the active device has an uploaded camera. Pick a browser image to convert it to PNG (resized to at most 4096 pixels per side) and upload it. **Restart app to apply** defaults on. Both endpoints also support the usual `/d/<serial>/` device routing.
 
 File modes (`imagefile:`, `videofile:`, `image360:`) are **CLI-only**: allowing remote API callers to choose host files would expose their contents through the camera and screenshots.
 

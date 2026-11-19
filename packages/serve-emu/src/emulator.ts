@@ -11,6 +11,7 @@ import {
   type AdbDeps,
 } from "./adb-command.ts";
 import { CommandFailureError } from "./command-failure.ts";
+import { createCameraImages, type CameraImages } from "./camera-images.ts";
 import type { Device } from "./shared/api-contracts.ts";
 import { execText, type ExecResult } from "./exec.ts";
 
@@ -18,6 +19,7 @@ export type EmulatorLaunch = {
   serial: string;
   proc: ChildProcess | null;
   ownsProcess: boolean;
+  cameras?: CameraImages;
   /**
    * Stops an emulator this launch started (`emu kill`, then SIGTERM, then
    * SIGKILL after a grace period) and resolves once the process has exited.
@@ -281,7 +283,7 @@ export async function listWebcams(
 
 function validateCameraMode(direction: CameraDirection, mode: string): void {
   if (
-    NAMED_CAMERA_MODES.has(mode) ||
+    mode === "uploaded" || NAMED_CAMERA_MODES.has(mode) ||
     (direction === "back" && mode === "virtualscene") ||
     WEBCAM_MODE.test(mode) ||
     FILE_CAMERA_MODE.test(mode)
@@ -290,8 +292,8 @@ function validateCameraMode(direction: CameraDirection, mode: string): void {
   }
   const modes =
     direction === "back"
-      ? "webcam<N>, emulated, virtualscene, environment, none"
-      : "webcam<N>, emulated, environment, none";
+      ? "webcam<N>, emulated, uploaded, virtualscene, environment, none"
+      : "webcam<N>, emulated, uploaded, environment, none";
   throw new Error(
     `--camera-${direction} must be one of ${modes}, or videofile:/imagefile:/image360:<path> (got "${mode}").`,
   );
@@ -622,8 +624,16 @@ export async function startEmulator(
     await assertPortFree(opts.port, dependencies);
   }
   const port = opts.port ?? (await pickEmulatorPort(dependencies.listAllDevices));
+  let cameras: CameraImages | undefined;
   try {
-    return await launchOnPort(port, name, emulator, camera, opts, dependencies);
+    cameras = await createCameraImages(name, opts.cameraBack, opts.cameraFront);
+    const launch = await launchOnPort(port, name, emulator, cameras.args(camera), opts, dependencies);
+    const ownedCameras = cameras;
+    launch.proc?.once("exit", () => { void ownedCameras.cleanup().catch(() => {}); });
+    return { ...launch, cameras, stop: async () => { try { await launch.stop(); } finally { await ownedCameras.cleanup(); } } };
+  } catch (error) {
+    await cameras?.cleanup();
+    throw error;
   } finally {
     // Booted emulators are listed by adb, so the reservation is no longer needed.
     reservedPorts.delete(port);

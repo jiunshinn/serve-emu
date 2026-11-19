@@ -95,6 +95,8 @@ export type AvdStartResponse = ApiSuccess<{
 
 export type AvdStopResponse = ApiSuccess<{ serial: string }>;
 export type WebcamsResponse = ApiSuccess<{ webcams: { name: string; device: string }[] }>;
+export type CameraResponse = ApiSuccess<{ back: string | null; front: string | null }>;
+export type CameraImageResponse = ApiSuccess<{ camera: "back" | "front"; width: number; height: number; bytes: number; restartedApp?: string }>;
 
 export type OrientationMode = "auto" | "portrait" | "landscape";
 export type OrientationStatus = {
@@ -441,6 +443,8 @@ export type ApiContractMap = {
     POST: EndpointContract<{ serial?: string; avd?: string }, AvdStopResponse>;
   };
   "/api/webcams": { GET: EndpointContract<undefined, WebcamsResponse> };
+  "/api/camera": { GET: EndpointContract<undefined, CameraResponse> };
+  "/api/camera/image": { PUT: EndpointContract<Blob, CameraImageResponse> };
   "/api/avds/catalog": { GET: EndpointContract<undefined, AvdCatalogResponse> };
   "/api/avds/create": {
     POST: EndpointContract<
@@ -732,6 +736,29 @@ function parseWebcamsResponse(value: unknown): WebcamsResponse {
     const webcam = record(value, "webcam");
     return { name: string(webcam.name, "webcam.name"), device: string(webcam.device, "webcam.device") };
   }) };
+}
+
+function parseCameraResponse(value: unknown): CameraResponse {
+  const root = record(value, "camera response");
+  if (root.ok !== true) fail("camera response.ok must be true");
+  const mode = (value: unknown, name: string) => {
+    const result = nullableString(value, name);
+    if (result !== null && !/^(uploaded|emulated|none|environment|virtualscene|webcam\d+|imagefile|videofile|image360)$/.test(result)) fail(`${name} must be a camera mode without a file path`);
+    return result;
+  };
+  return { ok: true, back: mode(root.back, "camera.back"), front: mode(root.front, "camera.front") };
+}
+
+function parseCameraImageResponse(value: unknown): CameraImageResponse {
+  const root = record(value, "camera image response");
+  if (root.ok !== true) fail("camera image response.ok must be true");
+  if (root.camera !== "back" && root.camera !== "front") fail("camera must be back or front");
+  const positive = (value: unknown, name: string, max: number) => {
+    const result = number(value, name);
+    if (!Number.isInteger(result) || result < 1 || result > max) fail(`${name} is out of range`);
+    return result;
+  };
+  return { ok: true, camera: root.camera, width: positive(root.width, "width", 4096), height: positive(root.height, "height", 4096), bytes: positive(root.bytes, "bytes", 8 * 1024 * 1024), ...(root.restartedApp !== undefined ? { restartedApp: string(root.restartedApp, "restartedApp") } : {}) };
 }
 
 export function parseAvdStopResponse(value: unknown): AvdStopResponse {
@@ -1379,6 +1406,8 @@ export const API_SUCCESS_PARSERS = {
   "/api/devices/select": { POST: parseDeviceSelectionResponse },
   "/api/avds/start": { POST: parseAvdStartResponse },
   "/api/webcams": { GET: parseWebcamsResponse },
+  "/api/camera": { GET: parseCameraResponse },
+  "/api/camera/image": { PUT: parseCameraImageResponse },
   "/api/stream-quality": { GET: parseStreamQualityResponse, POST: parseStreamQualityResponse },
   "/api/avds/stop": { POST: parseAvdStopResponse },
   "/api/avds/catalog": { GET: parseAvdCatalogResponse },
