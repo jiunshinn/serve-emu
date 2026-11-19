@@ -455,7 +455,7 @@ export async function startServer(
           prepareSelection(serial, generation, signal, context.recorder, next),
         activate,
         undefined,
-        true,
+        context,
       );
       quality = next;
       logReady(switched);
