@@ -108,6 +108,7 @@ export function deviceRoutes(): ApiRoute<ApiDependencies>[] {
           launchEmulator,
           sessions,
           switchSession,
+          assertCanSwitch,
           errorResponse,
         } = deps;
         try {
@@ -127,6 +128,9 @@ export function deviceRoutes(): ApiRoute<ApiDependencies>[] {
           const avd = (payload as Record<string, unknown>).avd;
           if (typeof avd !== "string" || !avd.trim())
             throw new Error("avd is required");
+          const select = (payload as Record<string, unknown>).select !== false;
+          // Refuse before a cold boot that the switch would only throw away.
+          if (select) assertCanSwitch();
           // A client that gives up during a long cold boot does not cancel it:
           // agents often time out first and pick the emulator up later. The
           // server owns the launch and stops it when it stops.
@@ -137,7 +141,6 @@ export function deviceRoutes(): ApiRoute<ApiDependencies>[] {
             await launch.stop();
             throw err;
           }
-          const select = (payload as Record<string, unknown>).select !== false;
           if (select) {
             try {
               const switched = await switchSession(launch.serial);

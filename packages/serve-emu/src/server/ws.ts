@@ -274,7 +274,7 @@ export function createWebSocketEndpoint(deps: {
     }
     const frameMeta = url.searchParams.get("frame-meta") === "1";
     const ok = srv.upgrade(req, {
-      data: { id: nextId++, frameMeta, context },
+      data: { id: nextId++, frameMeta, context, handlers },
     });
     if (ok) return undefined as unknown as Response;
     return new Response("upgrade failed", { status: 400 });

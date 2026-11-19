@@ -51,6 +51,8 @@ export type ApiDependencies = {
   avds: AvdManager;
   deviceGrid: (context: DeviceContext) => Promise<DeviceGridResponse>;
   switchSession: (serial: string) => Promise<DeviceSelectionResponse>;
+  /** Throws when this request's stream is pinned to one device. */
+  assertCanSwitch: () => void;
   launchEmulator: (opts: StartEmulatorOpts) => Promise<EmulatorLaunch>;
   listActiveAvds: () => Promise<RunningAvd[]>;
   killEmulator: (serial: string) => Promise<void>;

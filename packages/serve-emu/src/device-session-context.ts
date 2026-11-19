@@ -339,10 +339,17 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
   #recoveryController: AbortController | null = null;
   #closing = false;
   #closed = false;
+  #allocateGeneration: () => number;
 
-  constructor(initial: TContext) {
+  /**
+   * `allocateGeneration` lets managers that share an upload service draw
+   * from one sequence, so a generation never names two sessions.
+   */
+  constructor(initial: TContext, allocateGeneration?: () => number) {
     this.#current = initial;
     this.#lastGeneration = initial.generation;
+    this.#allocateGeneration =
+      allocateGeneration ?? (() => ++this.#lastGeneration);
   }
 
   get current(): TContext {
@@ -408,7 +415,7 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
       this.#transitionController = transition;
       let next: TContext;
       try {
-        next = await prepare(serial, ++this.#lastGeneration, transition.signal);
+        next = await prepare(serial, this.#allocateGeneration(), transition.signal);
       } finally {
         if (this.#transitionController === transition) {
           this.#transitionController = null;

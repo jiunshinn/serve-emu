@@ -1,4 +1,4 @@
-import type { ServerWebSocket } from "bun";
+import type { ServerWebSocket, WebSocketHandler } from "bun";
 import type { ActiveDeviceSession } from "../device-session-context.ts";
 import type { Gesture } from "../input.ts";
 
@@ -9,6 +9,8 @@ export type WsData = {
   id: number;
   frameMeta: boolean;
   context: DeviceContext;
+  /** The handlers of the device endpoint that upgraded this socket. */
+  handlers: WebSocketHandler<WsData>;
   handle?: Client;
 };
 

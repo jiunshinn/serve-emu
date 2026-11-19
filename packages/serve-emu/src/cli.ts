@@ -26,6 +26,7 @@ import {
   DEFAULT_MAX_MEDIA_UPLOAD_BYTES,
   DEFAULT_MAX_QUEUED_UPLOADS,
   DEFAULT_UPLOAD_QUEUE_TIMEOUT_MS,
+  DEFAULT_MAX_DEVICES,
   startServer,
   type ServerOpts,
 } from "./server.ts";
@@ -48,6 +49,7 @@ export function parseCliArgs(argv: string[]) {
       "max-size": { type: "string", default: String(SCRCPY_DEFAULTS.maxSize) },
       "key-frame-interval": { type: "string", default: String(SCRCPY_DEFAULTS.keyFrameInterval) },
       "repeat-frame-ms": { type: "string", default: String(SCRCPY_DEFAULTS.repeatFrameMs) },
+      "max-devices": { type: "string", default: String(DEFAULT_MAX_DEVICES) },
       "max-apk-upload-bytes": { type: "string", default: String(DEFAULT_MAX_APK_UPLOAD_BYTES) },
       "max-media-upload-bytes": { type: "string", default: String(DEFAULT_MAX_MEDIA_UPLOAD_BYTES) },
       "max-active-uploads": { type: "string", default: String(DEFAULT_MAX_ACTIVE_UPLOADS) },
@@ -139,6 +141,7 @@ export function serverOptions(
     maxSize: numberOption(values, "max-size", SCRCPY_DEFAULTS.maxSize),
     keyFrameInterval: numberOption(values, "key-frame-interval", SCRCPY_DEFAULTS.keyFrameInterval),
     repeatFrameMs: numberOption(values, "repeat-frame-ms", SCRCPY_DEFAULTS.repeatFrameMs),
+    maxDevices: numberOption(values, "max-devices", DEFAULT_MAX_DEVICES),
     maxApkUploadBytes: numberOption(values, "max-apk-upload-bytes", DEFAULT_MAX_APK_UPLOAD_BYTES),
     maxMediaUploadBytes: numberOption(values, "max-media-upload-bytes", DEFAULT_MAX_MEDIA_UPLOAD_BYTES),
     maxActiveUploads: numberOption(values, "max-active-uploads", DEFAULT_MAX_ACTIVE_UPLOADS),
@@ -216,6 +219,8 @@ Options:
                          screen change (0 keeps the encoder default of 100ms).
                          Android repeats a frame at most 10 times, so a static
                          screen still stops sending frames.
+      --max-devices <n>  Devices streamed at once: the selected one plus those
+                         opened under /d/<serial>/ (default: ${DEFAULT_MAX_DEVICES})
       --max-apk-upload-bytes <n>    Maximum streamed APK bytes (default: ${DEFAULT_MAX_APK_UPLOAD_BYTES})
       --max-media-upload-bytes <n>  Maximum streamed media bytes (default: ${DEFAULT_MAX_MEDIA_UPLOAD_BYTES})
       --max-active-uploads <n>      Concurrent uploads (default: ${DEFAULT_MAX_ACTIVE_UPLOADS})

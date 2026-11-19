@@ -1,4 +1,5 @@
 import { isIP } from "node:net";
+import { isServicePath } from "./device-path.ts";
 
 /**
  * Reduces a Host header or a configured host name to a lowercase hostname
@@ -74,14 +75,5 @@ export function fetchMetadataAllowed(req: Request): boolean {
     req.headers.get("sec-fetch-mode") === "navigate" &&
     dest !== "object" &&
     dest !== "embed"
-  );
-}
-
-function isServicePath(pathname: string): boolean {
-  return (
-    pathname === "/api" ||
-    pathname.startsWith("/api/") ||
-    pathname === "/health" ||
-    pathname === "/ws"
   );
 }
