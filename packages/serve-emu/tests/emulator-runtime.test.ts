@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { EventEmitter, getEventListeners } from "node:events";
 import type { ChildProcess, spawn } from "node:child_process";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import {
   clearEmulatorResolutionCache,
   listAvds,
@@ -86,6 +89,19 @@ function spawnWith(proc: ChildProcess, calls: unknown[][] = []) {
 }
 
 afterEach(() => clearEmulatorResolutionCache());
+
+const cameraDirectories: string[] = [];
+afterEach(() => {
+  for (const directory of cameraDirectories.splice(0)) rmSync(directory, { recursive: true, force: true });
+});
+
+function cameraFile() {
+  const directory = mkdtempSync(join(tmpdir(), "serve-emu-camera-"));
+  cameraDirectories.push(directory);
+  const path = join(directory, "qr code.png");
+  writeFileSync(path, "camera fixture");
+  return { directory, path };
+}
 
 describe("emulator resolution and listing", () => {
   test("accepts an EPIPE PATH probe and searches unique SDK candidates in order", async () => {
@@ -878,6 +894,7 @@ describe("emulator cameras", () => {
   });
 
   test("passes file and built-in camera modes through without listing webcams", async () => {
+    const { path } = cameraFile();
     const { runExec, emulatorCalls } = cameraExec();
     const spawnCalls: unknown[][] = [];
     await startEmulator(
@@ -885,7 +902,7 @@ describe("emulator cameras", () => {
         avd: "Pixel_8",
         emulatorPath: "/sdk/emulator",
         port: 5554,
-        cameraBack: "imagefile:/tmp/qr code.png",
+        cameraBack: `imagefile:${path}`,
         cameraFront: "none",
       },
       {
@@ -900,10 +917,52 @@ describe("emulator cameras", () => {
       "-port",
       "5554",
       "-camera-back",
-      "imagefile:/tmp/qr code.png",
+      `imagefile:${path}`,
       "-camera-front",
       "none",
     ]);
+  });
+
+  test("resolves every file camera mode on either camera before spawning", async () => {
+    const { path } = cameraFile();
+    for (const mode of ["imagefile", "videofile", "image360"]) {
+      for (const direction of ["cameraBack", "cameraFront"] as const) {
+        const { runExec, emulatorCalls } = cameraExec();
+        const spawnCalls: unknown[][] = [];
+        await startEmulator(
+          { avd: "Pixel_8", emulatorPath: "/sdk/emulator", port: 5554, [direction]: `${mode}:${relative(process.cwd(), path)}` },
+          { execText: runExec, listAllDevices: async () => [], spawn: spawnWith(fakeProcess().proc, spawnCalls) },
+        );
+        expect(emulatorCalls).toEqual([["-list-avds"]]);
+        expect(spawnCalls[0]?.[1]).toEqual([
+          "@Pixel_8", "-port", "5554", direction === "cameraBack" ? "-camera-back" : "-camera-front", `${mode}:${path}`,
+        ]);
+      }
+    }
+  });
+
+  test("rejects missing, directory and unreadable camera files before stopping a running AVD", async () => {
+    const { directory, path } = cameraFile();
+    chmodSync(path, 0);
+    for (const invalidPath of [join(directory, "missing.png"), directory, path]) {
+      for (const mode of ["imagefile", "videofile", "image360"]) {
+        for (const direction of ["cameraBack", "cameraFront"] as const) {
+          const { runExec } = cameraExec();
+          let deviceQueries = 0;
+          let spawned = false;
+          await expect(startEmulator(
+            { avd: "Pixel_8", emulatorPath: "/sdk/emulator", restartAvd: true, [direction]: `${mode}:${invalidPath}` },
+            {
+              execText: runExec,
+              listAllDevices: async () => { deviceQueries++; return [{ serial: "emulator-5554", state: "device" }]; },
+              spawn: (() => { spawned = true; throw new Error("must not spawn"); }) as typeof spawn,
+            },
+          )).rejects.toThrow(`${direction === "cameraBack" ? "--camera-back" : "--camera-front"} file "${invalidPath}" must exist and be a readable regular file.`);
+          expect(deviceQueries).toBe(0);
+          expect(spawned).toBe(false);
+        }
+      }
+    }
   });
 
   test("rejects invalid camera modes before running anything", async () => {

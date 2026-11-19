@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { constants, existsSync } from "node:fs";
+import { access, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { listAllDevices } from "./adb.ts";
 import {
@@ -320,6 +321,23 @@ export function cameraArgs(opts: Pick<StartEmulatorOpts, "cameraBack" | "cameraF
   return args;
 }
 
+async function resolveCameraFiles(args: string[]): Promise<void> {
+  for (let i = 0; i < args.length; i += 2) {
+    const mode = args[i + 1]!;
+    if (!FILE_CAMERA_MODE.test(mode)) continue;
+    const separator = mode.indexOf(":");
+    const path = mode.slice(separator + 1);
+    const absolute = resolve(path);
+    try {
+      if (!(await stat(absolute)).isFile()) throw new Error("not a regular file");
+      await access(absolute, constants.R_OK);
+    } catch (cause) {
+      throw new Error(`-${args[i]} file "${path}" must exist and be a readable regular file.`, { cause });
+    }
+    args[i + 1] = `${mode.slice(0, separator + 1)}${absolute}`;
+  }
+}
+
 /**
  * The emulator boots without a camera, rather than failing, when a requested
  * webcam is missing, so check the host list first.
@@ -597,6 +615,7 @@ export async function startEmulator(
     throw new Error(`Unknown AVD "${name}". Available AVDs: ${available}`);
   }
   await assertWebcamsConnected(emulator, opts, runExec);
+  await resolveCameraFiles(camera);
 
   const running = await findRunningAvd(name, dependencies);
   if (running) {

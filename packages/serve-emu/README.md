@@ -240,6 +240,8 @@ The emulator picks its cameras at boot, so the camera flags require `--avd` and 
 
 The flags also accept the emulator's other camera modes, listed by `emulator -help-camera-back`: `emulated`, `environment`, `virtualscene` (back only), `none`, `imagefile:<path>` to show a still image (such as a QR code for a scanner test), `videofile:<path>` to play a video, and `image360:<path>` to show a panoramic image.
 
+File camera paths must exist and be readable regular files. `serve-emu` checks them before booting or stopping an AVD and resolves relative paths from its working directory to absolute paths before passing them to the emulator.
+
 On macOS, the first time an Android app opens the webcam, macOS asks whether the app that launched `serve-emu` (usually your terminal) may use the camera. If you denied it, turn it back on under **System Settings → Privacy & Security → Camera**. The emulator can't open a webcam that another app is using.
 
 In the browser's device panel, expand **Cameras** on a stopped AVD row to choose the back and front camera before **Start**. **AVD default** keeps that AVD's own setting; CLI camera flags do not override UI launches. The picker offers emulated, none, host webcams, and virtual scene (back only). If webcam discovery fails, the other choices remain available.
