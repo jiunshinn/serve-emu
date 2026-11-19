@@ -14,15 +14,6 @@ import { SessionChangedError } from "../src/device-session-context.ts";
 
 const url = (path: string) => `http://127.0.0.1:3011${path}`;
 
-function streamBody(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
-  return new ReadableStream({
-    start(controller) {
-      for (const chunk of chunks) controller.enqueue(chunk);
-      controller.close();
-    },
-  });
-}
-
 async function errorJson(response: Response | null) {
   expect(response).toBeInstanceOf(Response);
   return (await response!.json()) as {
