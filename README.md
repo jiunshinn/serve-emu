@@ -115,6 +115,7 @@ serve-emu --webcam-list
 | `--max-fps` | `60` | Cap source frame rate |
 | `--bit-rate` | `8000000` | H.264 bit rate in bps |
 | `--max-size` | `1280` | Downscale the longest edge to N pixels; `0` keeps native size. The emulator's software H.264 encoder sustains 60fps only below ~1 megapixel, hence the 1280 default |
+| `--host-capture` | off | macOS emulators only: capture native RGBA frames over token-authenticated emulator gRPC and encode with host VideoToolbox. Ignores `--max-size`; uses `--max-fps` and `--bit-rate`. Falls back to scrcpy on startup failure |
 | `--key-frame-interval` | `10` | Advisory keyframe interval; `0` omits this codec option, which leaves scrcpy's own 10 s default. The emulator's encoder counts it in frames at a nominal 60fps, so keyframes arrive later at lower frame rates. Clients get keyframes on demand via `reset-video` and never wait for a periodic one |
 | `--repeat-frame-ms` | `0` | Re-encode the previous frame after N ms without screen changes; `0` keeps the encoder default of 100ms. Android repeats a frame at most 10 times, so a static screen still stops sending frames |
 | `--max-devices` | `4` | Devices streamed at once: the selected one plus those opened under [`/d/<serial>/`](#several-devices) |
@@ -217,6 +218,22 @@ emulator @Pixel_8 -gpu host
 ```
 
 You can confirm the mode in the emulator log (`vulkan_mode_selected:host` = good; `lavapipe`/`llvmpipe` = software fallback) or via `adb shell dumpsys gfxinfo <pkg>` (look for a low "Janky frames" percentage while scrolling). For an extra fps margin, lower `--max-size` to stream at a smaller resolution.
+
+On macOS, `serve-emu --host-capture --avd <name>` opts into host-side H.264
+encoding instead of the emulator's software encoder. It requires Xcode Command
+Line Tools (`xcrun swiftc`); the Swift helper is compiled and cached on first
+use. scrcpy still supplies input control. The emulator is launched with a free
+gRPC port and token authentication, including launches through `/api/avds/start`.
+For an already running emulator, enable its token-authenticated gRPC endpoint
+at launch (`-grpc <port> -grpc-use-token`). Discovery uses the emulator's private
+`pid_<pid>.ini` registration; unauthenticated endpoints are never used.
+
+Host capture streams at native display resolution, including rotation and fold
+size changes, and ignores `--max-size` (also in stream-quality updates). The
+encoder uses `--max-fps` and `--bit-rate`. Physical devices and other platforms
+continue using scrcpy. A host-capture startup failure logs a reason and falls
+back to scrcpy. `/health` reports `stream.capture` (`host` or `scrcpy`) and
+`hostCaptureFallbackReason` when applicable; no gRPC tokens are exposed.
 
 ## Camera
 

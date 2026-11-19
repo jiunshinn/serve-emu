@@ -438,6 +438,8 @@ describe("scrcpy async lifecycle", () => {
     expect(session.controlSocket as unknown).toBe(harness.state.sockets[0]);
     expect(session.meta.deviceName).toBe("Lifecycle Device");
     expect(await session.readFrame()).toBeNull();
+    for (let i = 0; i < 33; i++) harness.state.sockets[0]!.arrive(Buffer.alloc(1024 * 1024));
+    expect(harness.state.sockets[0]!.destroyed).toBe(false);
     await session.close();
     expect(harness.state.sockets[0]!.destroyed).toBe(true);
   });

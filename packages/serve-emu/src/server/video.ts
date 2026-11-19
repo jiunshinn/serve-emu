@@ -129,7 +129,10 @@ export function createVideoPipeline(deps: {
     // Priority: a reset must not wait behind a long swipe (the next step
     // boundary is at most ~20 ms away), and it is excluded from the depth
     // limit so a full gesture queue cannot block it.
-    const accepted = context.inputQueue.enqueuePacket(resetVideoPacket(), {
+    const accepted = context.scrcpy.requestKeyFrame ? (() => {
+      context.scrcpy.requestKeyFrame();
+      return { completion: Promise.resolve({ status: "completed" as const }) };
+    })() : context.inputQueue.enqueuePacket(resetVideoPacket(), {
       coalesceKey: "reset-video",
       priority: true,
     });
@@ -158,6 +161,11 @@ export function createVideoPipeline(deps: {
           return false;
         }
         try {
+          if (context.scrcpy.requestKeyFrame) {
+            context.scrcpy.requestKeyFrame();
+            context.noteVideoReset(reason, now);
+            return true;
+          }
           const accepted = context.inputQueue.enqueuePacket(
             resetVideoPacket(),
             { coalesceKey: "reset-video", priority: true },
@@ -341,7 +349,7 @@ export function createVideoPipeline(deps: {
       ) {
         return;
       }
-      if (!isAbnormalExit(code, signal)) return;
+      if (!isAbnormalExit(code, signal) && context.scrcpy.transport !== "host-capture") return;
       const { reason, ...detail } = procExitDetail(code, signal);
       markTerminal(context, "error", reason, detail);
     });
@@ -358,6 +366,13 @@ export function createVideoPipeline(deps: {
         );
       }
     });
+    if (context.scrcpy.transport === "host-capture") {
+      context.scrcpy.controlSocket.once("close", () => {
+        if (!isStopping() && sessions.current === context && !context.signal.aborted) {
+          markTerminal(context, "error", "scrcpy control socket closed");
+        }
+      });
+    }
   };
 
   const activateContext = (context: DeviceContext) => {

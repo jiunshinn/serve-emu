@@ -119,6 +119,7 @@ describe("API contracts", () => {
       lastError: null,
     };
     const health = {
+      stream: { capture: "scrcpy" },
       ok: true,
       status: "streaming",
       serial: "emulator-5554",

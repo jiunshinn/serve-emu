@@ -41,7 +41,25 @@ byte followed by the 64-byte device name, with no codec metadata or video
 preamble. Its session has zero dimensions until a video provider supplies
 them, and `readFrame()` returns `null`.
 
-## Host encoder helper (not yet wired into capture)
+## Host capture
+
+`--host-capture` opts macOS emulators into token-authenticated gRPC capture.
+Discovery matches live `pid_<pid>.ini` registrations by `port.serial` in
+`~/Library/Caches/TemporaryItems/avd/running/`. Linux discovery uses
+`$XDG_RUNTIME_DIR/avd/running`, though host encoding is macOS-only. Both
+`grpc.port` and `grpc.token` are required. The token is sent only in the
+HTTP/2 bearer header, never in public diagnostics.
+
+The screenshot RPC uses `ImageFormat` RGBA8888 with native dimensions and
+MMAP transport pointing at a private, 64-MiB file. Each image message supplies
+dimensions, rotation, sequence and timestamp. Messages are reassembled with
+a chunk queue and capped at 1 MiB; pixels stay in the mapped file. Size changes
+restart the encoder and emit a session packet before the new codec config.
+The scrcpy session remains control-only, using the native display dimensions
+for touch coordinates. Startup failures fall back to standard scrcpy capture;
+runtime failures follow the normal session terminal/recovery path.
+
+### Host encoder helper
 
 `native/host-encoder.swift` is compiled on demand using `xcrun swiftc -O`.
 The executable is cached under `~/.cache/serve-emu`, keyed by the source hash

@@ -13,7 +13,7 @@ export function createEmulatorRegistry(deps: {
   startEmulator: typeof startEmulator;
   stopEmulator: typeof stopEmulator;
   /** The CLI's emulator binary, `-gpu`, and window, for every launch here. */
-  settings?: Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window">;
+  settings?: Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window" | "hostCapture">;
 }) {
   const {
     startEmulator: startEmulatorProcess,

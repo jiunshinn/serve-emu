@@ -29,7 +29,9 @@ type ScrcpyMeta = {
 type ScrcpyProtocol = 3 | 4;
 
 export type ScrcpySession = {
-  transport: "scrcpy";
+  transport: "scrcpy" | "host-capture";
+  hostCaptureFallbackReason?: string;
+  requestKeyFrame?: () => void;
   meta: ScrcpyMeta;
   protocol: ScrcpyProtocol;
   videoReader: FramedReader;
@@ -710,9 +712,11 @@ export class FramedReader {
   }[] = [];
   private err: ScrcpyStreamError | null = null;
   private ended = false;
+  private discarding = false;
 
   constructor(public readonly sock: Socket) {
     sock.on("data", (d: Buffer) => {
+      if (this.discarding) return;
       if (this.total + d.length > MAX_READER_BUFFER_BYTES) {
         this.fail(
           new ScrcpyStreamError(
@@ -810,6 +814,14 @@ export class FramedReader {
     this.chunks.unshift(data);
     this.total += data.length;
     this.flush();
+  }
+
+  /** Drain device-to-host control messages after a control-only handshake. */
+  discard(): void {
+    this.discarding = true;
+    this.chunks.length = 0;
+    this.firstChunkOffset = 0;
+    this.total = 0;
   }
 
   private consume(n: number): Buffer {
@@ -1282,6 +1294,7 @@ export async function startScrcpy(
       if (deviceMeta[0] !== 0) {
         throw new ScrcpyStreamError("protocol-parse", "Invalid scrcpy dummy byte");
       }
+      reader.discard();
       startupComplete = true;
       return {
         transport: "scrcpy",
