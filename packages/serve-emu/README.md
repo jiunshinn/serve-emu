@@ -824,6 +824,15 @@ bun run --filter serve-emu bench:server -- \
 bun run --filter serve-emu bench:server -- --serials emulator-5554 "--server-args=--max-size 720"
 ```
 
+`--single-server` starts one server for all `--serials` (with `--max-devices`
+set to their count) and streams each device under `/d/<serial>/`, so you can
+compare it with one server per device:
+
+```sh
+bun run --filter serve-emu bench:server -- \
+  --serials emulator-5554,emulator-5556,emulator-5558 --clients 1,5 --single-server
+```
+
 ## Package Rename
 
 The project and npm package are named `serve-emu` again, starting with version
