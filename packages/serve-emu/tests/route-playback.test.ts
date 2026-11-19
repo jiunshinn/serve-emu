@@ -4,7 +4,6 @@ import { SessionChangedError } from "../src/device-session-context.ts";
 import {
   RoutePlayback,
   RoutePlaybackConflictError,
-  type RoutePlaybackClock,
   type RoutePlaybackRequest,
 } from "../src/route-playback.ts";
 import {
