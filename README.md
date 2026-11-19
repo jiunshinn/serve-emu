@@ -97,7 +97,7 @@ bun run packages/serve-emu/src/cli.ts
 ## CLI
 
 ```text
-serve-emu [-p <port>] [--host <addr>] [--token <secret>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms] [--max-devices N] [--max-apk-upload-bytes N] [--max-media-upload-bytes N]
+serve-emu [-p <port>] [--host <addr>] [--token <secret>] [-s <serial>] [--allow-shared-device] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms] [--max-devices N] [--max-apk-upload-bytes N] [--max-media-upload-bytes N]
 serve-emu --avd <name> [--gpu <mode>] [--restart-avd] [--no-emulator-window] [--camera-back <mode>] [--camera-front <mode>]
 serve-emu --avd-list
 serve-emu --running-avds
@@ -112,6 +112,7 @@ serve-emu --webcam-list
 | `--unsafe-no-auth` | false | Allow a non-loopback bind with **no** authentication (dangerous) |
 | `--allowed-host` | none | Without `--token`, also serve requests for this host name (repeatable; no wildcards), e.g. behind a reverse proxy. IP addresses, `localhost`, and `--host` are always served |
 | `-s, --serial` | auto | adb device serial; required when multiple devices are online |
+| `--allow-shared-device` | false | Stream a device even when another scrcpy session (another `serve-emu` or a desktop `scrcpy`) already encodes it. Without it, serve-emu refuses, because every extra session slows every stream |
 | `--max-fps` | `60` | Cap source frame rate |
 | `--bit-rate` | `8000000` | H.264 bit rate in bps |
 | `--max-size` | `1280` | Downscale the longest edge to N pixels; `0` keeps native size. The emulator's software H.264 encoder sustains 60fps only below ~1 megapixel, hence the 1280 default |
@@ -368,6 +369,15 @@ device's `/proc/net/unix` 2 s after it starts and every 10 s after that, with
 one bounded `adb shell` call. `/health` reports the last answer and never
 waits for a probe. `contention` is `null` until the first probe answers. The
 UI shows a warning in the status bar while the count is above zero.
+
+Before it opens a stream (at startup, on a device switch, or under
+`/d/<serial>/`), serve-emu reads the same table and refuses a device that
+another scrcpy session already encodes. At startup the CLI exits with an
+error; through the API the request gets `409` with reason `device-in-use`.
+The server's own sessions never count, so recovery and quality changes
+reopen as usual. If adb cannot read the table, the stream opens anyway.
+`--allow-shared-device` turns the check off; the `/health` count and warning
+stay.
 
 ### Several Devices
 

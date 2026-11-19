@@ -170,7 +170,16 @@ describe("emulator window (#74)", () => {
       maxFps: 30,
       signal,
       emulator: { gpu: "swiftshader_indirect", window: false },
+      refuseSharedDevice: true,
     });
+    expect(
+      serverOptions({ ...values, "allow-shared-device": true }, settings, {
+        serial: "emulator-5560",
+        host: "127.0.0.1",
+        token: undefined,
+        signal,
+      }).refuseSharedDevice,
+    ).toBe(false);
   });
 
   test("/api/avds/start and the AVD list use the CLI's emulator settings", async () => {
