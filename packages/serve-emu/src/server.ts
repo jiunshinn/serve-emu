@@ -457,11 +457,14 @@ export async function startServer(
         context.serial,
         (serial, generation, signal) =>
           prepareSelection(serial, generation, signal, context.recorder, next),
-        activate,
+        // Publish the quality with its stream: a later patch merges onto it.
+        (published) => {
+          activate(published);
+          quality = next;
+        },
         undefined,
         context,
       );
-      quality = next;
       logReady(switched);
       return qualityResponse(switched);
     };
