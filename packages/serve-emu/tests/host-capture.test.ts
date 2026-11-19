@@ -64,9 +64,11 @@ test("native frames become session/config/video packets and size changes restart
   const startEncoder = h.deps.startEncoder!;
   h.deps.startEncoder = async (opts) => {
     expect(opts.keyFrameInterval).toBe(3);
+    expect(opts.maxFps).toBe(15);
+    expect(opts.bitRate).toBe(1_000_000);
     return startEncoder(opts);
   };
-  const session = await startHostCaptureSession({ serial: "emulator-5554", maxSize: 1, keyFrameInterval: 3 }, h.deps);
+  const session = await startHostCaptureSession({ serial: "emulator-5554", maxSize: 1, keyFrameInterval: 3, maxFps: 15, bitRate: 1_000_000 }, h.deps);
   try {
     expect(h.video).toBe(false);
     expect(session.meta).toMatchObject({ width: 64, height: 32 });

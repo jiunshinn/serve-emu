@@ -90,6 +90,12 @@ test.each([-1, NaN, Infinity])("rejects invalid keyframe interval %s before buil
   })).rejects.toThrow("Invalid host encoder options");
 });
 
+test.each([0, -1, NaN, Infinity, 1.5])("rejects invalid frame-rate cap %s before building", async (maxFps) => {
+  await expect(startHostEncoder({ mmapPath: "pixels", width: 64, height: 64, bitRate: 1000, maxFps }, {
+    build: async () => { throw new Error("unexpected build"); },
+  })).rejects.toThrow("Invalid host encoder options");
+});
+
 test("propagates build errors", async () => {
   expect(startHostEncoder(
     { mmapPath: "pixels", width: 64, height: 64, bitRate: 1000, maxFps: 60 },
@@ -204,6 +210,61 @@ test.skipIf(process.platform !== "darwin" || !ffmpeg)("real VideoToolbox encoder
     expect(decoded[bottom + 1]!).toBeLessThan(50);
     expect(decoded[bottom + 2]!).toBeGreaterThan(200);
   } finally { await encoder.close(); await draining; await rm(directory, { recursive: true, force: true }); }
+}, 60_000);
+
+test.skipIf(process.platform !== "darwin").each([2, 20])("real VideoToolbox encoder caps burst, requested-keyframe and idle submissions at %s fps and flushes the latest pixels", async (maxFps) => {
+  const directory = await mkdtemp(join(tmpdir(), "host-encoder-fps-"));
+  const path = join(directory, "pixels");
+  const pixels = Buffer.alloc(64 * 64 * 4, 255);
+  await writeFile(path, pixels);
+  const encoder = await startHostEncoder({ mmapPath: path, width: 64, height: 64, bitRate: 500_000, maxFps });
+  try {
+    const packets = encoder.packets();
+    encoder.requestKeyFrame();
+    encoder.pushFrame();
+    const config = (await packets.next()).value!;
+    const first = (await packets.next()).value!;
+    expect(first.isKey).toBe(true);
+    if (maxFps === 2) {
+      for (let i = 0; i < pixels.length; i += 4) { pixels[i + 1] = 0; pixels[i + 2] = 0; }
+      await writeFile(path, pixels, { flag: "r+" });
+      encoder.pushFrame();
+      await Bun.sleep(20);
+    }
+    for (let i = 0; i < pixels.length; i += 4) { pixels[i] = 0; pixels[i + 1] = 0; pixels[i + 2] = 255; }
+    await writeFile(path, pixels, { flag: "r+" });
+    for (let i = 0; i < 20; i++) encoder.pushFrame();
+    const frames = [first];
+    const encoded = [config.data, first.data];
+    const intervalUs = Math.ceil(1_000_000 / maxFps);
+    for await (const packet of packets) {
+      encoded.push(packet.data);
+      if (packet.isConfig) continue;
+      frames.push(packet);
+      if (frames.length === 2) encoder.requestKeyFrame();
+      if (packet.pts - first.pts >= BigInt(intervalUs + 2 * Math.max(200_000, intervalUs))) break;
+    }
+    expect(frames.length).toBeGreaterThanOrEqual(4);
+    for (let i = 1; i < frames.length; i++) {
+      expect(Number(frames[i]!.pts - frames[i - 1]!.pts)).toBeGreaterThanOrEqual(intervalUs - 1);
+    }
+    expect(Number(frames[1]!.pts - first.pts)).toBeLessThan(intervalUs + 150_000);
+    expect(frames.slice(2).some((frame) => frame.isKey)).toBe(true);
+    if (ffmpeg) {
+      const decoder = Bun.spawn([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "h264", "-i", "pipe:0", "-frames:v", "2", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"], {
+        stdin: Buffer.concat(encoded), stdout: "pipe", stderr: "pipe",
+      });
+      const [raw, diagnostics, code] = await Promise.all([new Response(decoder.stdout).arrayBuffer(), new Response(decoder.stderr).text(), decoder.exited]);
+      expect(diagnostics).toBe("");
+      expect(code).toBe(0);
+      const decoded = new Uint8Array(raw);
+      expect(decoded.length).toBe(2 * 64 * 64 * 3);
+      const latest = 64 * 64 * 3;
+      expect(decoded[latest]!).toBeLessThan(50);
+      expect(decoded[latest + 1]!).toBeLessThan(50);
+      expect(decoded[latest + 2]!).toBeGreaterThan(200);
+    }
+  } finally { await encoder.close(); await rm(directory, { recursive: true, force: true }); }
 }, 60_000);
 
 test.skipIf(process.platform !== "darwin")("real VideoToolbox encoder survives native-resolution bursts and still honours keyframe requests", async () => {

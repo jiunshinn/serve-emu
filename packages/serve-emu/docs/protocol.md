@@ -73,7 +73,13 @@ RGBA8888 pixels.
 The helper preserves the MMAP row order while converting RGBA to BGRA.
 The helper copies and converts pixels to top-down BGRA on an `f` stdin line.
 A `k` line requests a keyframe, immediately encoding the last copied frame
-when available. After 200 ms without an encode it repeats that frame.
+when available and the frame-rate cap permits it. Every submission, including
+requested keyframes, is spaced at least `1 / maxFps` seconds apart. New frames
+are copied immediately; faster arrivals replace a single pending frame, which
+is encoded at the next permitted time even if no more screenshots arrive.
+After `max(200 ms, 1 / maxFps)` without an encode it repeats the last frame,
+so the idle floor never exceeds the cap. CLI and per-stream quality caps use
+the same encoder setting.
 
 Stdout packets contain a `u32` payload length, `u8` flags (bit 0 keyframe,
 bit 1 configuration), `u64` presentation timestamp in microseconds and an

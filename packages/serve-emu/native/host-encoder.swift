@@ -108,10 +108,14 @@ check(VTCompressionSessionPrepareToEncodeFrames(session), "Prepare encoder")
 var lastFrame: CVPixelBuffer?
 var lastEncode = DispatchTime.now().uptimeNanoseconds
 let epoch = lastEncode
+let frameInterval = UInt64(ceil(1_000_000_000 / Double(fps)))
+let idleInterval = max(200_000_000, frameInterval)
+var encodePending = false
 var previousPTS: UInt64 = 0
 func encode() {
     guard let frame = lastFrame else { return }
     let now = DispatchTime.now().uptimeNanoseconds
+    guard previousPTS == 0 || now - lastEncode >= frameInterval else { return }
     let pts = max(previousPTS + 1, (now - epoch) / 1000)
     previousPTS = pts
     keyFrameLock.lock()
@@ -119,11 +123,16 @@ func encode() {
     keyFrameLock.unlock()
     check(VTCompressionSessionEncodeFrame(session, imageBuffer: frame, presentationTimeStamp: CMTime(value: Int64(pts), timescale: 1_000_000), duration: .invalid, frameProperties: properties, sourceFrameRefcon: nil, infoFlagsOut: nil), "Encode frame")
     lastEncode = now
+    encodePending = false
 }
 
 var input = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
 while true {
-    let result = poll(&input, 1, 20)
+    let elapsed = DispatchTime.now().uptimeNanoseconds - lastEncode
+    let interval = encodePending ? frameInterval : idleInterval
+    let remaining = elapsed < interval ? interval - elapsed : 0
+    let timeout = lastFrame == nil ? 20 : Int32(min(20, (remaining + 999_999) / 1_000_000))
+    let result = poll(&input, 1, timeout)
     if result < 0 { if errno == EINTR { continue }; fail("stdin poll failed") }
     if result > 0 {
         var command: UInt8 = 0
@@ -142,15 +151,15 @@ while true {
             guard vImagePermuteChannels_ARGB8888(&source, &target, map, vImage_Flags(kvImageNoFlags)) == kvImageNoError else { fail("Convert pixels failed") }
             check(CVPixelBufferUnlockBaseAddress(pixel, []), "Unlock pixels")
             lastFrame = pixel
-            encode()
+            encodePending = true
         } else if command == 107 {
             keyFrameLock.lock()
             forceKey = true
             keyFrameRequestedAfterPTS = previousPTS
             keyFrameLock.unlock()
-            encode()
+            encodePending = true
         }
     }
-    if DispatchTime.now().uptimeNanoseconds - lastEncode >= 200_000_000 { encode() }
+    if encodePending || DispatchTime.now().uptimeNanoseconds - lastEncode >= idleInterval { encode() }
 }
 check(VTCompressionSessionCompleteFrames(session, untilPresentationTimeStamp: .invalid), "Flush encoder")
