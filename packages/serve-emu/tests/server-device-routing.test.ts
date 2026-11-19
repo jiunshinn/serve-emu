@@ -13,6 +13,7 @@ import {
 /** Fresh fake scrcpy per open, so a prefixed stream never shares one. */
 async function multiDeviceHarness(
   options: Parameters<typeof createHarness>[0] = {},
+  overrides: Parameters<typeof createHarness>[1] = {},
 ) {
   const opened: FakeScrcpy[] = [];
   const h = await createHarness(
@@ -23,6 +24,7 @@ async function multiDeviceHarness(
         opened.push(session);
         return session;
       },
+      ...overrides,
     },
   );
   const opensOf = (serial: string) => opened.filter((s) => s.serial === serial);
@@ -156,6 +158,29 @@ describe("startServer multi-device routing", () => {
     expect(res.status).toBe(409);
     expect(res.body.error).toMatchObject({ code: "conflict", reason: "device-pinned" });
     expect(h.opensOf("C")).toHaveLength(0);
+  });
+
+  test("a prefixed stream refuses to boot an emulator it would select", async () => {
+    const launched: string[] = [];
+    const h = await multiDeviceHarness(
+      {},
+      {
+        startEmulator: async (opts) => {
+          launched.push(opts.avd);
+          throw new Error("must not launch");
+        },
+      },
+    );
+    const res = await json(
+      h.request("/d/B/api/avds/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avd: "pixel" }),
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatchObject({ reason: "device-pinned" });
+    expect(launched).toEqual([]);
   });
 
   test("selecting a prefixed device closes its prefixed stream", async () => {

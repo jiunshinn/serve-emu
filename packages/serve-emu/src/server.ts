@@ -383,9 +383,7 @@ export async function startServer(
       importMediaFile: dependencies.importMediaFile ?? importMediaFile,
     });
 
-    const switchSession = async (
-      serial: string,
-    ): Promise<DeviceSelectionResponse> => {
+    const assertCanSwitch = () => {
       if (pinnedSerial !== null) {
         throw new ApiError(
           409,
@@ -394,6 +392,11 @@ export async function startServer(
           { reason: "device-pinned" },
         );
       }
+    };
+    const switchSession = async (
+      serial: string,
+    ): Promise<DeviceSelectionResponse> => {
+      assertCanSwitch();
       // Uploads for the previous generation are cancelled by its context
       // cleanup (see createContext) once the switch commits. Cancelling here,
       // before the candidate is prepared, would strand the still-current
@@ -422,6 +425,7 @@ export async function startServer(
       listDevices,
       avds: dependencies.avds ?? avdManager,
       switchSession,
+      assertCanSwitch,
       launchEmulator: emulators.launchEmulator,
       listActiveAvds,
       killEmulator: emulators.killEmulator,
