@@ -135,6 +135,50 @@ test.skipIf(process.platform !== "darwin")("real VideoToolbox encoder emits conf
   } finally { await encoder.close(); await rm(directory, { recursive: true, force: true }); }
 }, 60_000);
 
+const ffmpeg = Bun.which("ffmpeg");
+test.skipIf(process.platform !== "darwin" || !ffmpeg)("real VideoToolbox encoder preserves top-red bottom-blue MMAP orientation (requires ffmpeg)", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "host-encoder-orientation-"));
+  const path = join(directory, "pixels");
+  const width = 64;
+  const height = 64;
+  const pixels = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const offset = (y * width + x) * 4;
+      pixels[offset + (y < height / 2 ? 0 : 2)] = 255;
+      pixels[offset + 3] = 255;
+    }
+  }
+  await writeFile(path, pixels);
+  const encoder = await startHostEncoder({ mmapPath: path, width, height, bitRate: 500_000, maxFps: 60 });
+  let draining: Promise<void> | undefined;
+  try {
+    const packets = encoder.packets();
+    encoder.pushFrame();
+    const config = (await packets.next()).value!;
+    const key = (await packets.next()).value!;
+    draining = (async () => { while (!(await packets.next()).done) {} })();
+    expect(config.isConfig).toBe(true);
+    expect(key.isKey).toBe(true);
+    const decoder = Bun.spawn([ffmpeg!, "-hide_banner", "-loglevel", "error", "-f", "h264", "-i", "pipe:0", "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"], {
+      stdin: Buffer.concat([config.data, key.data]), stdout: "pipe", stderr: "pipe",
+    });
+    const [raw, diagnostics, code] = await Promise.all([new Response(decoder.stdout).arrayBuffer(), new Response(decoder.stderr).text(), decoder.exited]);
+    expect(diagnostics).toBe("");
+    expect(code).toBe(0);
+    const decoded = new Uint8Array(raw);
+    expect(decoded.length).toBe(width * height * 3);
+    const top = (height / 4 * width + width / 2) * 3;
+    const bottom = (height * 3 / 4 * width + width / 2) * 3;
+    expect(decoded[top]!).toBeGreaterThan(200);
+    expect(decoded[top + 1]!).toBeLessThan(50);
+    expect(decoded[top + 2]!).toBeLessThan(50);
+    expect(decoded[bottom]!).toBeLessThan(50);
+    expect(decoded[bottom + 1]!).toBeLessThan(50);
+    expect(decoded[bottom + 2]!).toBeGreaterThan(200);
+  } finally { await encoder.close(); await draining; await rm(directory, { recursive: true, force: true }); }
+}, 60_000);
+
 test.skipIf(process.platform !== "darwin")("real VideoToolbox encoder survives native-resolution bursts and still honours keyframe requests", async () => {
   const directory = await mkdtemp(join(tmpdir(), "host-encoder-burst-"));
   const path = join(directory, "pixels");

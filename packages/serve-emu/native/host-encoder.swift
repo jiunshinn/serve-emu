@@ -135,9 +135,8 @@ while true {
             guard let destination = CVPixelBufferGetBaseAddress(pixel) else { fail("No pixel storage") }
             var source = vImage_Buffer(data: mapped, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: width * 4)
             var target = vImage_Buffer(data: destination, height: vImagePixelCount(height), width: vImagePixelCount(width), rowBytes: CVPixelBufferGetBytesPerRow(pixel))
-            guard vImageVerticalReflect_ARGB8888(&source, &target, vImage_Flags(kvImageNoFlags)) == kvImageNoError else { fail("Flip pixels failed") }
             let map: [UInt8] = [2, 1, 0, 3]
-            guard vImagePermuteChannels_ARGB8888(&target, &target, map, vImage_Flags(kvImageNoFlags)) == kvImageNoError else { fail("Convert pixels failed") }
+            guard vImagePermuteChannels_ARGB8888(&source, &target, map, vImage_Flags(kvImageNoFlags)) == kvImageNoError else { fail("Convert pixels failed") }
             check(CVPixelBufferUnlockBaseAddress(pixel, []), "Unlock pixels")
             lastFrame = pixel
             encode()
