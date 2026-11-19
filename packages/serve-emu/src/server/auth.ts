@@ -5,6 +5,7 @@ import {
   fetchMetadataAllowed,
   normalizeHostname,
 } from "./request-policy.ts";
+import { splitDevicePath } from "./device-path.ts";
 
 const SESSION_COOKIE = "semu_session";
 
@@ -152,7 +153,7 @@ export function createRequestGate(options: {
     // whose Origin does not match the host. Applied even without auth so the
     // control channel is never open to arbitrary cross-origin pages.
     if (
-      url.pathname === "/ws" ||
+      splitDevicePath(url.pathname)?.path === "/ws" ||
       (req.method !== "GET" && req.method !== "HEAD")
     ) {
       if (!originAllowed(req)) return forbiddenResponse("forbidden origin");

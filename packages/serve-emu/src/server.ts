@@ -10,7 +10,7 @@ import { createApiRouter } from "./api/router.ts";
 import type { ApiDependencies } from "./api/dependencies.ts";
 import { avdManager, type AvdManager } from "./avd-manager.ts";
 import { createDeviceService, type DeviceService } from "./device-service.ts";
-import { apiErrorResponse } from "./api/api-error.ts";
+import { ApiError, apiErrorResponse } from "./api/api-error.ts";
 import { toApiError, type ApiErrorFallback } from "./api/error-mapping.ts";
 import { MAX_ROUTE_BODY_BYTES } from "./shared/route-limits.ts";
 import { createApiRoutes } from "./api/routes/index.ts";
@@ -43,6 +43,7 @@ import { createDeviceRecovery } from "./server/device-recovery.ts";
 import { createEmulatorRegistry } from "./server/emulators.ts";
 import { buildHealthSnapshot } from "./server/health.ts";
 import { createSessionServices } from "./server/session-services.ts";
+import { isServicePath, splitDevicePath } from "./server/device-path.ts";
 import { serveStaticFile } from "./server/static.ts";
 import type { Client, DeviceContext, WsData } from "./server/types.ts";
 import {
@@ -106,9 +107,16 @@ export type ServerOpts = {
    * The CLI turns it on; off, `/health` reports `contention: null`.
    */
   probeDeviceContention?: boolean;
+  /** Devices streamed at once: the selected one plus `/d/<serial>/` ones. */
+  maxDevices?: number;
+  /** A `/d/<serial>/` stream with no viewer or request closes after this. */
+  idleDeviceMs?: number;
 };
 
 export const DEFAULT_HOST = "127.0.0.1";
+export const DEFAULT_MAX_DEVICES = 4;
+const DEFAULT_IDLE_DEVICE_MS = 60_000;
+const IDLE_SWEEP_MS = 5_000;
 export {
   DEFAULT_MAX_ACTIVE_UPLOADS,
   DEFAULT_MAX_APK_UPLOAD_BYTES,
@@ -282,77 +290,180 @@ export async function startServer(
       `scrcpy ready: ${meta.deviceName} • ${meta.codecId} • ${meta.width}×${meta.height}`,
     );
 
-  const sessions = new DeviceSessionManager(
-    await openContext(opts.serial, 0, opts.signal),
-  );
   const responseMetrics = new JsonResponseTracker([
     "health",
     "sessionPage",
     "sessionExport",
   ] as const);
   let stopRequested = false;
-  const deviceRecovery = createDeviceRecovery({
-    current: () => sessions.current,
-    reopen: async (failed) => {
-      const context = await sessions.switch(
-        failed.serial,
-        (serial, generation, signal) =>
-          prepareSelection(serial, generation, signal, failed.recorder),
-        activate,
-        failed,
-      );
-      logReady(context);
-    },
-    wait: dependencies.waitForDeviceRetry,
-  });
-  const video = createVideoPipeline({
-    sessions,
-    clock: recoveryClock,
-    isStopping: () => stopRequested,
-    onTerminated: deviceRecovery.start,
-  });
-  logReady(sessions.current);
-  // Activation starts a session's video and, for the CLI, its contention probe.
-  const activate = (context: DeviceContext) => {
-    video.activate(context);
-    if (opts.probeDeviceContention) {
-      startContentionProbe(context, { device, clock: recoveryClock });
-    }
-  };
+  const lifetime = new AbortController();
+  // Uploads are cancelled by generation, so every device's sessions draw
+  // generations from this one sequence.
+  let lastGeneration = 0;
+  const allocateGeneration = () => ++lastGeneration;
+  const maxDevices = opts.maxDevices ?? DEFAULT_MAX_DEVICES;
+  if (!Number.isInteger(maxDevices) || maxDevices < 1) {
+    throw new TypeError("maxDevices must be a positive integer");
+  }
+  const idleDeviceMs = opts.idleDeviceMs ?? DEFAULT_IDLE_DEVICE_MS;
+  /** Devices streamed under `/d/<serial>/`, besides the selected one. */
+  const pinned = new Map<
+    string,
+    { slot: Promise<DeviceSlot>; ready: DeviceSlot | null }
+  >();
 
-  const health = (context = sessions.current) => {
-    const now = recoveryClock.now();
-    return buildHealthSnapshot(context, {
-      nowMs: now,
-      recovery: video.recovery(context)?.snapshot(now) ?? null,
-      idleResetBackoffMs: RESET_SETTLE_MS,
-      baseStallResetMs: SOURCE_STALL_RESET_MS,
-      responseMetrics: responseMetrics.snapshot(),
-      recovering: deviceRecovery.isRecovering(context),
-      uploads: uploads.snapshot(),
-      executor: getExecSnapshot(),
+  type DeviceSlot = ReturnType<typeof createSlot>;
+  /**
+   * One device's session manager, recovery, video, and endpoints. The
+   * selected device's slot has no `pinnedSerial` and can switch devices; a
+   * `/d/<serial>/` slot stays on its serial.
+   */
+  function createSlot(initial: DeviceContext, pinnedSerial: string | null) {
+    const sessions = new DeviceSessionManager(initial, allocateGeneration);
+    let closing = false;
+    const deviceRecovery = createDeviceRecovery({
+      current: () => sessions.current,
+      reopen: async (failed) => {
+        const context = await sessions.switch(
+          failed.serial,
+          (serial, generation, signal) =>
+            prepareSelection(serial, generation, signal, failed.recorder),
+          activate,
+          failed,
+        );
+        logReady(context);
+      },
+      wait: dependencies.waitForDeviceRetry,
     });
-  };
+    const video = createVideoPipeline({
+      sessions,
+      clock: recoveryClock,
+      isStopping: () => stopRequested || closing,
+      onTerminated: deviceRecovery.start,
+    });
+    // Activation starts a session's video and, for the CLI, its contention probe.
+    const activate = (context: DeviceContext) => {
+      video.activate(context);
+      if (opts.probeDeviceContention) {
+        startContentionProbe(context, { device, clock: recoveryClock });
+      }
+    };
 
-  const services = createSessionServices({
-    sessions,
-    maxJsonBodyBytes: MAX_JSON_BODY_BYTES,
-    loadAccessibility,
-    setLocation,
-    listDevices,
-    listAvds: () => availableAvds(emulatorSettings.emulatorPath),
-    listRunningAvds: listActiveAvds,
-  });
+    const health = (context = sessions.current) => {
+      const now = recoveryClock.now();
+      return buildHealthSnapshot(context, {
+        nowMs: now,
+        recovery: video.recovery(context)?.snapshot(now) ?? null,
+        idleResetBackoffMs: RESET_SETTLE_MS,
+        baseStallResetMs: SOURCE_STALL_RESET_MS,
+        responseMetrics: responseMetrics.snapshot(),
+        recovering: deviceRecovery.isRecovering(context),
+        uploads: uploads.snapshot(),
+        executor: getExecSnapshot(),
+      });
+    };
 
-  const uploadEndpoints = createUploadEndpoints({
-    uploads,
-    sessions,
-    maxApkUploadBytes: limits.maxApkUploadBytes,
-    maxMediaUploadBytes: limits.maxMediaUploadBytes,
-    stageUpload: dependencies.stageMultipartUpload ?? stageMultipartUpload,
-    installApk: dependencies.installApk ?? installApk,
-    importMediaFile: dependencies.importMediaFile ?? importMediaFile,
-  });
+    const services = createSessionServices({
+      sessions,
+      maxJsonBodyBytes: MAX_JSON_BODY_BYTES,
+      loadAccessibility,
+      setLocation,
+      listDevices,
+      listAvds: () => availableAvds(emulatorSettings.emulatorPath),
+      listRunningAvds: listActiveAvds,
+    });
+
+    const uploadEndpoints = createUploadEndpoints({
+      uploads,
+      sessions,
+      maxApkUploadBytes: limits.maxApkUploadBytes,
+      maxMediaUploadBytes: limits.maxMediaUploadBytes,
+      stageUpload: dependencies.stageMultipartUpload ?? stageMultipartUpload,
+      installApk: dependencies.installApk ?? installApk,
+      importMediaFile: dependencies.importMediaFile ?? importMediaFile,
+    });
+
+    const switchSession = async (
+      serial: string,
+    ): Promise<DeviceSelectionResponse> => {
+      if (pinnedSerial !== null) {
+        throw new ApiError(
+          409,
+          "conflict",
+          `This stream stays on ${pinnedSerial}; select devices without the /d/ prefix`,
+          { reason: "device-pinned" },
+        );
+      }
+      // Uploads for the previous generation are cancelled by its context
+      // cleanup (see createContext) once the switch commits. Cancelling here,
+      // before the candidate is prepared, would strand the still-current
+      // session's uploads whenever the switch fails.
+      const context = await sessions.switch(serial, prepareSelection, activate);
+      logReady(context);
+      // The selected device now streams here; one scrcpy per device.
+      void closePinned(context.serial, "device selected");
+      return {
+        ok: true,
+        serial: context.serial,
+        generation: context.generation,
+        device: context.scrcpy.meta.deviceName,
+      };
+    };
+
+    const apiServices: Omit<
+      ApiDependencies,
+      "requestContext" | "srv" | "errorResponse"
+    > = {
+      ...services,
+      sessions,
+      MAX_JSON_BODY_BYTES,
+      MAX_ROUTE_BODY_BYTES,
+      device,
+      listDevices,
+      avds: dependencies.avds ?? avdManager,
+      switchSession,
+      launchEmulator: emulators.launchEmulator,
+      listActiveAvds,
+      killEmulator: emulators.killEmulator,
+      uploads: uploadEndpoints,
+      responseMetrics,
+    };
+
+    const ws = createWebSocketEndpoint({
+      sessions,
+      join: video.join,
+      enqueueGesture: services.enqueueGesture,
+      enqueueVideoReset: video.enqueueVideoReset,
+      health,
+    });
+
+    return {
+      sessions,
+      deviceRecovery,
+      health,
+      apiServices,
+      ws,
+      inFlight: 0,
+      lastActiveMs: Date.now(),
+      activate: () => activate(sessions.current),
+      /** Nothing watches or uses this device: no socket, request, or job. */
+      idle(): boolean {
+        const context = sessions.current;
+        return (
+          this.inFlight === 0 &&
+          context.clients.size === 0 &&
+          context.logcat.snapshot().subscribers === 0 &&
+          context.route.snapshot().status !== "running" &&
+          !context.recorder.isReplaying
+        );
+      },
+      async close(reason: string) {
+        closing = true;
+        deviceRecovery.stop();
+        await sessions.close(reason);
+      },
+    };
+  }
 
   async function prepareSelection(
     targetSerial: string,
@@ -371,59 +482,157 @@ export async function startServer(
     return openContext(targetSerial, generation, signal, previousRecorder);
   }
 
-  const switchSession = async (
-    serial: string,
-  ): Promise<DeviceSelectionResponse> => {
-    // Uploads for the previous generation are cancelled by its context
-    // cleanup (see createContext) once the switch commits. Cancelling here,
-    // before the candidate is prepared, would strand the still-current
-    // session's uploads whenever the switch fails.
-    const context = await sessions.switch(serial, prepareSelection, activate);
+  const openPinned = async (serial: string): Promise<DeviceSlot> => {
+    const signal = lifetime.signal;
+    const device = (await listDevices({ signal })).find(
+      (candidate) => candidate.serial === serial,
+    );
+    if (!device) {
+      throw new ApiError(404, "not_found", "Unknown adb device", {
+        reason: "unknown-device",
+      });
+    }
+    if (device.state !== "device") {
+      throw new ApiError(409, "conflict", `Device is ${device.state}, not ready`, {
+        reason: "device-not-ready",
+      });
+    }
+    let context: DeviceContext;
+    try {
+      context = await openContext(serial, allocateGeneration(), signal);
+    } catch (cause) {
+      throw new ApiError(503, "service_unavailable", "Could not start the device stream", {
+        cause,
+        reason: "device-open-failed",
+      });
+    }
+    const slot = createSlot(context, serial);
+    if (stopRequested) {
+      await slot.close("server stopping");
+      throw new ApiError(503, "service_unavailable", "Server is stopping");
+    }
+    try {
+      slot.activate();
+    } catch (cause) {
+      await slot.close("device session activation failed");
+      throw new ApiError(503, "service_unavailable", "Could not start the device stream", {
+        cause,
+        reason: "device-open-failed",
+      });
+    }
     logReady(context);
-    return {
-      ok: true,
-      serial: context.serial,
-      generation: context.generation,
-      device: context.scrcpy.meta.deviceName,
-    };
+    return slot;
   };
 
+  /** The slot streaming `serial`, opening one on first use. */
+  const resolveSlot = (serial: string): Promise<DeviceSlot> => {
+    if (primary.sessions.current.serial === serial) return Promise.resolve(primary);
+    const existing = pinned.get(serial);
+    if (existing) return existing.slot;
+    if (stopRequested) {
+      return Promise.reject(
+        new ApiError(503, "service_unavailable", "Server is stopping"),
+      );
+    }
+    if (pinned.size + 1 >= maxDevices) {
+      return Promise.reject(
+        new ApiError(
+          503,
+          "service_unavailable",
+          `serve-emu streams at most ${maxDevices} devices at once`,
+          { reason: "device-limit" },
+        ),
+      );
+    }
+    const entry = { slot: openPinned(serial), ready: null as DeviceSlot | null };
+    pinned.set(serial, entry);
+    entry.slot.then(
+      (slot) => {
+        entry.ready = slot;
+      },
+      () => {
+        if (pinned.get(serial) === entry) pinned.delete(serial);
+      },
+    );
+    return entry.slot;
+  };
+
+  const closePinned = async (serial: string, reason: string) => {
+    const entry = pinned.get(serial);
+    if (!entry) return;
+    pinned.delete(serial);
+    const slot = await entry.slot.catch(() => null);
+    await slot?.close(reason);
+  };
+
+  const idleSweep = setInterval(() => {
+    const now = Date.now();
+    for (const [serial, { ready: slot }] of pinned) {
+      if (!slot) continue;
+      if (!slot.idle()) slot.lastActiveMs = now;
+      else if (now - slot.lastActiveMs >= idleDeviceMs) {
+        void closePinned(serial, "no viewers");
+      }
+    }
+  }, Math.min(idleDeviceMs, IDLE_SWEEP_MS));
+  idleSweep.unref?.();
+
+  const primary = createSlot(
+    await openContext(opts.serial, lastGeneration, opts.signal).catch(
+      (err: unknown) => {
+        clearInterval(idleSweep);
+        throw err;
+      },
+    ),
+    null,
+  );
+  const sessions = primary.sessions;
+  logReady(sessions.current);
+
   try {
-    activate(sessions.current);
+    primary.activate();
   } catch (err) {
     stopRequested = true;
-    deviceRecovery.stop();
+    clearInterval(idleSweep);
+    primary.deviceRecovery.stop();
     await sessions.close("server startup failed");
     throw err;
   }
 
   const apiRouter = createApiRouter(createApiRoutes());
-  const apiServices: Omit<
-    ApiDependencies,
-    "requestContext" | "srv" | "errorResponse"
-  > = {
-    ...services,
-    sessions,
-    MAX_JSON_BODY_BYTES,
-    MAX_ROUTE_BODY_BYTES,
-    device,
-    listDevices,
-    avds: dependencies.avds ?? avdManager,
-    switchSession,
-    launchEmulator: emulators.launchEmulator,
-    listActiveAvds,
-    killEmulator: emulators.killEmulator,
-    uploads: uploadEndpoints,
-    responseMetrics,
-  };
 
-  const ws = createWebSocketEndpoint({
-    sessions,
-    join: video.join,
-    enqueueGesture: services.enqueueGesture,
-    enqueueVideoReset: video.enqueueVideoReset,
-    health,
-  });
+  /** Routes a request, with any `/d/<serial>` prefix removed, to a slot. */
+  const routeToSlot = async (
+    slot: DeviceSlot,
+    requestContext: DeviceContext,
+    req: Request,
+    url: URL,
+    path: string,
+    srv: Bun.Server<WsData>,
+  ): Promise<Response> => {
+    if (path === "/api" || path.startsWith("/api/")) {
+      const apiResponse = await apiRouter.handle(withPathname(req, url, path), {
+        ...slot.apiServices,
+        requestContext,
+        srv,
+        errorResponse: (err: unknown, fallback?: ApiErrorFallback) =>
+          errorResponse(err, req, fallback),
+      });
+      if (apiResponse) return apiResponse;
+    }
+
+    if (path === "/health") {
+      return responseMetrics.response("health", slot.health(requestContext), {
+        status: requestContext.status === "streaming" ? 200 : 503,
+      });
+    }
+
+    if (path === "/ws") {
+      return slot.ws.upgrade(req, url, srv, requestContext);
+    }
+
+    return serveStaticFile(uiDir, path);
+  };
 
   const serverOptions: Parameters<typeof Bun.serve<WsData>>[0] = {
     port: opts.port,
@@ -436,30 +645,42 @@ export async function startServer(
       const rejected = gate(req, url);
       if (rejected) return rejected;
 
-      if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
-        const apiResponse = await apiRouter.handle(req, {
-          ...apiServices,
-          requestContext,
+      const target = splitDevicePath(url.pathname);
+      if (target?.serial === null) {
+        return routeToSlot(primary, requestContext, req, url, url.pathname, srv);
+      }
+      if (!target || !isServicePath(target.path)) {
+        return new Response("not found", { status: 404 });
+      }
+
+      let slot: DeviceSlot;
+      try {
+        slot = await resolveSlot(target.serial);
+      } catch (err) {
+        return errorResponse(err, req, "internal_error");
+      }
+      slot.inFlight++;
+      try {
+        return await routeToSlot(
+          slot,
+          slot.sessions.current,
+          req,
+          url,
+          target.path,
           srv,
-          errorResponse: (err: unknown, fallback?: ApiErrorFallback) =>
-            errorResponse(err, req, fallback),
-        });
-        if (apiResponse) return apiResponse;
+        );
+      } finally {
+        slot.inFlight--;
+        slot.lastActiveMs = Date.now();
       }
-
-      if (url.pathname === "/health") {
-        return responseMetrics.response("health", health(requestContext), {
-          status: requestContext.status === "streaming" ? 200 : 503,
-        });
-      }
-
-      if (url.pathname === "/ws") {
-        return ws.upgrade(req, url, srv, requestContext);
-      }
-
-      return serveStaticFile(uiDir, url.pathname);
     },
-    websocket: ws.handlers,
+    // Each socket keeps the handlers of the device endpoint that upgraded it.
+    websocket: {
+      maxPayloadLength: primary.ws.handlers.maxPayloadLength,
+      open: (ws) => ws.data.handlers.open?.(ws),
+      message: (ws, message) => ws.data.handlers.message(ws, message),
+      close: (ws, code, reason) => ws.data.handlers.close?.(ws, code, reason),
+    },
   };
 
   let server: ReturnType<typeof Bun.serve<WsData>>;
@@ -467,7 +688,8 @@ export async function startServer(
     server = serve<WsData>(serverOptions);
   } catch (err) {
     stopRequested = true;
-    deviceRecovery.stop();
+    clearInterval(idleSweep);
+    primary.deviceRecovery.stop();
     await sessions.close("server startup failed");
     await uploads.close(
       new UploadManagerError("closed", "server startup failed", {
@@ -482,7 +704,9 @@ export async function startServer(
   const stop = (): Promise<void> => {
     if (stopTask) return stopTask;
     stopRequested = true;
-    deviceRecovery.stop();
+    lifetime.abort();
+    clearInterval(idleSweep);
+    primary.deviceRecovery.stop();
     server.stop(true);
     const context = sessions.current;
     const error = new UploadManagerError("closed", "server is stopping", {
@@ -492,6 +716,9 @@ export async function startServer(
     stopTask = Promise.all([
       emulators.shutdown(),
       sessions.close("server stopping"),
+      ...[...pinned.keys()].map((serial) =>
+        closePinned(serial, "server stopping"),
+      ),
       uploads.close(error),
     ]).then(() => {});
     return stopTask;
@@ -514,4 +741,12 @@ export async function startServer(
     },
     stop,
   };
+}
+
+/** `req` with `path` as its pathname, keeping body, headers, and signal. */
+function withPathname(req: Request, url: URL, path: string): Request {
+  if (url.pathname === path) return req;
+  const rewritten = new URL(url);
+  rewritten.pathname = path;
+  return new Request(rewritten, req);
 }

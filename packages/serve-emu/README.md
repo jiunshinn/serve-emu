@@ -99,7 +99,7 @@ bun run packages/serve-emu/src/cli.ts
 ## CLI
 
 ```text
-serve-emu [-p <port>] [--host <addr>] [--token <secret>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms] [--max-apk-upload-bytes N] [--max-media-upload-bytes N]
+serve-emu [-p <port>] [--host <addr>] [--token <secret>] [-s <serial>] [--max-fps N] [--bit-rate N] [--max-size N] [--key-frame-interval sec] [--repeat-frame-ms ms] [--max-devices N] [--max-apk-upload-bytes N] [--max-media-upload-bytes N]
 serve-emu --avd <name> [--gpu <mode>] [--restart-avd] [--no-emulator-window] [--camera-back <mode>] [--camera-front <mode>]
 serve-emu --avd-list
 serve-emu --running-avds
@@ -119,6 +119,7 @@ serve-emu --webcam-list
 | `--max-size` | `1280` | Downscale the longest edge to N pixels; `0` keeps native size. The emulator's software H.264 encoder sustains 60fps only below ~1 megapixel, hence the 1280 default |
 | `--key-frame-interval` | `10` | Advisory keyframe interval; `0` omits this codec option, which leaves scrcpy's own 10 s default. The emulator's encoder counts it in frames at a nominal 60fps, so keyframes arrive later at lower frame rates. Clients get keyframes on demand via `reset-video` and never wait for a periodic one |
 | `--repeat-frame-ms` | `0` | Re-encode the previous frame after N ms without screen changes; `0` keeps the encoder default of 100ms. Android repeats a frame at most 10 times, so a static screen still stops sending frames |
+| `--max-devices` | `4` | Devices streamed at once: the selected one plus those opened under [`/d/<serial>/`](#several-devices) |
 | `--max-apk-upload-bytes` | `536870912` | Maximum APK file bytes accepted by the streaming multipart endpoint |
 | `--max-media-upload-bytes` | `1073741824` | Maximum media/file bytes accepted by the streaming multipart endpoint |
 | `--max-active-uploads` | `2` | Maximum upload operations reading, staging, or running through ADB concurrently |
@@ -148,7 +149,7 @@ By default, `serve-emu` attaches to the only online device. If more than one dev
 
 - Cross-origin WebSocket upgrades and state-changing requests are rejected (the `Origin` must match the host).
 - Requests whose `Host` is a DNS name are rejected with `403`, so a page that rebinds its own domain to `127.0.0.1` (DNS rebinding) is turned away. IP addresses, `localhost`, `*.localhost`, the `--host` value, and any `--allowed-host` names are served. Behind a reverse proxy that keeps its public host name, either pass `--allowed-host <name>` or use `--token`.
-- Cross-site subresource requests (images, scripts, `fetch` from another site) are rejected using the browser's `Sec-Fetch-Site` header, and so are cross-site navigations or frames that point at `/api`, `/health`, or `/ws`. Opening the UI from a link or in an IDE's embedded browser still works, and clients that send no such header (CLI, agents) are unaffected.
+- Cross-site subresource requests (images, scripts, `fetch` from another site) are rejected using the browser's `Sec-Fetch-Site` header, and so are cross-site navigations or frames that point at `/api`, `/health`, or `/ws` (with or without a `/d/<serial>` prefix). Opening the UI from a link or in an IDE's embedded browser still works, and clients that send no such header (CLI, agents) are unaffected.
 
 Only `localhost` and literal loopback addresses (`127.0.0.0/8`, `::1`, and IPv4-mapped `::ffff:127.x.x.x`) count as loopback. Any other host name is treated as non-loopback, even one that happens to resolve to `127.x`.
 
@@ -369,6 +370,28 @@ device's `/proc/net/unix` 2 s after it starts and every 10 s after that, with
 one bounded `adb shell` call. `/health` reports the last answer and never
 waits for a probe. `contention` is `null` until the first probe answers. The
 UI shows a warning in the status bar while the count is above zero.
+
+### Several Devices
+
+One server can stream several devices at once. Prefix `/api/...`, `/health`,
+or `/ws` with `/d/<serial>` (the serial URL-encoded) to reach that device
+without changing the selected one:
+
+```sh
+curl "$BASE/d/emulator-5556/health"
+curl -X POST "$BASE/d/emulator-5556/api/tap" \
+  -H 'Content-Type: application/json' -d '{"x":0.5,"y":0.5}'
+```
+
+The first request opens the device's stream. It closes after 60 s with no
+WebSocket viewer, request in progress, logcat subscriber, route playback, or
+session replay. At most `--max-devices` devices stream at once; past that a new
+serial gets `503` with reason `device-limit`, and an unknown serial gets `404`.
+A prefixed stream stays on its device, so `/api/devices/select` and
+`/api/avds/start` under the prefix return `409` with reason `device-pinned`.
+Selecting a device that already streams under a prefix closes the prefixed
+stream; its URLs then reach the selected stream. Unprefixed URLs always reach
+the selected device.
 
 ### Emulators
 
