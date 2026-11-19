@@ -805,6 +805,11 @@ export class FramedReader {
     });
   }
 
+  takeBuffered(n: number): Buffer | null {
+    if (this.err || this.waiters.length > 0 || this.total < n) return null;
+    return this.consume(n);
+  }
+
   prepend(data: Buffer): void {
     if (data.length === 0) return;
     if (this.firstChunkOffset > 0 && this.chunks.length > 0) {
@@ -1388,7 +1393,7 @@ export async function readFrame(
 ): Promise<VideoPacket | null> {
   let header: Buffer;
   try {
-    header = await reader.read(12, "header");
+    header = reader.takeBuffered(12) ?? await reader.read(12, "header");
   } catch (e) {
     // A clean EOF at a frame boundary is the only non-error stream end; every
     // other failure (truncation, overflow, socket error) propagates with its
@@ -1407,7 +1412,8 @@ export async function readFrame(
     };
   }
 
-  const data = await reader.read(parsed.size, "payload");
+  const data =
+    reader.takeBuffered(parsed.size) ?? await reader.read(parsed.size, "payload");
   return {
     type: "frame",
     data,

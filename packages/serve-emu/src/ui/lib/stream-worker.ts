@@ -484,13 +484,15 @@ const feedFrame = (raw: ArrayBuffer, generation: number) => {
       serverTsMs: packet.serverTsMs,
       decodedAt: null,
     });
-    decoder.decode(
-      new EncodedVideoChunk({
-        type: isKey ? "key" : "delta",
-        timestamp,
-        data: packet.data,
-      }),
-    );
+    // The message buffer is no longer needed. Browsers without WebCodecs
+    // transfer support ignore the optional member and copy the payload.
+    const chunkInit = {
+      type: isKey ? "key" : "delta",
+      timestamp,
+      data: packet.data,
+      transfer: [raw],
+    } satisfies EncodedVideoChunkInit & { transfer: ArrayBuffer[] };
+    decoder.decode(new EncodedVideoChunk(chunkInit));
     frameIdx++;
     if (isKey) {
       applyLifecycle(

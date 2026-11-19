@@ -21,45 +21,68 @@ export function createEmulatorRegistry(deps: {
     settings = {},
   } = deps;
   const launchedEmulators = new Map<string, EmulatorLaunch>();
-  // Launches still booting; on stop they abort and stop their own child, and
-  // stop() waits for that so the process cannot exit first.
-  const bootingEmulators = new Set<Promise<unknown>>();
+  const bootingEmulators = new Set<Promise<EmulatorLaunch>>();
+  const stoppingEmulators = new Map<Promise<void>, string>();
   const emulatorShutdown = new AbortController();
 
+  const stopForShutdown = (serial: string, stop: Promise<void>): Promise<void> =>
+    stop.catch((err) => {
+      console.error(`[emulator] could not stop ${serial}:`, err);
+    });
+
+  const registerLaunch = (launch: EmulatorLaunch): EmulatorLaunch => {
+    let stopTask: Promise<void> | undefined;
+    const forgetLaunch = () => {
+      if (launchedEmulators.get(launch.serial) === owned) {
+        launchedEmulators.delete(launch.serial);
+      }
+    };
+    const owned: EmulatorLaunch = {
+      ...launch,
+      stop: () => {
+        if (stopTask) return stopTask;
+        const task = Promise.resolve()
+          .then(() => launch.stop())
+          .finally(() => {
+            forgetLaunch();
+            stoppingEmulators.delete(task);
+          });
+        stopTask = task;
+        stoppingEmulators.set(task, launch.serial);
+        return task;
+      },
+    };
+    launchedEmulators.set(launch.serial, owned);
+    // Once it exits on its own, its port may go to another AVD, which
+    // /api/avds/stop and stop() must not treat as this launch.
+    launch.proc?.once("exit", forgetLaunch);
+    return owned;
+  };
+
   const launchEmulator: typeof startEmulator = async (opts, runtime) => {
+    emulatorShutdown.signal.throwIfAborted();
     const signal = opts.signal
       ? AbortSignal.any([opts.signal, emulatorShutdown.signal])
       : emulatorShutdown.signal;
     const booting = startEmulatorProcess(
       { ...settings, ...opts, signal },
       runtime,
-    );
+    ).then(async (launch) => {
+      if (emulatorShutdown.signal.aborted) {
+        if (launch.ownsProcess) {
+          const stop = Promise.resolve().then(() => launch.stop());
+          await stopForShutdown(launch.serial, stop);
+        }
+        throw emulatorShutdown.signal.reason;
+      }
+      return launch.ownsProcess ? registerLaunch(launch) : launch;
+    });
     bootingEmulators.add(booting);
-    let launch: EmulatorLaunch;
     try {
-      launch = await booting;
+      return await booting;
     } finally {
       bootingEmulators.delete(booting);
     }
-    if (!launch.ownsProcess) return launch;
-    const owned: EmulatorLaunch = {
-      ...launch,
-      stop: async () => {
-        if (launchedEmulators.get(launch.serial) === owned) {
-          launchedEmulators.delete(launch.serial);
-        }
-        await launch.stop();
-      },
-    };
-    launchedEmulators.set(launch.serial, owned);
-    // Once it exits on its own, its port may go to another AVD, which
-    // /api/avds/stop and stop() must not treat as this launch.
-    launch.proc?.once("exit", () => {
-      if (launchedEmulators.get(launch.serial) === owned) {
-        launchedEmulators.delete(launch.serial);
-      }
-    });
-    return owned;
   };
 
   const killEmulator: typeof stopEmulator = async (serial, adbDeps) => {
@@ -75,19 +98,12 @@ export function createEmulatorRegistry(deps: {
    */
   const shutdown = (): Promise<void> => {
     emulatorShutdown.abort(new Error("server is stopping"));
-    const owned = Array.from(launchedEmulators.values());
+    for (const launch of launchedEmulators.values()) void launch.stop();
     launchedEmulators.clear();
-    const booting = Array.from(bootingEmulators, (launch) =>
-      launch.catch(() => {}),
-    );
     return Promise.all([
-      ...booting,
-      ...owned.map((launch) =>
-        Promise.resolve()
-          .then(() => launch.stop())
-          .catch((err) => {
-            console.error(`[emulator] could not stop ${launch.serial}:`, err);
-          }),
+      ...Array.from(bootingEmulators, (launch) => launch.catch(() => {})),
+      ...Array.from(stoppingEmulators, ([stop, serial]) =>
+        stopForShutdown(serial, stop),
       ),
     ]).then(() => {});
   };

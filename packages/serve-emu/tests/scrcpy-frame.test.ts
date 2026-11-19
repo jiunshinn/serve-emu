@@ -309,15 +309,37 @@ describe("readFrame terminal mapping", () => {
     expect(err.code).toBe("invalid-frame-size");
   });
 
-  test("a complete frame is parsed and returned", async () => {
+  test("returns a complete buffered frame by view, even after EOF", async () => {
     const { s, r } = makeReader();
-    s.emit("data", frameHeader(4, { size: 4, key: true }));
-    s.emit("data", Buffer.of(1, 2, 3, 4));
-    const f = await readFrame(r, 4);
-    expect(f?.type).toBe("frame");
-    if (f?.type === "frame") {
-      expect(f.isKey).toBe(true);
-      expect(f.data).toEqual(Buffer.of(1, 2, 3, 4));
-    }
+    const packet = Buffer.concat([
+      frameHeader(4, { size: 4, key: true }),
+      Buffer.of(1, 2, 3, 4),
+    ]);
+    s.emit("data", packet);
+    s.emit("end");
+    const frame = await readFrame(r, 4);
+    expect(frame).toMatchObject({
+      type: "frame",
+      isKey: true,
+      data: Buffer.of(1, 2, 3, 4),
+    });
+    if (frame?.type !== "frame") throw new Error("expected a frame");
+    expect(frame.data.buffer).toBe(packet.buffer);
+    expect(frame.data.byteOffset).toBe(packet.byteOffset + 12);
+    expect(await readFrame(r, 4)).toBeNull();
+  });
+
+  test("waits for a payload arriving after its header and preserves the next frame", async () => {
+    const { s, r } = makeReader();
+    const next = readFrame(r, 4);
+    s.emit("data", Buffer.concat([frameHeader(4, { size: 4 }), Buffer.of(1)]));
+    await Promise.resolve();
+    s.emit("data", Buffer.concat([
+      Buffer.of(2, 3, 4),
+      frameHeader(4, { size: 1, pts: 99n }),
+      Buffer.of(5),
+    ]));
+    expect(await next).toMatchObject({ data: Buffer.of(1, 2, 3, 4) });
+    expect(await readFrame(r, 4)).toMatchObject({ pts: 99n, data: Buffer.of(5) });
   });
 });

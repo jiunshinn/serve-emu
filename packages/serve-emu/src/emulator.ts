@@ -686,16 +686,18 @@ async function launchOnPort(
     return stopTask;
   };
 
+  const { signal } = opts;
+  let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_, reject) => {
-    if (!opts.signal) return;
-    const onAbort = () =>
+    if (!signal) return;
+    onAbort = () =>
       reject(
-        opts.signal!.reason instanceof Error
-          ? opts.signal!.reason
+        signal.reason instanceof Error
+          ? signal.reason
           : new Error("emulator launch aborted"),
       );
-    if (opts.signal.aborted) onAbort();
-    else opts.signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
   });
   void aborted.catch(() => {});
 
@@ -707,7 +709,7 @@ async function launchOnPort(
         proc,
         opts.bootTimeoutMs ?? 120_000,
         dependencies,
-        opts.signal,
+        signal,
       ),
       spawnError,
       aborted,
@@ -717,6 +719,8 @@ async function launchOnPort(
   } catch (err) {
     await stop();
     throw err;
+  } finally {
+    if (onAbort) signal?.removeEventListener("abort", onAbort);
   }
 }
 
