@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { readEncoderPackets, startHostEncoder } from "../src/host-encoder.ts";
+import { scanAU, buildCodecString } from "../src/ui/lib/h264.ts";
 
 function wire(data = Buffer.from([0, 0, 0, 1, 0x65])) {
   const header = Buffer.alloc(13);
@@ -46,6 +47,22 @@ function nals(data: Buffer): number[] {
     if (data.readUInt32BE(i) === 1) types.push(data[i + 4]! & 31);
   }
   return types;
+}
+
+function ppsUsesCabac(config: Buffer): boolean {
+  let start = 0;
+  while (start + 5 < config.length && !(config.readUInt32BE(start) === 1 && (config[start + 4]! & 31) === 8)) start++;
+  if (start + 5 >= config.length) throw new Error("Missing PPS");
+  const rbsp = config.subarray(start + 5).filter((byte, index, bytes) => !(byte === 3 && index >= 2 && bytes[index - 1] === 0 && bytes[index - 2] === 0));
+  const bits = [...rbsp].map((byte) => byte.toString(2).padStart(8, "0")).join("");
+  let offset = 0;
+  for (let id = 0; id < 2; id++) {
+    let zeros = 0;
+    while (bits[offset] === "0") { zeros++; offset++; }
+    offset += zeros + 1;
+  }
+  if (offset >= bits.length) throw new Error("Truncated PPS");
+  return bits[offset] === "1";
 }
 
 test("injects build and spawn, sends commands and closes the process", async () => {
@@ -97,6 +114,8 @@ test.skipIf(process.platform !== "darwin")("real VideoToolbox encoder emits conf
     const config = (await packets.next()).value!;
     expect(config.isConfig).toBe(true);
     expect(nals(config.data)).toEqual([7, 8]);
+    expect(buildCodecString(scanAU(config.data).spsBytes!)).toStartWith("avc1.4d");
+    expect(ppsUsesCabac(config.data)).toBe(false);
     const key = (await packets.next()).value!;
     expect(key.isKey).toBe(true);
     expect(nals(key.data)).toContain(5);
@@ -124,7 +143,10 @@ test.skipIf(process.platform !== "darwin")("real VideoToolbox encoder survives n
   try {
     const packets = encoder.packets();
     encoder.pushFrame();
-    expect((await packets.next()).value!.isConfig).toBe(true);
+    const config = (await packets.next()).value!;
+    expect(config.isConfig).toBe(true);
+    expect(buildCodecString(scanAU(config.data).spsBytes!)).toStartWith("avc1.4d");
+    expect(ppsUsesCabac(config.data)).toBe(false);
     expect(nals((await packets.next()).value!.data)).toContain(5);
     for (let frame = 0; frame < 120; frame++) encoder.pushFrame();
     encoder.requestKeyFrame();

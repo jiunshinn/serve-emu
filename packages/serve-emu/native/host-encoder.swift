@@ -94,6 +94,7 @@ defer { VTCompressionSessionInvalidate(session) }
 for (key, value) in [
     kVTCompressionPropertyKey_RealTime: true as CFTypeRef,
     kVTCompressionPropertyKey_AllowFrameReordering: false as CFTypeRef,
+    kVTCompressionPropertyKey_H264EntropyMode: kVTH264EntropyMode_CAVLC,
     kVTCompressionPropertyKey_AverageBitRate: bitRate as CFTypeRef,
     kVTCompressionPropertyKey_ExpectedFrameRate: fps as CFTypeRef,
     kVTCompressionPropertyKey_MaxKeyFrameInterval: Int32.max as CFTypeRef,

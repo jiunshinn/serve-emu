@@ -72,6 +72,9 @@ when available. After 200 ms without an encode it repeats that frame.
 Stdout packets contain a `u32` payload length, `u8` flags (bit 0 keyframe,
 bit 1 configuration), `u64` presentation timestamp in microseconds and an
 Annex-B payload. An SPS/PPS configuration packet precedes every keyframe.
+Host encoding uses H.264 Main with CAVLC entropy coding: leaving the entropy
+mode at its encoder-specific default can select CABAC, whose decode cost at
+native foldable resolutions can trigger the browser's backlog recovery.
 The TypeScript reader rejects empty or over-32-MiB packets and truncated
 streams. Closing the wrapper kills the helper; stderr contains diagnostics.
 
