@@ -324,7 +324,7 @@ export async function startServer(
   /** Devices streamed under `/d/<serial>/`, besides the selected one. */
   const pinned = new Map<
     string,
-    { slot: Promise<DeviceSlot>; ready: DeviceSlot | null }
+    { slot: Promise<DeviceSlot>; ready: DeviceSlot | null; opening: AbortController }
   >();
 
   type DeviceSlot = ReturnType<typeof createSlot>;
@@ -548,8 +548,7 @@ export async function startServer(
     return openContext(targetSerial, generation, signal, previousRecorder, quality);
   }
 
-  const openPinned = async (serial: string): Promise<DeviceSlot> => {
-    const signal = lifetime.signal;
+  const openPinned = async (serial: string, signal: AbortSignal): Promise<DeviceSlot> => {
     const device = (await listDevices({ signal })).find(
       (candidate) => candidate.serial === serial,
     );
@@ -565,6 +564,7 @@ export async function startServer(
     }
     let context: DeviceContext;
     try {
+      signal.throwIfAborted();
       context = await openContext(serial, allocateGeneration(), signal);
     } catch (cause) {
       throw new ApiError(503, "service_unavailable", "Could not start the device stream", {
@@ -573,8 +573,13 @@ export async function startServer(
       });
     }
     const slot = createSlot(context, serial);
-    if (stopRequested) {
-      await slot.close("server stopping");
+    if (signal.aborted) {
+      await slot.close(stopRequested ? "server stopping" : "device stream opening cancelled");
+      if (!stopRequested) {
+        throw new ApiError(503, "service_unavailable", "Could not start the device stream", {
+          reason: "device-open-failed",
+        });
+      }
       throw new ApiError(503, "service_unavailable", "Server is stopping");
     }
     try {
@@ -610,7 +615,12 @@ export async function startServer(
         ),
       );
     }
-    const entry = { slot: openPinned(serial), ready: null as DeviceSlot | null };
+    const opening = new AbortController();
+    const entry = {
+      slot: openPinned(serial, AbortSignal.any([opening.signal, lifetime.signal])),
+      ready: null as DeviceSlot | null,
+      opening,
+    };
     pinned.set(serial, entry);
     entry.slot.then(
       (slot) => {
@@ -638,7 +648,7 @@ export async function startServer(
       });
     }
     const entry = pinned.get(serial);
-    if (entry?.ready && entry.ready.sessions !== caller) {
+    if (entry && entry.ready?.sessions !== caller) {
       await closePinned(serial, "emulator stopped");
     }
   };
@@ -649,6 +659,7 @@ export async function startServer(
     const entry = pinned.get(serial);
     if (!entry) return Promise.resolve();
     pinned.delete(serial);
+    if (!entry.ready) entry.opening.abort();
     const task: Promise<void> = entry.slot
       .then((slot) => slot.close(reason), () => {})
       .catch((err: unknown) => log(`closing ${serial} failed: ${String(err)}`))

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { isServicePath, splitDevicePath } from "../src/server/device-path.ts";
 import type { DeviceContext } from "../src/server/types.ts";
+import { deferred } from "./helpers/deferred.ts";
 import {
   createHarness,
   fakeScrcpy,
@@ -208,6 +209,42 @@ describe("startServer multi-device routing", () => {
     expect((await stopVia("/d/emulator-5556", "emulator-5554")).status).toBe(200);
     expect(h.started.deviceSerial).toBeNull();
     expect(killed).toEqual(["emulator-5558", "emulator-5554"]);
+  });
+
+  test("stopping an emulator cancels and drains a pending prefixed stream before killing it", async () => {
+    const selected = "emulator-5554";
+    const target = "emulator-5556";
+    const pending = deferred<FakeScrcpy>();
+    const candidate = fakeScrcpy(target);
+    let openSignal: AbortSignal | undefined;
+    let closeCallsAtKill: number | undefined;
+    const h = await multiDeviceHarness(
+      { serials: [selected, target] },
+      {
+        openScrcpy: async (serial, signal) => {
+          if (serial === selected) return fakeScrcpy(serial);
+          openSignal = signal;
+          return pending.promise;
+        },
+        stopEmulator: async () => { closeCallsAtKill = candidate.closeCalls; },
+      },
+    );
+    const opening = response(h.request(`/d/${target}/health`));
+    await waitFor(() => openSignal !== undefined);
+    const stopping = response(
+      h.request("/api/avds/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serial: target }),
+      }),
+    );
+    await waitFor(() => openSignal!.aborted || closeCallsAtKill !== undefined);
+    pending.resolve(candidate);
+    const [openResult, stopResult] = await Promise.all([opening, stopping]);
+    expect(stopResult.status).toBe(200);
+    expect(openSignal!.aborted).toBe(true);
+    expect(closeCallsAtKill).toBe(1);
+    expect(openResult.status).toBe(503);
   });
 
   test("sets stream quality per device and restarts only that device", async () => {
