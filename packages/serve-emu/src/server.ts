@@ -463,9 +463,16 @@ export async function startServer(
           quality = next;
         },
         undefined,
-        context,
+        {
+          context,
+          when: () =>
+            context.status !== "streaming" ||
+            quality.maxSize !== next.maxSize ||
+            quality.maxFps !== next.maxFps ||
+            quality.bitRate !== next.bitRate,
+        },
       );
-      logReady(switched);
+      if (switched !== context) logReady(switched);
       return qualityResponse(switched);
     };
 

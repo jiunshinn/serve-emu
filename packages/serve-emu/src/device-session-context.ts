@@ -394,8 +394,8 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
     ) => Promise<TContext>,
     activate?: (context: TContext) => void,
     recover?: TContext,
-    /** Reopen this context's device, e.g. with new settings; fails once it is replaced. */
-    restart?: TContext,
+    /** Reopen this context's device if needed; fails once the context is replaced. */
+    restart?: { context: TContext; when: () => boolean },
   ): Promise<TContext> {
     // Explicit selection or stop takes precedence over an automatic reopen,
     // even if scrcpy is still preparing the replacement.
@@ -409,10 +409,10 @@ export class DeviceSessionManager<TContext extends ManagedDeviceSession> {
       if (recover && (previous !== recover || recover.stoppedByClient)) {
         throw new SessionChangedError(recover.generation, previous.generation);
       }
-      if (restart && previous !== restart) {
-        throw new SessionChangedError(restart.generation, previous.generation);
+      if (restart && previous !== restart.context) {
+        throw new SessionChangedError(restart.context.generation, previous.generation);
       }
-      if (previous.serial === serial && !previous.signal.aborted && !restart) {
+      if (previous.serial === serial && !previous.signal.aborted && !restart?.when()) {
         return previous;
       }
 

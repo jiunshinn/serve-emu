@@ -31,6 +31,24 @@ test.beforeEach(async ({ request }) => {
   ).toBe(true);
 });
 
+test("opening the grid leaves devices already at the tile preset alone", async ({ page, request }) => {
+  const serial = (await (await request.get("/health")).json()).serial;
+  const response = await request.post("/api/stream-quality", {
+    data: { maxSize: 480, maxFps: 15, bitRate: 1_000_000 },
+  });
+  expect(response.ok()).toBe(true);
+  const qualityWrites: string[] = [];
+  page.on("request", (request) => {
+    const pathname = new URL(request.url()).pathname;
+    if (request.method() === "POST" && pathname.endsWith("/api/stream-quality")) {
+      qualityWrites.push(pathname);
+    }
+  });
+  await page.goto("/grid");
+  await expect(page.locator("iframe")).toHaveCount(2);
+  expect(qualityWrites).not.toContain(`/d/${serial}/api/stream-quality`);
+});
+
 /** The canvas's center pixel as [r, g, b, a]. */
 async function centerColor(page: Page): Promise<number[]> {
   const screenshot = await page.locator("canvas").first().screenshot();
