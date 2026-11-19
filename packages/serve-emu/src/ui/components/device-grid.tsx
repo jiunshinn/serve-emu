@@ -85,6 +85,8 @@ export function DeviceGrid() {
 
   // The opened device gets its own quality back before its full UI loads.
   const open = (serial: string) => async (event: MouseEvent<HTMLAnchorElement>) => {
+    // A new-tab click keeps the grid, and its tiles, open.
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const saved = original.current.get(serial);
     const now = current.current.get(serial);
     if (!saved || !now || sameQuality(saved, now)) return;
