@@ -184,6 +184,30 @@ describe("ADB display controls", () => {
     }
   });
 
+  test("waits for Android to report the requested orientation after a stale read", async () => {
+    const calls: string[] = [];
+    const runExec = (async (_command, args) => {
+      calls.push(args.slice(3).join(" "));
+      return result(["Physical size: 1768x2208\n", "", "lock 1", "lock 0"][calls.length - 1]);
+    }) as typeof execText;
+
+    expect(await setUserRotation("device-1", "portrait", { execText: runExec }))
+      .toMatchObject({ rotation: 0, orientation: "portrait" });
+    expect(calls).toEqual([
+      "wm size",
+      "cmd window user-rotation lock 0",
+      "cmd window user-rotation",
+      "cmd window user-rotation",
+    ]);
+  });
+
+  test("fails a rotation mutation Android does not confirm", async () => {
+    const runExec = (async (_command, args) =>
+      result(args.includes("wm") ? "Physical size: 1768x2208\n" : "lock 1")) as typeof execText;
+    await expect(setUserRotation("device-1", "portrait", { execText: runExec }))
+      .rejects.toThrow("Android did not confirm the requested orientation");
+  });
+
   test("labels rotations by the natural orientation of the display", async () => {
     const tablet = (rotation: string, size = "Physical size: 2560x1600") =>
       (async (_command, args) =>

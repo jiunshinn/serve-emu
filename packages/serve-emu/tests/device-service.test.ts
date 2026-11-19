@@ -13,7 +13,7 @@ test("every device command runs its adb processes with the caller's signal", asy
   const execText = (async (_cmd: string, args: string[], opts: ExecOpts = {}) => {
     calls.push({ args, opts });
     const shell = args.slice(3).join(" ");
-    if (shell.includes("user-rotation")) return result("lock 1\n");
+    if (shell.includes("user-rotation")) return result("lock 0\n");
     if (shell.includes("font_scale")) return result("1.0\n");
     if (shell.includes("uimode night")) return result("Night mode: yes\n");
     if (shell.includes("settings get global")) return result("1\n");

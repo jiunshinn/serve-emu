@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { adbBuffer, adbText, type AdbDeps } from "./adb-command.ts";
 import { CommandFailureError } from "./command-failure.ts";
 import type {
@@ -14,6 +15,8 @@ import type {
 const ADB_QUERY_TIMEOUT_MS = 2_000;
 const ADB_MUTATION_TIMEOUT_MS = 5_000;
 const ADB_SCREENSHOT_TIMEOUT_MS = 8_000;
+const ROTATION_CONFIRM_ATTEMPTS = 5;
+const ROTATION_CONFIRM_INTERVAL_MS = 40;
 
 function unexpectedOutput(operation: string, output: string): CommandFailureError {
   return new CommandFailureError(
@@ -148,7 +151,12 @@ export async function setUserRotation(
       ? ["cmd", "window", "user-rotation", "free"]
       : ["cmd", "window", "user-rotation", "lock", orientation === naturalOrientation ? "0" : "1"];
   await adbText(serial, ["shell", ...args], mutation("cmd window user-rotation"), deps);
-  return readUserRotation(serial, size, deps);
+  for (let attempt = 0; attempt < ROTATION_CONFIRM_ATTEMPTS; attempt++) {
+    if (attempt > 0) await sleep(ROTATION_CONFIRM_INTERVAL_MS, undefined, { signal: deps.signal });
+    const observed = await readUserRotation(serial, size, deps);
+    if (observed.orientation === orientation) return observed;
+  }
+  throw new CommandFailureError("adb-failed", "Android did not confirm the requested orientation");
 }
 
 export async function getFontScale(
