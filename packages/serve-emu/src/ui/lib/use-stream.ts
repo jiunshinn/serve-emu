@@ -278,7 +278,8 @@ export function useStream(canvasRef: RefObject<HTMLCanvasElement>) {
 
     const applyServerStatus = (d: ApiInfo) => {
       serverTerminalStatus =
-        d.status && d.status !== "streaming" ? d.lastError || d.status : null;
+        d.recovering ? "Reconnecting to device…" :
+          d.status && d.status !== "streaming" ? d.lastError || d.status : null;
       setState((prev) => ({
         ...prev,
         deviceSize: d.size,

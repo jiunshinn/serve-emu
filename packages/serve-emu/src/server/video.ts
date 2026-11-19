@@ -22,6 +22,7 @@ import {
 } from "./backpressure.ts";
 import type { Client, DeviceContext } from "./types.ts";
 import { sendJson } from "./ws.ts";
+import { JoinFrames } from "./join-frames.ts";
 
 const DROP_FRAME_BUFFERED_BYTES = 512 * 1024;
 const CLOSE_CLIENT_BUFFERED_BYTES = 16 * 1024 * 1024;
@@ -69,12 +70,23 @@ export function createVideoPipeline(deps: {
   clock: RecoveryWatchdogClock;
   /** True once the server is stopping; scrcpy endings are then expected. */
   isStopping: () => boolean;
+  onTerminated: (context: DeviceContext, disposed: Promise<void>) => void;
 }) {
   const { sessions, clock, isStopping } = deps;
   const recoveries = new WeakMap<
     DeviceContext,
     SessionRecoveryWatchdog<Client>
   >();
+  const joinFrames = new WeakMap<DeviceContext, JoinFrames>();
+
+  const canReceive = (client: Client) =>
+    client.ws.getBufferedAmount() <= DROP_FRAME_BUFFERED_BYTES;
+  const hasHealthyViewer = (context: DeviceContext, except?: Client) => {
+    for (const viewer of context.clients) {
+      if (viewer !== except && !viewer.awaitingKeyFrame && canReceive(viewer)) return true;
+    }
+    return false;
+  };
 
   const markTerminal = (
     context: DeviceContext,
@@ -89,19 +101,25 @@ export function createVideoPipeline(deps: {
     context.lastError = reason;
     context.lastErrorCode = detail?.code ?? null;
     context.lastErrorMeta = detail?.meta ?? null;
-    void context.dispose(reason, {
+    const disposed = context.dispose(reason, {
       status: nextStatus,
       clientCode: nextStatus === "error" ? 1011 : 1000,
     });
+    deps.onTerminated(context, disposed);
   };
 
-  const enqueueVideoReset = (context: DeviceContext, reason: string) => {
+  const enqueueVideoReset = (client: Client, reason: string) => {
+    const { context } = client;
     sessions.assertCurrent(context);
     context.inputQueue.assertOpen();
     const now = clock.now();
     // Client requests share the watchdog's gate, so they cannot restart an
     // encoder whose key frame is still on its way.
     const recovery = recoveries.get(context);
+    if (hasHealthyViewer(context, client) || !canReceive(client)) {
+      recovery?.markAwaiting(client);
+      return { completion: Promise.resolve({ status: "coalesced" as const }) };
+    }
     const blocked = recovery
       ? !recovery.canRequestReset(now)
       : now - context.lastVideoResetMs < VIDEO_RESET_COOLDOWN_MS;
@@ -132,6 +150,9 @@ export function createVideoPipeline(deps: {
       awaitingKeyFrameResetMs: AWAITING_KEYFRAME_RESET_MS,
       resetSettleMs: RESET_SETTLE_MS,
       maxResetSettleMs: MAX_RESET_SETTLE_MS,
+      shouldRetryAwaiting: (client, sourceQuiet) =>
+        canReceive(client) && (!hasHealthyViewer(context) ||
+          (sourceQuiet && client.sentFrames === 0 && client.backpressureEvents === 0)),
       requestReset: (reason, now) => {
         if (!sessions.isCurrent(context) || context.status !== "streaming") {
           return false;
@@ -155,7 +176,6 @@ export function createVideoPipeline(deps: {
     client.context.totalDroppedFrames++;
     const recovery = recoveries.get(client.context);
     recovery?.markAwaiting(client);
-    recovery?.requestVideoReset("client backpressure");
   };
 
   const sendFrame = (
@@ -173,18 +193,18 @@ export function createVideoPipeline(deps: {
     if (decision === "drop-awaiting-keyframe") {
       client.droppedFrames++;
       client.context.totalDroppedFrames++;
-      return;
+      return false;
     }
     if (decision === "close-slow-client") {
       client.context.clients.delete(client);
       try {
         client.ws.close(1013, "client too slow");
       } catch {}
-      return;
+      return false;
     }
     if (decision === "drop-buffered") {
       dropUntilKeyFrame(client);
-      return;
+      return false;
     }
     let sent: number;
     try {
@@ -194,23 +214,46 @@ export function createVideoPipeline(deps: {
       try {
         client.ws.close(1011, "frame send failed");
       } catch {}
-      return;
+      return false;
     }
     if (sendResultDecision(sent) === "backpressure") {
       client.backpressureEvents++;
       client.context.totalBackpressureEvents++;
       dropUntilKeyFrame(client);
-      return;
+      return false;
     }
     if (sendResultDecision(sent) === "closed") {
       client.context.clients.delete(client);
-      return;
+      return false;
     }
     client.sentFrames++;
     if (isKeyFrame) recoveries.get(client.context)?.keyFrameAccepted(client);
+    return true;
   };
+
+  const join = (client: Client) => {
+    const { context } = client;
+    const recovery = recoveries.get(context);
+    recovery?.markAwaiting(client);
+    const frames = joinFrames.get(context)?.frames;
+    if (frames?.length) {
+      for (const frame of frames) {
+        const config = frame.isKey ? context.cachedConfig : null;
+        const sent = sendFrame(client, () => client.frameMeta
+          ? withFrameMeta(frame.data, frame, config)
+          : withConfig(frame.data, config), frame.isKey);
+        if (!sent) break;
+      }
+    } else if (canReceive(client) && !hasHealthyViewer(context, client)) {
+      recovery?.requestVideoReset("client opened");
+    }
+  };
+
   const startFramePump = (context: DeviceContext) => {
     context.cachedConfig = null;
+    const cache = new JoinFrames();
+    joinFrames.set(context, cache);
+    context.registerCleanup(() => cache.clear());
     const pump = (async () => {
       try {
         while (!isStopping() && sessions.isCurrent(context)) {
@@ -226,6 +269,7 @@ export function createVideoPipeline(deps: {
               context.screen.width = f.width;
               context.screen.height = f.height;
               context.cachedConfig = null;
+              cache.clear();
               // A new encoder session always opens with codec config and a
               // key frame. Requesting a reset here would restart the encoder
               // before it can send that key frame.
@@ -241,6 +285,7 @@ export function createVideoPipeline(deps: {
           }
           if (f.isConfig) {
             context.cachedConfig = f.data;
+            cache.clear();
             context.configPacketCount++;
             continue;
           }
@@ -248,6 +293,7 @@ export function createVideoPipeline(deps: {
           recoveries.get(context)?.recordFrame(f.isKey);
           context.frameStats.record(f.data.length, f.isKey);
           const config = f.isKey ? context.cachedConfig : null;
+          cache.append(f, config);
           let rawOut: Buffer | null = null;
           let framedOut: Buffer | null = null;
           for (const c of context.clients) {
@@ -325,6 +371,7 @@ export function createVideoPipeline(deps: {
 
   return {
     activate: activateContext,
+    join,
     enqueueVideoReset,
     recovery: (context: DeviceContext) => recoveries.get(context),
   };
