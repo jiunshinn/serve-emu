@@ -475,3 +475,49 @@ describe("SessionRecorder replay keeps touch pointers balanced", () => {
   });
 });
 
+describe("SessionRecorder replay keeps held keys balanced", () => {
+  test("cancellation releases a held key before reporting cancelled", async () => {
+    const holding = pendingClock(() => 0);
+    let delays = 0;
+    const recorder = new SessionRecorder({
+      now: () => 0,
+      delay: (ms, signal) => (++delays === 1 ? Promise.resolve() : holding.clock.delay(ms, signal)),
+    });
+    const down = { type: "key", keycode: 59, action: "down", metaState: 1 } as const;
+    const up = { ...down, action: "up" } as const;
+    recorder.recordGesture(down, "ws");
+    recorder.recordGesture(up, "ws");
+    const dispatched: unknown[] = [];
+    const run = recorder.startReplay({
+      dispatchGesture: (gesture, signal) => {
+        expect(signal.aborted).toBe(false);
+        dispatched.push(gesture);
+      },
+      setLocation: () => {},
+    });
+    await holding.started;
+    expect(dispatched).toEqual([down]);
+    expect((await recorder.cancelAndWait()).replayStatus).toBe("cancelled");
+    expect(dispatched).toEqual([down, up]);
+    await run.completion;
+  });
+
+  test("skips an unmatched release and preserves key presses and repeats", async () => {
+    const recorder = new SessionRecorder(immediateClock(() => 0));
+    const unmatched = { type: "key", action: "up", keycode: 29 } as const;
+    const press = { type: "key", keycode: 66 } as const;
+    const down = { type: "key", action: "down", keycode: 59 } as const;
+    recorder.recordGesture(unmatched, "ws");
+    recorder.recordGesture(press, "rest");
+    recorder.recordGesture(down, "ws");
+    recorder.recordGesture(down, "ws");
+
+    const dispatched: unknown[] = [];
+    const run = recorder.startReplay({
+      dispatchGesture: (gesture) => { dispatched.push(gesture); },
+      setLocation: () => {},
+    });
+    expect((await run.completion).replayStatus).toBe("completed");
+    expect(dispatched).toEqual([press, down, down, { ...down, action: "up" }]);
+  });
+});
