@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { EventEmitter } from "node:events";
+import { EventEmitter, getEventListeners } from "node:events";
 import type { ChildProcess, spawn } from "node:child_process";
 import {
   clearEmulatorResolutionCache,
@@ -228,8 +228,9 @@ describe("emulator lifecycle", () => {
     };
     const { proc, killSignals } = fakeProcess();
     const spawnCalls: unknown[][] = [];
+    const { signal } = new AbortController();
     const launch = await startEmulator(
-      { avd: "Pixel_8", emulatorPath: "/sdk/emulator", gpu: "host" },
+      { avd: "Pixel_8", emulatorPath: "/sdk/emulator", gpu: "host", signal },
       {
         execText: runExec,
         listAllDevices: readDevices,
@@ -240,6 +241,7 @@ describe("emulator lifecycle", () => {
     expect(launch.serial).toBe("emulator-5558");
     expect(launch.proc).toBe(proc);
     expect(launch.ownsProcess).toBe(true);
+    expect(getEventListeners(signal, "abort")).toHaveLength(0);
     expect(spawnCalls).toEqual([
       [
         "/sdk/emulator",
