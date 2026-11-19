@@ -8,6 +8,7 @@ export type StreamHealth = {
   generation?: number;
   size: DeviceSize;
   status?: "streaming" | "stopped" | "error";
+  recovering?: boolean;
   lastFrameAt?: string | null;
   lastError?: string | null;
   /** From `contention`; absent until the server's first probe answers. */
@@ -78,6 +79,7 @@ export function parseStreamHealth(value: unknown): StreamHealth {
     ...(value.serial === undefined ? {} : { serial: value.serial as string }),
     ...(value.generation === undefined ? {} : { generation: value.generation as number }),
     ...(status === undefined ? {} : { status }),
+    ...(value.recovering === true ? { recovering: true } : {}),
     ...(lastFrameAt === undefined ? {} : { lastFrameAt }),
     ...(lastError === undefined ? {} : { lastError }),
     ...(otherScrcpySessions === undefined ? {} : { otherScrcpySessions }),

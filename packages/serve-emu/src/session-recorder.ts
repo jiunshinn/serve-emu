@@ -313,6 +313,21 @@ export class SessionRecorder {
     return { session: this.summary(), events: this.#events.map(cloneEvent) };
   }
 
+  /** Carries history across a transport failure without resuming an active replay. */
+  copyHistory(): SessionRecorder {
+    const recorder = new SessionRecorder({
+      maxEvents: this.#maxEvents,
+      maxBytes: this.#maxBytes,
+      clock: this.#clock,
+    });
+    recorder.#events = this.#events.slice();
+    recorder.#retainedBytes = this.#retainedBytes;
+    recorder.#droppedEvents = this.#droppedEvents;
+    recorder.#nextId = this.#nextId;
+    recorder.#lastEventMs = this.#lastEventMs;
+    return recorder;
+  }
+
   startReplay(handlers: ReplayHandlers, multiplier = 1): SessionReplayRun {
     if (this.#closed) {
       throw new SessionReplayConflictError("session recorder is closed");

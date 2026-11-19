@@ -267,7 +267,7 @@ export class ControlInputQueue {
   #running = false;
   #scheduled = false;
   #closedError: Error | null = null;
-  #openPointers = new Set<string>();
+  #heldInputs = new Set<string>();
 
   constructor(options: ControlInputQueueOptions) {
     if (Boolean(options.writer) === Boolean(options.socket)) {
@@ -289,31 +289,14 @@ export class ControlInputQueue {
   enqueue(gesture: Gesture, screen: Screen): ControlInputHandle {
     this.#assertOpen();
     const compiled = compileGesture(gesture, { ...screen });
-    const moveKey =
-      compiled.gesture.type === "touch" &&
-      compiled.gesture.action === "move"
-        ? `touch:${compiled.gesture.pointerId ?? 0}`
-        : null;
-    const pointerKey =
-      compiled.gesture.type === "touch"
-        ? `touch:${compiled.gesture.pointerId ?? 0}`
-        : null;
-    let nextReservedReleases = this.#openPointers.size;
-    if (
-      pointerKey &&
-      compiled.gesture.type === "touch" &&
-      compiled.gesture.action === "down" &&
-      !this.#openPointers.has(pointerKey)
-    ) {
-      nextReservedReleases++;
-    } else if (
-      pointerKey &&
-      compiled.gesture.type === "touch" &&
-      compiled.gesture.action === "up" &&
-      this.#openPointers.has(pointerKey)
-    ) {
-      nextReservedReleases--;
-    }
+    const input = compiled.gesture;
+    const touchKey = input.type === "touch" ? `touch:${input.pointerId ?? 0}` : null;
+    const moveKey = input.type === "touch" && input.action === "move" ? touchKey : null;
+    const action = input.type === "touch" || input.type === "key" ? input.action : undefined;
+    const heldKey = input.type === "key" ? `key:${input.keycode}` : touchKey;
+    const newHold = heldKey !== null && action === "down" && !this.#heldInputs.has(heldKey);
+    const release = heldKey !== null && action === "up" && this.#heldInputs.has(heldKey);
+    const nextReservedReleases = this.#heldInputs.size + Number(newHold) - Number(release);
     const waiter = this.#createWaiter();
     const tail = this.#pending.at(-1);
 
@@ -329,13 +312,8 @@ export class ControlInputQueue {
     }
 
     this.#reserveNew(compiled.bytes, nextReservedReleases);
-    if (pointerKey && compiled.gesture.type === "touch") {
-      if (compiled.gesture.action === "down") {
-        this.#openPointers.add(pointerKey);
-      } else if (compiled.gesture.action === "up") {
-        this.#openPointers.delete(pointerKey);
-      }
-    }
+    if (newHold) this.#heldInputs.add(heldKey);
+    if (release) this.#heldInputs.delete(heldKey);
     this.#pending.push({
       steps: compiled.steps,
       bytes: compiled.bytes,
@@ -434,7 +412,7 @@ export class ControlInputQueue {
           );
     this.#controller.abort(this.#closedError);
     this.#writer.close?.(this.#closedError);
-    this.#openPointers.clear();
+    this.#heldInputs.clear();
 
     const pending = this.#pending;
     this.#pending = [];
@@ -455,7 +433,7 @@ export class ControlInputQueue {
       entries:
         this.#pending.length + this.#priority.length + (this.#active ? 1 : 0),
       active: this.#active !== null,
-      reservedReleases: this.#openPointers.size,
+      reservedReleases: this.#heldInputs.size,
       maxDepth: this.#maxDepth,
       maxBytes: this.#maxBytes,
     };
@@ -487,7 +465,7 @@ export class ControlInputQueue {
 
   #reserveNew(
     bytes: number,
-    reservedReleases = this.#openPointers.size,
+    reservedReleases = this.#heldInputs.size,
   ): void {
     this.#assertCapacity(
       this.#depth + 1,
@@ -503,7 +481,7 @@ export class ControlInputQueue {
     this.#assertCapacity(
       this.#depth + 1,
       nextBytes,
-      this.#openPointers.size,
+      this.#heldInputs.size,
     );
     this.#depth++;
     this.#bytes = nextBytes;

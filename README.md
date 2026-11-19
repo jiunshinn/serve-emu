@@ -720,7 +720,14 @@ bun run --filter serve-emu build
 bun run check
 (cd packages/serve-emu && bunx playwright install chromium)
 bun run --filter serve-emu test:browser
+bun run --filter serve-emu bench:stream
 ```
+
+The streaming benchmark runs a 30 fps H.264 fixture over loopback WebSockets
+with 1, 4, and 10 steady viewers. Its JSON reports FPS, aggregate bandwidth,
+receive age, frame gaps, join-to-keyframe latency, and video-session events
+seen by existing viewers during six joins per run. This measures server
+delivery. Use the browser suite to verify rendering.
 
 `dev:ui` proxies `/api`, `/health`, and `/ws` to
 `http://localhost:3300` by default. To run the backend on another port while

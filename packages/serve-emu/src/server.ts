@@ -39,6 +39,7 @@ import {
 } from "./scrcpy.ts";
 import { createRequestGate } from "./server/auth.ts";
 import { startContentionProbe } from "./server/contention.ts";
+import { createDeviceRecovery } from "./server/device-recovery.ts";
 import { createEmulatorRegistry } from "./server/emulators.ts";
 import { buildHealthSnapshot } from "./server/health.ts";
 import { createSessionServices } from "./server/session-services.ts";
@@ -143,6 +144,7 @@ export type ServerDependencies = {
   ) => Promise<void>;
   createInputQueue?: (session: ScrcpySession) => ControlInputQueue;
   recoveryClock?: RecoveryWatchdogClock;
+  waitForDeviceRetry?: (ms: number, signal: AbortSignal) => Promise<void>;
   createUploadManager?: (options: UploadManagerOptions) => UploadManager;
   stageMultipartUpload?: typeof stageMultipartUpload;
   installApk?: typeof installApk;
@@ -237,6 +239,7 @@ export async function startServer(
     serial: string,
     generation: number,
     scrcpy: ScrcpySession,
+    previousRecorder?: DeviceContext["recorder"],
   ): DeviceContext => {
     const context = new ActiveDeviceSession<Client>({
       serial,
@@ -244,6 +247,7 @@ export async function startServer(
       scrcpy,
       applyLocation: setLocation,
       inputQueue: createInputQueue(scrcpy),
+      recorder: previousRecorder?.copyHistory(),
     });
     context.registerCleanup(() =>
       uploads.cancelGeneration(
@@ -263,10 +267,11 @@ export async function startServer(
     serial: string,
     generation: number,
     signal?: AbortSignal,
+    previousRecorder?: DeviceContext["recorder"],
   ): Promise<DeviceContext> => {
     const scrcpy = await openScrcpy(serial, signal);
     try {
-      return createContext(serial, generation, scrcpy);
+      return createContext(serial, generation, scrcpy, previousRecorder);
     } catch (err) {
       await closeScrcpySession(scrcpy);
       throw err;
@@ -286,10 +291,25 @@ export async function startServer(
     "sessionExport",
   ] as const);
   let stopRequested = false;
+  const deviceRecovery = createDeviceRecovery({
+    current: () => sessions.current,
+    reopen: async (failed) => {
+      const context = await sessions.switch(
+        failed.serial,
+        (serial, generation, signal) =>
+          prepareSelection(serial, generation, signal, failed.recorder),
+        activate,
+        failed,
+      );
+      logReady(context);
+    },
+    wait: dependencies.waitForDeviceRetry,
+  });
   const video = createVideoPipeline({
     sessions,
     clock: recoveryClock,
     isStopping: () => stopRequested,
+    onTerminated: deviceRecovery.start,
   });
   logReady(sessions.current);
   // Activation starts a session's video and, for the CLI, its contention probe.
@@ -308,6 +328,7 @@ export async function startServer(
       idleResetBackoffMs: RESET_SETTLE_MS,
       baseStallResetMs: SOURCE_STALL_RESET_MS,
       responseMetrics: responseMetrics.snapshot(),
+      recovering: deviceRecovery.isRecovering(context),
       uploads: uploads.snapshot(),
       executor: getExecSnapshot(),
     });
@@ -333,6 +354,23 @@ export async function startServer(
     importMediaFile: dependencies.importMediaFile ?? importMediaFile,
   });
 
+  async function prepareSelection(
+    targetSerial: string,
+    generation: number,
+    signal: AbortSignal,
+    previousRecorder?: DeviceContext["recorder"],
+  ) {
+    const device = (await listDevices({ signal })).find(
+      (candidate) => candidate.serial === targetSerial,
+    );
+    signal.throwIfAborted();
+    if (!device) throw new Error(`Unknown adb device "${targetSerial}".`);
+    if (device.state !== "device") {
+      throw new Error(`${targetSerial} is ${device.state}, not ready.`);
+    }
+    return openContext(targetSerial, generation, signal, previousRecorder);
+  }
+
   const switchSession = async (
     serial: string,
   ): Promise<DeviceSelectionResponse> => {
@@ -340,25 +378,7 @@ export async function startServer(
     // cleanup (see createContext) once the switch commits. Cancelling here,
     // before the candidate is prepared, would strand the still-current
     // session's uploads whenever the switch fails.
-    const context = await sessions.switch(
-      serial,
-      async (targetSerial, generation, signal) => {
-        const device = (await listDevices()).find(
-          (candidate) => candidate.serial === targetSerial,
-        );
-        if (signal.aborted) {
-          throw signal.reason instanceof Error
-            ? signal.reason
-            : new Error("device switch aborted");
-        }
-        if (!device) throw new Error(`Unknown adb device "${targetSerial}".`);
-        if (device.state !== "device") {
-          throw new Error(`${targetSerial} is ${device.state}, not ready.`);
-        }
-        return openContext(targetSerial, generation, signal);
-      },
-      activate,
-    );
+    const context = await sessions.switch(serial, prepareSelection, activate);
     logReady(context);
     return {
       ok: true,
@@ -372,6 +392,7 @@ export async function startServer(
     activate(sessions.current);
   } catch (err) {
     stopRequested = true;
+    deviceRecovery.stop();
     await sessions.close("server startup failed");
     throw err;
   }
@@ -398,7 +419,7 @@ export async function startServer(
 
   const ws = createWebSocketEndpoint({
     sessions,
-    recovery: video.recovery,
+    join: video.join,
     enqueueGesture: services.enqueueGesture,
     enqueueVideoReset: video.enqueueVideoReset,
     health,
@@ -446,6 +467,7 @@ export async function startServer(
     server = serve<WsData>(serverOptions);
   } catch (err) {
     stopRequested = true;
+    deviceRecovery.stop();
     await sessions.close("server startup failed");
     await uploads.close(
       new UploadManagerError("closed", "server startup failed", {
@@ -460,6 +482,7 @@ export async function startServer(
   const stop = (): Promise<void> => {
     if (stopTask) return stopTask;
     stopRequested = true;
+    deviceRecovery.stop();
     server.stop(true);
     const context = sessions.current;
     const error = new UploadManagerError("closed", "server is stopping", {

@@ -12,7 +12,7 @@ import {
   type Harness,
 } from "./helpers/server-harness.ts";
 
-const deltaFrame = (): VideoPacket => ({
+const deltaFrame = (): Extract<VideoPacket, { type: "frame" }> => ({
   type: "frame",
   data: Buffer.from([0, 0, 0, 1, 0x41]),
   pts: 1n,
@@ -293,6 +293,59 @@ describe("server recovery watchdog", () => {
       expect(sentFrames(healthyAfterThrow)).toHaveLength(1);
     } finally {
       harness.started.stop();
+    }
+  });
+
+  test("a late viewer gets the complete cached GOP before the next live delta", async () => {
+    const harness = await createHarness({ serials: ["A"] });
+    try {
+      const established = await harness.openWebSocket();
+      await pushFrame(harness, "A", keyFrame(), 1);
+      await pushFrame(harness, "A", deltaFrame(), 2);
+      const before = harness.session.fakeControlSocket.writes.length;
+      const joining = await harness.openWebSocket();
+      expect(sentFrames(joining)).toEqual(sentFrames(established));
+      expect(sentFrames(joining)).toHaveLength(2);
+
+      await pushFrame(harness, "A", deltaFrame(), 3);
+      expect(sentFrames(joining)).toHaveLength(3);
+      expect(harness.session.fakeControlSocket.writes).toHaveLength(before);
+    } finally {
+      await harness.started.stop();
+    }
+  });
+
+  test("a waiting joiner and a congested viewer leave the active encoder alone", async () => {
+    const clock = new ManualClock();
+    const harness = await createHarness({ serials: ["A"] }, { recoveryClock: clock });
+    try {
+      const healthy = await harness.openWebSocket();
+      const slow = await harness.openWebSocket({ sendResult: -1 });
+      await pushFrame(harness, "A", keyFrame(), 1);
+      expect(harness.session.fakeControlSocket.writes).toHaveLength(1);
+
+      // The delta empties the bounded join cache. A late viewer cannot start
+      // mid-GOP, even when a keyframe was previously received.
+      await pushFrame(harness, "A", {
+        ...deltaFrame(), data: Buffer.alloc(1024 * 1024),
+      }, 2);
+      const joining = await harness.openWebSocket();
+      harness.handlers.websocket.message(joining, JSON.stringify({ type: "reset-video" }));
+      harness.handlers.websocket.message(slow, JSON.stringify({ type: "reset-video" }));
+      for (let i = 0; i < 4; i++) {
+        clock.advance(1_000);
+        await pushFrame(harness, "A", deltaFrame(), i + 3);
+        clock.fireActive();
+      }
+      expect(sentFrames(joining)).toHaveLength(0);
+      expect(sentFrames(healthy)).toHaveLength(6);
+      expect(harness.session.fakeControlSocket.writes).toHaveLength(1);
+
+      await pushFrame(harness, "A", keyFrame(), 7);
+      expect(sentFrames(joining)).toHaveLength(1);
+      expect(sentFrames(healthy)).toHaveLength(7);
+    } finally {
+      await harness.started.stop();
     }
   });
 

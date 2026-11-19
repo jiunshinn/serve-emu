@@ -500,6 +500,49 @@ test("WebSocket disconnect releases only its own pointers even when the queue is
   }
 });
 
+test("WebSocket disconnect releases only its own held keys with a full queue", async () => {
+  const { harness, writers, queues } = await createInputHarness({ maxDepth: 4 });
+  const queue = queues.get("device-a")!;
+  const writer = writers.get("device-a")!;
+  const send = (ws: FakeWebSocket, payload: unknown) =>
+    harness.handlers.websocket.message(ws, JSON.stringify(payload));
+  const key = (code: number, action: "down" | "up") =>
+    ({ type: "key", keycode: code, action });
+  const actions = (code: number) => writer.packets
+    .filter((packet) => packet[0] === 0 && packet.readInt32BE(2) === code)
+    .map((packet) => packet[1]);
+  try {
+    const first = await harness.openWebSocket();
+    const second = await harness.openWebSocket();
+    send(first, { ...key(20, "down"), ack: false });
+    send(second, { ...key(21, "down"), record: false, ack: false });
+    await waitFor(() => queue.snapshot().depth === 0);
+    send(second, { ...key(20, "up"), requestId: "other-client" });
+    expect(second.sent).toContainEqual(expect.objectContaining({
+      requestId: "other-client", status: "rejected", error: "key is already held",
+    }));
+
+    writer.blockNextWrite();
+    send(second, { type: "home", ack: false });
+    await waitFor(() => writer.pending !== null);
+    send(second, { type: "home", ack: false });
+    expect(queue.snapshot()).toMatchObject({ depth: 2, reservedReleases: 2 });
+    harness.handlers.websocket.close(first);
+    harness.handlers.websocket.close(first);
+    harness.handlers.websocket.close(second);
+    expect(queue.snapshot()).toMatchObject({ depth: 4, reservedReleases: 0 });
+    writer.release();
+    await waitFor(() => queue.snapshot().depth === 0);
+    expect(actions(20)).toEqual([0, 1]);
+    expect(actions(21)).toEqual([0, 1]);
+    const session = await json(harness.request("/api/session"));
+    expect(session.events.filter((event: any) => event.source === "ws:disconnect")
+      .map((event: any) => event.gesture)).toEqual([key(20, "up")]);
+  } finally {
+    writer.release();
+  }
+});
+
 describe("WebSocket touch recording follows the pointer's down", () => {
   type Step = { action: "down" | "move" | "up" | "disconnect"; record?: boolean };
   const cases: Array<[string, Step[], string[]]> = [
