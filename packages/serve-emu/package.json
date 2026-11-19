@@ -54,6 +54,7 @@
     "prepack": "bun run scripts/fetch-scrcpy.ts",
     "prepublishOnly": "bun run check",
     "test:browser": "playwright test",
+    "bench:server": "bun run scripts/bench-server.ts",
     "bench:stream": "bun run scripts/bench-stream.ts"
   },
   "files": [
