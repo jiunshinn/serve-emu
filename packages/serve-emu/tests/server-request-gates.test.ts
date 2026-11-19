@@ -318,6 +318,7 @@ describe("server HTTP and WebSocket boundaries", () => {
       ["POST", "/api/device-grid"],
       ["GET", "/api/devices/select"],
       ["GET", "/api/avds/start"],
+      ["POST", "/api/webcams"],
       ["GET", "/api/avds/stop"],
       ["PUT", "/api/stream-quality"],
       ["PATCH", "/api/orientation"],

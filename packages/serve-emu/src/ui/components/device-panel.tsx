@@ -1,8 +1,9 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import type {
   DeviceGridResponse,
   GridDevice,
   SessionStatus,
+  WebcamsResponse,
 } from "../../shared/api-contracts";
 import { apiErrorMessage, apiRequest } from "../lib/api-client";
 import { DEVICE_SETTINGS, useDeviceSetting } from "../lib/device-setting";
@@ -16,9 +17,18 @@ const FONT_SCALE_PRESETS = [0.85, 1, 1.15, 1.3, 1.5] as const;
 export function DevicePanel() {
   const [devices, setDevices] = useState<GridDevice[]>([]);
   const [status, setStatus] = useState("Loading...");
+  const [actionError, setActionError] = useState<string | null>(null);
   const [sessionStatus, setSessionStatus] = useState<SessionStatus>("streaming");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState<Record<string, BusyAction | undefined>>({});
+  const [cameras, setCameras] = useState<Record<string, { cameraBack?: string; cameraFront?: string }>>({});
+  const [webcams, setWebcams] = useState<WebcamsResponse["webcams"]>([]);
+  const webcamsRequested = useRef(false);
+  const loadWebcams = () => {
+    if (webcamsRequested.current) return;
+    webcamsRequested.current = true;
+    void apiRequest("/api/webcams", { method: "GET" }).then((result) => setWebcams(result.webcams)).catch(() => {});
+  };
   const deviceSession = useDeviceSessionSnapshot();
 
   const loadDevices = useCallback(
@@ -50,6 +60,7 @@ export function DevicePanel() {
 
   const runDeviceAction = useCallback(
     async (device: GridDevice, action: BusyAction) => {
+      setActionError(null);
       setBusy((current) => ({ ...current, [device.id]: action }));
       setStatus(action === "select" ? "Switching..." : action === "start" ? "Starting..." : "Stopping...");
       const changesSession = action === "select" || action === "start" || device.current;
@@ -67,7 +78,7 @@ export function DevicePanel() {
             : action === "start"
               ? await apiRequest("/api/avds/start", {
                   method: "POST",
-                  body: { avd: device.avd ?? device.name },
+                  body: { avd: device.avd ?? device.name, ...cameras[device.id] },
                 })
               : await apiRequest("/api/avds/stop", {
                   method: "POST",
@@ -75,7 +86,7 @@ export function DevicePanel() {
                 });
         if (changesSession) nextSession = result;
       } catch (err) {
-        setStatus(apiErrorMessage(err));
+        setActionError(apiErrorMessage(err));
       } finally {
         if (changesSession) {
           deviceSessionStore.endTransition();
@@ -89,7 +100,7 @@ export function DevicePanel() {
         });
       }
     },
-    [refreshDevices],
+    [refreshDevices, cameras],
   );
 
   const filtered = useMemo(() => {
@@ -107,7 +118,7 @@ export function DevicePanel() {
     <section className="device-panel">
       <div className="panel-heading">
         <h2>Devices</h2>
-        <div className="location-status">{status}</div>
+        <div className="location-status">{actionError ?? status}</div>
       </div>
 
       <div className="device-search">
@@ -129,6 +140,10 @@ export function DevicePanel() {
               device={device}
               sessionStatus={sessionStatus}
               busy={busy[device.id]}
+              cameras={cameras[device.id] ?? {}}
+              webcams={webcams}
+              loadWebcams={loadWebcams}
+              onCameraChange={(key, value) => setCameras((current) => ({ ...current, [device.id]: { ...current[device.id], [key]: value || undefined } }))}
               onSelect={() => void runDeviceAction(device, "select")}
               onStart={() => void runDeviceAction(device, "start")}
               onStop={() => void runDeviceAction(device, "stop")}
@@ -250,6 +265,10 @@ function DeviceRow({
   onSelect,
   onStart,
   onStop,
+  cameras,
+  webcams,
+  loadWebcams,
+  onCameraChange,
 }: {
   device: GridDevice;
   sessionStatus: SessionStatus;
@@ -257,6 +276,10 @@ function DeviceRow({
   onSelect: () => void;
   onStart: () => void;
   onStop: () => void;
+  cameras: { cameraBack?: string; cameraFront?: string };
+  webcams: WebcamsResponse["webcams"];
+  loadWebcams: () => void;
+  onCameraChange: (key: "cameraBack" | "cameraFront", value: string) => void;
 }) {
   const isLiveCurrent = device.current && sessionStatus === "streaming";
   const status = device.current ? sessionStatus : device.state;
@@ -274,6 +297,23 @@ function DeviceRow({
         <span className="device-name">{device.name}</span>
         <span className="device-subtitle">{device.serial ?? device.avd ?? "not running"}</span>
       </button>
+        {device.canStart ? (
+          <details className="camera-picker" onToggle={(event) => { if (event.currentTarget.open) loadWebcams(); }}>
+            <summary>Cameras</summary>
+            {(["cameraBack", "cameraFront"] as const).map((key) => (
+              <label key={key}>
+                {key === "cameraBack" ? "Back camera" : "Front camera"}
+                <select aria-label={`${device.name} ${key === "cameraBack" ? "Back camera" : "Front camera"}`} value={cameras[key] ?? ""} disabled={Boolean(busy)} onChange={(event) => onCameraChange(key, event.target.value)}>
+                  <option value="">AVD default</option>
+                  <option value="emulated">Emulated</option>
+                  <option value="none">None</option>
+                  {key === "cameraBack" ? <option value="virtualscene">Virtual scene</option> : null}
+                  {webcams.map((webcam) => <option key={webcam.name} value={webcam.name}>Webcam: {webcam.device}</option>)}
+                </select>
+              </label>
+            ))}
+          </details>
+        ) : null}
       <div className="device-row-actions">
         <code>{busy ?? status}</code>
         {device.canStart ? (

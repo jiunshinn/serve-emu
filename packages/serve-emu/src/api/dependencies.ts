@@ -8,6 +8,7 @@ import type {
   EmulatorLaunch,
   RunningAvd,
   StartEmulatorOpts,
+  HostWebcam,
 } from "../emulator.ts";
 import type { Gesture } from "../input.ts";
 import type { JsonResponseTracker } from "../json-response.ts";
@@ -62,6 +63,8 @@ export type ApiDependencies = {
     patch: Partial<StreamQuality>,
   ) => Promise<StreamQualityResponse>;
   launchEmulator: (opts: StartEmulatorOpts) => Promise<EmulatorLaunch>;
+  validateCameras: (opts: Pick<StartEmulatorOpts, "cameraBack" | "cameraFront">) => void;
+  webcams: (signal: AbortSignal) => Promise<HostWebcam[]>;
   listActiveAvds: () => Promise<RunningAvd[]>;
   killEmulator: (serial: string) => Promise<void>;
   readAccessibilitySnapshot: (
