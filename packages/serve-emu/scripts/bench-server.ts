@@ -91,21 +91,24 @@ const findPids = (pattern: RegExp) =>
 
 type Server = { serial: string; port: number; base: string; proc: ReturnType<typeof Bun.spawn> };
 
-async function startServer(serial: string, port: number): Promise<Server> {
+const servers: Server[] = [];
+
+async function startServer(serial: string, port: number): Promise<void> {
   const proc = Bun.spawn(
     ["bun", "run", new URL("../src/cli.ts", import.meta.url).pathname, "-p", String(port), "-s", serial, ...extraServerArgs],
     { stdout: "ignore", stderr: "ignore", env: { ...process.env, SERVE_EMU_UPDATE_CHECK: "0" } },
   );
   const base = `http://127.0.0.1:${port}`;
+  const server = { serial, port, base, proc };
+  servers.push(server);
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     try {
       const health = (await (await fetch(`${base}/health`)).json()) as { status?: string; frames?: number };
-      if (health.status === "streaming") return { serial, port, base, proc };
+      if (health.status === "streaming") return;
     } catch {}
     await Bun.sleep(500);
   }
-  proc.kill();
   throw new Error(`serve-emu for ${serial} did not reach streaming on :${port}`);
 }
 
@@ -241,7 +244,6 @@ async function runStep(servers: Server[], clientsPerServer: number) {
   };
 }
 
-const servers: Server[] = [];
 const cleanup = () => servers.forEach((s) => s.proc.kill());
 process.on("SIGINT", () => {
   cleanup();
@@ -249,7 +251,8 @@ process.on("SIGINT", () => {
 });
 
 try {
-  servers.push(...(await Promise.all(serials.map((serial, i) => startServer(serial, basePort + i)))));
+  await Promise.all(serials.map((serial, i) => startServer(serial, basePort + i)));
+  servers.sort((a, b) => a.port - b.port);
   const steps = [];
   for (const n of clientSteps) {
     const step = await runStep(servers, n);
