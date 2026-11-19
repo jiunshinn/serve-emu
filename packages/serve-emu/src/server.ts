@@ -23,6 +23,8 @@ import {
 } from "./device-session-context.ts";
 import {
   listAvds,
+  listWebcams,
+  cameraArgs,
   listRunningAvds,
   startEmulator,
   stopEmulator,
@@ -144,6 +146,7 @@ export type ServerDependencies = {
   stopEmulator?: typeof stopEmulator;
   listRunningAvds?: typeof listRunningAvds;
   listAvds?: typeof listAvds;
+  listWebcams?: typeof listWebcams;
   /** Device commands used by the API routes (screenshot, settings, apps). */
   deviceService?: DeviceService;
   /** Host AVD catalog and creation used by the Add emulator dialog. */
@@ -485,6 +488,8 @@ export async function startServer(
       streamQuality: qualityResponse,
       setStreamQuality,
       launchEmulator: emulators.launchEmulator,
+      validateCameras: (cameras) => { cameraArgs(cameras, false); },
+      webcams: (signal) => (dependencies.listWebcams ?? listWebcams)(emulatorSettings.emulatorPath, {}, signal),
       listActiveAvds,
       killEmulator: async (serial: string) => {
         await stopOtherStreams(serial, sessions);

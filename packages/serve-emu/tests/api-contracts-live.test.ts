@@ -60,6 +60,7 @@ async function liveHarness() {
       { serial: "emulator-5558", avd: "Running_AVD", state: "device" },
     ],
     listAvds: async () => ["Running_AVD", "Stopped_AVD"],
+    listWebcams: async () => [{ name: "webcam0", device: "Host camera" }],
     startEmulator: async (opts) => ({
       serial: opts.avd === "Selected_AVD" ? "emulator-5556" : "emulator-5560",
       proc: null,
@@ -186,8 +187,9 @@ describe("shared API contracts against real server responses", () => {
     ).toMatchObject({ ok: true, output: expect.stringContaining("Activity: com.example.app/.LinkActivity") });
 
     expect(
-      await call("/api/avds/start", "POST", { avd: "Background_AVD", select: false }),
+      await call("/api/avds/start", "POST", { avd: "Background_AVD", select: false, cameraBack: "emulated", cameraFront: "none" }),
     ).toEqual({ ok: true, serial: "emulator-5560", avd: "Background_AVD" });
+    expect(await call("/api/webcams", "GET")).toEqual({ ok: true, webcams: [{ name: "webcam0", device: "Host camera" }] });
     expect(
       await call("/api/avds/stop", "POST", { serial: "emulator-5558" }),
     ).toEqual({ ok: true, serial: "emulator-5558" });

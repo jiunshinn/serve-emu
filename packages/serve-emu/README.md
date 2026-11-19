@@ -241,12 +241,18 @@ The flags also accept the emulator's other camera modes, listed by `emulator -he
 
 On macOS, the first time an Android app opens the webcam, macOS asks whether the app that launched `serve-emu` (usually your terminal) may use the camera. If you denied it, turn it back on under **System Settings → Privacy & Security → Camera**. The emulator can't open a webcam that another app is using.
 
+In the browser's device panel, expand **Cameras** on a stopped AVD row to choose the back and front camera before **Start**. **AVD default** keeps that AVD's own setting; CLI camera flags do not override UI launches. The picker offers emulated, none, host webcams, and virtual scene (back only). If webcam discovery fails, the other choices remain available.
+
+Agents can discover host cameras with `GET /api/webcams`, which returns `{ "ok": true, "webcams": [{ "name": "webcam0", "device": "Host camera" }] }`, then send optional `cameraBack` and `cameraFront` strings to `POST /api/avds/start`. API modes are `emulated`, `none`, `environment`, `webcam<N>`, and `virtualscene` (back only). Omit either field to keep its AVD default. Both cameras cannot use the same webcam. Requesting cameras for an already-running AVD returns a structured `409 conflict`; stop it first.
+
+File modes (`imagefile:`, `videofile:`, `image360:`) are **CLI-only**: allowing remote API callers to choose host files would expose their contents through the camera and screenshots.
+
 Known limitations:
 
 - The preview updates no faster than the webcam, usually 30 fps, while the rest of the stream can reach 60 fps.
 - On Apple Silicon, Android Emulator 36.6 slows the preview to a few frames per second about 10 seconds after a camera app opens it, once the rest of the guest goes idle. The whole Android UI slows down too; the camera just makes it obvious. Emulator 37.2.12 holds about 30 fps, so update with `sdkmanager --install emulator`. If you can't update, lower the AVD to 2 CPU cores (`hw.cpu.ncore=2` in its `config.ini`).
 - The webcam is the one on the computer running `serve-emu`. A remote viewer's browser camera can't feed the emulator.
-- AVDs started from the browser UI's device panel keep their own camera settings.
+- Camera choices apply at boot, not to an already-running AVD; stop it before starting with different cameras.
 
 ## Browser UI
 
@@ -445,6 +451,7 @@ missing SDK tools return HTTP 503 and a failing SDK command returns HTTP 502,
 both with setup guidance.
 
 ```sh
+curl "$BASE/api/webcams" # host webcam names for optional cameraBack/cameraFront
 curl -X POST "$BASE/api/avds/start" \
   -H 'Content-Type: application/json' \
   -d '{"avd":"Pixel_8","select":true}'

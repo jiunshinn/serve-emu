@@ -840,7 +840,7 @@ describe("emulator cameras", () => {
       result("", { status: 1, stderr: "no display" })) as typeof execText;
     await expect(
       listWebcams("/sdk/emulator", { execText: failed }),
-    ).rejects.toThrow("emulator -webcam-list failed: no display");
+    ).rejects.toThrow("emulator -webcam-list failed");
   });
 
   test("boots with camera arguments after checking the requested webcam", async () => {

@@ -3,6 +3,7 @@ import { commandFailureOf } from "../command-failure.ts";
 import { ControlInputError } from "../control-input-queue.ts";
 import { SessionChangedError } from "../device-session-context.ts";
 import { FoldableError } from "../foldable.ts";
+import { EmulatorCameraConflictError } from "../emulator.ts";
 import { MultipartUploadError } from "../multipart-upload.ts";
 import { HttpBodyError } from "../request-body.ts";
 import {
@@ -81,6 +82,9 @@ export function toApiError(
   fallback: ApiErrorFallback = "invalid_request",
 ): ApiError {
   if (err instanceof ApiError) return err;
+  if (err instanceof EmulatorCameraConflictError) {
+    return api("conflict", message(err), err, "emulator-camera-restart-required");
+  }
   if (err instanceof SessionChangedError) {
     return api("conflict", message(err), err, err.code);
   }

@@ -241,14 +241,18 @@ const WEBCAM_LIST_LINE = /Camera '(webcam\d+)' is connected to device '(.*)' on 
 async function listWebcamsWithEmulator(
   emulator: string,
   runExec: typeof execText = execText,
+  signal?: AbortSignal,
 ): Promise<HostWebcam[]> {
   const r = await runExec(emulator, ["-webcam-list"], {
     timeout: 10_000,
     maxBuffer: 64 * 1024,
+    ...(signal ? { signal } : {}),
   });
   if (!execSucceeded(r)) {
-    throw new Error(
-      `emulator -webcam-list failed: ${execFailure(r)}`,
+    throw new CommandFailureError(
+      "emulator-failed",
+      "emulator -webcam-list failed",
+      execFailure(r),
       { cause: r.error ?? undefined },
     );
   }
@@ -262,10 +266,16 @@ async function listWebcamsWithEmulator(
 export async function listWebcams(
   emulatorPath?: string,
   dependencies: EmulatorResolverDependencies = {},
+  signal?: AbortSignal,
 ): Promise<HostWebcam[]> {
+  const resolver = signal ? {
+    ...dependencies,
+    execText: ((command, args, options) => (dependencies.execText ?? execText)(command, args, { ...options, signal })) as typeof execText,
+  } : dependencies;
   return listWebcamsWithEmulator(
-    await resolveEmulator(emulatorPath, dependencies),
+    await resolveEmulator(emulatorPath, resolver),
     dependencies.execText,
+    signal,
   );
 }
 
@@ -288,8 +298,11 @@ function validateCameraMode(direction: CameraDirection, mode: string): void {
 }
 
 /** Validate camera modes before anything boots or restarts. */
-function cameraArgs(opts: StartEmulatorOpts): string[] {
+export function cameraArgs(opts: Pick<StartEmulatorOpts, "cameraBack" | "cameraFront">, allowFiles = true): string[] {
   const args: string[] = [];
+  if (!allowFiles && [opts.cameraBack, opts.cameraFront].some((mode) => mode !== undefined && FILE_CAMERA_MODE.test(mode))) {
+    throw new Error("File camera modes are only available from the CLI.");
+  }
   if (opts.cameraBack !== undefined) {
     validateCameraMode("back", opts.cameraBack);
     args.push("-camera-back", opts.cameraBack);
@@ -557,6 +570,8 @@ async function waitForBoot(
   );
 }
 
+export class EmulatorCameraConflictError extends Error {}
+
 /** The booted emulator on the launch's port is another AVD, which is left running. */
 class EmulatorIdentityError extends Error {
   constructor(serial: string, expected: string, actual: string) {
@@ -587,7 +602,7 @@ export async function startEmulator(
   if (running) {
     if (!opts.restartAvd) {
       if (camera.length) {
-        throw new Error(
+        throw new EmulatorCameraConflictError(
           `AVD "${name}" is already running as ${running.serial}, and the emulator picks cameras at boot. Add --restart-avd to relaunch it with the requested camera.`,
         );
       }
