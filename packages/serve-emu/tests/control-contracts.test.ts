@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  isGesture,
   parseGesture,
   type Gesture,
 } from "../src/shared/control-contracts.ts";
@@ -58,7 +57,7 @@ describe("control contracts", () => {
       "down, move, or up",
     );
     expect(() => parseGesture({ type: "key", keycode: 1.5 })).toThrow("integer");
-    expect(isGesture({ type: "unknown" })).toBe(false);
+    expect(() => parseGesture({ type: "unknown" })).toThrow("unsupported gesture type");
   });
 
   test("input.ts preserves the shared parser API", () => {
