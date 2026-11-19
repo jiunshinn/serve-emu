@@ -45,6 +45,7 @@ type ActiveDeviceSessionOpts<TClient extends SessionClient> = {
   applyLocation: (serial: string, fix: GeoFix, signal: AbortSignal) => Promise<void>;
   closeClient?: (client: TClient, code: number, reason: string) => void;
   inputQueue?: ControlInputQueue;
+  recorder?: SessionRecorder;
   now?: () => number;
 };
 
@@ -69,7 +70,7 @@ export class ActiveDeviceSession<
   readonly generation: number;
   readonly scrcpy: ScrcpySession;
   readonly screen: Screen;
-  readonly recorder = new SessionRecorder();
+  readonly recorder: SessionRecorder;
   readonly logcat: LogcatHub;
   readonly inputQueue: ControlInputQueue;
   readonly route: RoutePlayback;
@@ -120,6 +121,7 @@ export class ActiveDeviceSession<
 
   constructor(opts: ActiveDeviceSessionOpts<TClient>) {
     this.serial = opts.serial;
+    this.recorder = opts.recorder ?? new SessionRecorder();
     this.logcat = new LogcatHub(opts.serial);
     this.generation = opts.generation;
     this.scrcpy = opts.scrcpy;

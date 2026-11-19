@@ -37,6 +37,16 @@ describe("scrcpy stream termination", () => {
         return next.promise;
       },
     });
+    const tap = () => response(harness.request("/api/tap", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ x: 0.5, y: 0.5 }),
+    }));
+    const exported = async () =>
+      (await response(harness.request("/api/session/export"))).json();
+    expect((await tap()).status).toBe(200);
+    const recorded = await exported();
+    expect(recorded.events).toHaveLength(1);
     initial.endFrames();
     await waitFor(() => waits.length === 1);
     initial.proc.emit("exit", 137, null);
@@ -54,6 +64,20 @@ describe("scrcpy stream termination", () => {
     });
     expect(opens).toBe(2);
     await harness.openWebSocket();
+    expect(await exported()).toEqual(recorded);
+    const replay = await response(harness.request("/api/session/replay", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }));
+    expect(replay.ok).toBe(true);
+    await waitFor(() => replacement.fakeControlSocket.writes.filter((packet) =>
+      packet[0] === 2).length === 2);
+    await waitFor(async () => !(await exported()).session.replaying);
+    expect((await tap()).status).toBe(200);
+    const continued = await exported();
+    expect(continued.events).toHaveLength(2);
+    expect(continued.events[1].id).toBe(recorded.events[0].id + 1);
   });
 
   test("an explicit stop cancels a preparing automatic replacement", async () => {

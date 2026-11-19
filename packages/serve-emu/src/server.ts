@@ -239,6 +239,7 @@ export async function startServer(
     serial: string,
     generation: number,
     scrcpy: ScrcpySession,
+    previousRecorder?: DeviceContext["recorder"],
   ): DeviceContext => {
     const context = new ActiveDeviceSession<Client>({
       serial,
@@ -246,6 +247,7 @@ export async function startServer(
       scrcpy,
       applyLocation: setLocation,
       inputQueue: createInputQueue(scrcpy),
+      recorder: previousRecorder?.copyHistory(),
     });
     context.registerCleanup(() =>
       uploads.cancelGeneration(
@@ -265,10 +267,11 @@ export async function startServer(
     serial: string,
     generation: number,
     signal?: AbortSignal,
+    previousRecorder?: DeviceContext["recorder"],
   ): Promise<DeviceContext> => {
     const scrcpy = await openScrcpy(serial, signal);
     try {
-      return createContext(serial, generation, scrcpy);
+      return createContext(serial, generation, scrcpy, previousRecorder);
     } catch (err) {
       await closeScrcpySession(scrcpy);
       throw err;
@@ -291,7 +294,13 @@ export async function startServer(
   const deviceRecovery = createDeviceRecovery({
     current: () => sessions.current,
     reopen: async (failed) => {
-      const context = await sessions.switch(failed.serial, prepareSelection, activate, failed);
+      const context = await sessions.switch(
+        failed.serial,
+        (serial, generation, signal) =>
+          prepareSelection(serial, generation, signal, failed.recorder),
+        activate,
+        failed,
+      );
       logReady(context);
     },
     wait: dependencies.waitForDeviceRetry,
@@ -345,7 +354,12 @@ export async function startServer(
     importMediaFile: dependencies.importMediaFile ?? importMediaFile,
   });
 
-  async function prepareSelection(targetSerial: string, generation: number, signal: AbortSignal) {
+  async function prepareSelection(
+    targetSerial: string,
+    generation: number,
+    signal: AbortSignal,
+    previousRecorder?: DeviceContext["recorder"],
+  ) {
     const device = (await listDevices({ signal })).find(
       (candidate) => candidate.serial === targetSerial,
     );
@@ -354,7 +368,7 @@ export async function startServer(
     if (device.state !== "device") {
       throw new Error(`${targetSerial} is ${device.state}, not ready.`);
     }
-    return openContext(targetSerial, generation, signal);
+    return openContext(targetSerial, generation, signal, previousRecorder);
   }
 
   const switchSession = async (
