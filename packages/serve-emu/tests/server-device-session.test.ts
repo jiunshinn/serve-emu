@@ -493,6 +493,93 @@ describe("startServer device session lifecycle", () => {
     expect((await start).status).toBeGreaterThanOrEqual(400);
   });
 
+  test("server stop waits for cleanup when an emulator finishes booting during shutdown", async () => {
+    const booting = deferred<void>();
+    const boot = deferred<EmulatorLaunch>();
+    const cleanup = deferred<void>();
+    const events: string[] = [];
+    const h = await createHarness(
+      { serials: ["A"] },
+      {
+        startEmulator: () => {
+          booting.resolve();
+          return boot.promise;
+        },
+      },
+    );
+    const start = response(
+      h.request("/api/avds/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avd: "Pixel", select: false }),
+      }),
+    );
+    await booting.promise;
+    boot.resolve({
+      serial: "emulator-5556",
+      proc: null,
+      ownsProcess: true,
+      stop: async () => {
+        events.push("cleanup started");
+        await cleanup.promise;
+        events.push("cleanup finished");
+      },
+    });
+    const shutdown = h.started.stop().then(() => {
+      events.push("server stopped");
+    });
+    await Bun.sleep(0);
+    cleanup.resolve();
+    await shutdown;
+    expect(events).toEqual(["cleanup started", "cleanup finished", "server stopped"]);
+    expect((await start).status).toBeGreaterThanOrEqual(400);
+  });
+
+  test("server stop waits for an owned emulator already stopping through the API", async () => {
+    const stopping = deferred<void>();
+    const cleanup = deferred<void>();
+    const events: string[] = [];
+    const h = await createHarness(
+      { serials: ["A"] },
+      {
+        startEmulator: async () => ({
+          serial: "emulator-5556",
+          proc: null,
+          ownsProcess: true,
+          stop: async () => {
+            events.push("cleanup started");
+            stopping.resolve();
+            await cleanup.promise;
+            events.push("cleanup finished");
+          },
+        }),
+      },
+    );
+    const start = await response(
+      h.request("/api/avds/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ avd: "Pixel", select: false }),
+      }),
+    );
+    expect(start.status).toBe(200);
+    const stop = response(
+      h.request("/api/avds/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serial: "emulator-5556" }),
+      }),
+    );
+    await stopping.promise;
+    const shutdown = h.started.stop().then(() => {
+      events.push("server stopped");
+    });
+    await Bun.sleep(0);
+    cleanup.resolve();
+    await Promise.all([shutdown, stop]);
+    expect(events).toEqual(["cleanup started", "cleanup finished", "server stopped"]);
+  });
+
   test("the device grid lists adb devices once per request and resolves AVDs from that list", async () => {
     const devices = [
       { serial: "emulator-5554", state: "device" },
