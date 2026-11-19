@@ -4,6 +4,7 @@ import { SessionChangedError } from "../src/device-session-context.ts";
 import {
   RoutePlayback,
   RoutePlaybackConflictError,
+  parseRoutePlaybackRequest,
   type RoutePlaybackRequest,
 } from "../src/route-playback.ts";
 import {
@@ -29,6 +30,38 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe("RoutePlayback lifecycle", () => {
+  test("applies finite locations and reaches the destination on an antipodal route", async () => {
+    const clock = new ManualClock();
+    const from = { latitude: 2.5, longitude: 0 };
+    const to = { latitude: -2.5, longitude: 180 };
+    const fixes: Array<{ latitude: number; longitude: number }> = [];
+    const playback = new RoutePlayback({
+      clock,
+      applyLocation: ({ latitude, longitude }) => {
+        fixes.push({ latitude, longitude });
+      },
+      onLocation: () => {},
+    });
+    const started = await playback.start(parseRoutePlaybackRequest({
+      waypoints: [from, to],
+      speedKph: 500,
+      multiplier: 100,
+    }));
+
+    expect(fixes).toEqual([from]);
+    expect(started.totalMeters).toBeCloseTo(20_015_087, 0);
+    clock.advance(15 * 60 * 1000);
+    clock.fireActive();
+    await flushMicrotasks();
+    expect(Number.isFinite(fixes[1]?.latitude)).toBe(true);
+    expect(Number.isFinite(fixes[1]?.longitude)).toBe(true);
+    clock.advance(15 * 60 * 1000);
+    clock.fireActive();
+    await flushMicrotasks();
+    expect(playback.snapshot().status).toBe("completed");
+    expect(fixes.at(-1)).toEqual(to);
+  });
+
   test("close during the initial apply aborts the run without a callback or timer", async () => {
     const clock = new ManualClock(Date.UTC(2026, 0, 1));
     const applying = deferred<void>();
