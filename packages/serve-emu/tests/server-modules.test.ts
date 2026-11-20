@@ -34,6 +34,38 @@ describe("serveStaticFile", () => {
       expect(await response.text(), path).toBe("not found");
     }
   });
+
+  test("negotiates precompressed JS without changing its MIME type or text", async () => {
+    const root = await mkdtemp(join(tmpdir(), "serve-emu-static-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const source = "console.log('precompressed');";
+    await mkdir(join(root, "assets"));
+    await writeFile(join(root, "assets", "app.js"), source);
+    await writeFile(join(root, "assets", "app.js.gz"), Bun.gzipSync(source));
+    for (const [header, compressed] of [
+      ["br, GZIP", true],
+      ["*;q=0.5", true],
+      ["gzip ; q=1, identity;q=0.5", true],
+      ["gzip;q=0, *;q=1", false],
+      ["gzip;q=0.5, identity", false],
+      ["gzip;q=invalid", false],
+      ["br", false],
+      [null, false],
+    ] as const) {
+      const response = await serveStaticFile(root, "/assets/app.js", header);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("vary")).toBe("Accept-Encoding");
+      expect(response.headers.get("content-type")).toContain("javascript");
+      expect(response.headers.get("content-encoding")).toBe(compressed ? "gzip" : null);
+      const bytes = await response.bytes();
+      expect(Buffer.from(compressed ? Bun.gunzipSync(bytes) : bytes).toString()).toBe(source);
+    }
+    expect((await serveStaticFile(root, "/assets/app.js.gz")).status).toBe(404);
+    await writeFile(join(root, "assets", "raw.css"), "body {}");
+    const noSidecar = await serveStaticFile(root, "/assets/raw.css", "gzip");
+    expect(noSidecar.headers.has("content-encoding")).toBe(false);
+    expect(await noSidecar.text()).toBe("body {}");
+  });
 });
 
 describe("buildHealthSnapshot", () => {

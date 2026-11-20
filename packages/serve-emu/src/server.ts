@@ -763,7 +763,7 @@ export async function startServer(
       return slot.ws.upgrade(req, url, srv, requestContext);
     }
 
-    return serveStaticFile(uiDir, path);
+    return serveStaticFile(uiDir, path, req.headers.get("accept-encoding"));
   };
 
   const serverOptions: Parameters<typeof Bun.serve<WsData>>[0] = {
