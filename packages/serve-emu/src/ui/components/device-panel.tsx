@@ -306,6 +306,7 @@ function DeviceRow({
                 <select aria-label={`${device.name} ${key === "cameraBack" ? "Back camera" : "Front camera"}`} value={cameras[key] ?? ""} disabled={Boolean(busy)} onChange={(event) => onCameraChange(key, event.target.value)}>
                   <option value="">AVD default</option>
                   <option value="emulated">Emulated</option>
+                  <option value="uploaded">Uploaded image</option>
                   <option value="none">None</option>
                   {key === "cameraBack" ? <option value="virtualscene">Virtual scene</option> : null}
                   {webcams.map((webcam) => <option key={webcam.name} value={webcam.name}>Webcam: {webcam.device}</option>)}

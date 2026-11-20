@@ -1,6 +1,7 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { access, readFile } from "node:fs/promises";
 import { AppManagementError } from "../src/app-management.ts";
+import { MAX_CAMERA_IMAGE_BYTES } from "../src/camera-images.ts";
 import type { StagedMultipartFile } from "../src/multipart-upload.ts";
 import { startServer } from "../src/server.ts";
 import { deferred } from "./helpers/deferred.ts";
@@ -664,7 +665,7 @@ describe("server request and upload limits", () => {
     });
 
     expect(harness.handlers.maxRequestBodySize).toBe(
-      456 + 2 * 1024 * 1024,
+      MAX_CAMERA_IMAGE_BYTES,
     );
     expect(harness.handlers.websocket.maxPayloadLength).toBe(16 * 1024);
   });

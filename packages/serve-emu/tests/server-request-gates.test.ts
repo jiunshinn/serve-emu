@@ -319,6 +319,8 @@ describe("server HTTP and WebSocket boundaries", () => {
       ["GET", "/api/devices/select"],
       ["GET", "/api/avds/start"],
       ["POST", "/api/webcams"],
+      ["POST", "/api/camera"],
+      ["POST", "/api/camera/image"],
       ["GET", "/api/avds/stop"],
       ["PUT", "/api/stream-quality"],
       ["PATCH", "/api/orientation"],

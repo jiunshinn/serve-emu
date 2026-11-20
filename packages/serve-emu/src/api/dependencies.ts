@@ -1,4 +1,5 @@
 import type { AvdManager } from "../avd-manager.ts";
+import type { CameraImages } from "../camera-images.ts";
 import type { DeviceService } from "../device-service.ts";
 import type { ApiErrorFallback } from "./error-mapping.ts";
 import type { AccessibilitySnapshot } from "../accessibility.ts";
@@ -65,6 +66,7 @@ export type ApiDependencies = {
   launchEmulator: (opts: StartEmulatorOpts) => Promise<EmulatorLaunch>;
   validateCameras: (opts: Pick<StartEmulatorOpts, "cameraBack" | "cameraFront">) => void;
   webcams: (signal: AbortSignal) => Promise<HostWebcam[]>;
+  cameraImages: (serial: string) => CameraImages | undefined;
   listActiveAvds: () => Promise<RunningAvd[]>;
   killEmulator: (serial: string) => Promise<void>;
   readAccessibilitySnapshot: (

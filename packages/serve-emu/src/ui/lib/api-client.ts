@@ -85,6 +85,7 @@ function isAbortError(value: unknown): boolean {
 function requestBody(body: unknown, headers: Headers): BodyInit | undefined {
   if (body === undefined) return undefined;
   if (body instanceof FormData) return body;
+  if (body instanceof Blob) return body;
   if (!headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }

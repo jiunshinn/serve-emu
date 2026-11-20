@@ -16,6 +16,17 @@ function jsonResponse(value: unknown, init?: ResponseInit): Response {
 }
 
 describe("API client", () => {
+  test("passes raw PNG blobs through with camera upload query and parser", async () => {
+    const blob = new Blob(["png"], { type: "image/png" });
+    const request = createApiClient(async (url, init) => {
+      expect(url).toBe("/d/emulator-5554/api/camera/image?camera=front&restartApp=true");
+      expect(init?.body).toBe(blob);
+      expect(new Headers(init?.headers).has("Content-Type")).toBe(false);
+      return jsonResponse({ ok: true, camera: "front", width: 2, height: 2, bytes: 79 });
+    }, "/d/emulator-5554");
+    expect(await request("/api/camera/image", { method: "PUT", body: blob, query: { camera: "front", restartApp: "true" } })).toMatchObject({ camera: "front" });
+  });
+
   test("returns legacy success payloads and serializes JSON bodies", async () => {
     let requestInit: RequestInit | undefined;
     const request = createApiClient(async (_input, init) => {
