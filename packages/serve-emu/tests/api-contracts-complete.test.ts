@@ -391,6 +391,7 @@ describe("complete API success contracts", () => {
 describe("generic and detailed API contracts", () => {
   test("parses health diagnostics including frame stats, clients, and error metadata", () => {
     const health = parseHealthResponse({
+      stream: { capture: "scrcpy" },
       ok: true,
       status: "streaming",
       serial: "emulator-5554",

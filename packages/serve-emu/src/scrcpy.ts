@@ -29,7 +29,9 @@ type ScrcpyMeta = {
 type ScrcpyProtocol = 3 | 4;
 
 export type ScrcpySession = {
-  transport: "scrcpy";
+  transport: "scrcpy" | "host-capture";
+  hostCaptureFallbackReason?: string;
+  requestKeyFrame?: () => void;
   meta: ScrcpyMeta;
   protocol: ScrcpyProtocol;
   videoReader: FramedReader;
@@ -69,6 +71,7 @@ export type ScrcpyErrorCode =
 
 export type StartOpts = {
   serial: string;
+  video?: boolean;
   signal?: AbortSignal;
   maxFps?: number;
   bitRate?: number;
@@ -709,9 +712,11 @@ export class FramedReader {
   }[] = [];
   private err: ScrcpyStreamError | null = null;
   private ended = false;
+  private discarding = false;
 
   constructor(public readonly sock: Socket) {
     sock.on("data", (d: Buffer) => {
+      if (this.discarding) return;
       if (this.total + d.length > MAX_READER_BUFFER_BYTES) {
         this.fail(
           new ScrcpyStreamError(
@@ -814,6 +819,14 @@ export class FramedReader {
     this.chunks.unshift(data);
     this.total += data.length;
     this.flush();
+  }
+
+  /** Drain device-to-host control messages after a control-only handshake. */
+  discard(): void {
+    this.discarding = true;
+    this.chunks.length = 0;
+    this.firstChunkOffset = 0;
+    this.total = 0;
   }
 
   private consume(n: number): Buffer {
@@ -1189,6 +1202,7 @@ export async function startScrcpy(
       `scid=${scid}`,
       "log_level=info",
       "audio=false",
+      ...(opts.video === false ? ["video=false"] : []),
       "tunnel_forward=true",
       "control=true",
       "send_dummy_byte=true",
@@ -1263,7 +1277,7 @@ export async function startScrcpy(
     // it accepts the control socket, which can be before this side resumes.
     const reader = new FramedReader(videoSock);
     throwIfAborted(startupController.signal, "scrcpy startup aborted");
-    controlSock = await withDeadline(
+    controlSock = opts.video === false ? videoSock : await withDeadline(
       runtime,
       startupController.signal,
       timeouts.connectMs,
@@ -1272,6 +1286,40 @@ export async function startScrcpy(
     );
     throwIfAborted(startupController.signal, "scrcpy startup aborted");
     controlSock.on("data", () => {});
+
+    if (opts.video === false) {
+      const deviceMeta = await withDeadline(
+        runtime,
+        startupController.signal,
+        timeouts.preambleMs,
+        "reading scrcpy control device metadata",
+        () => reader.read(65, "header"),
+      );
+      throwIfAborted(startupController.signal, "scrcpy startup aborted");
+      if (deviceMeta[0] !== 0) {
+        throw new ScrcpyStreamError("protocol-parse", "Invalid scrcpy dummy byte");
+      }
+      reader.discard();
+      startupComplete = true;
+      return {
+        transport: "scrcpy",
+        meta: {
+          deviceName: deviceMeta.subarray(1).toString("utf8").replace(/\0+$/, ""),
+          codecId: "h264",
+          width: 0,
+          height: 0,
+        },
+        protocol: 4,
+        videoReader: reader,
+        controlSocket: controlSock,
+        proc,
+        scid,
+        localPort,
+        serial,
+        readFrame: async () => null,
+        close: () => closeWithReason(new Error("scrcpy session closed")),
+      };
+    }
 
     const preambleBytes = await withDeadline(
       runtime,

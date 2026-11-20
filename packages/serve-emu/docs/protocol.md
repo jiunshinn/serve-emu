@@ -35,6 +35,63 @@ blindly discard the first byte: `parseVideoPreamble()` accepts the video preambl
 at offset 0 or 1 and validates its codec and dimensions. The control socket is
 drained for any device-to-host events that this package does not consume.
 
+With `startScrcpy({ video: false, ... })`, audio and video are disabled and
+only the control connection is opened. That first socket receives the dummy
+byte followed by the 64-byte device name, with no codec metadata or video
+preamble. Its session has zero dimensions until a video provider supplies
+them, and `readFrame()` returns `null`.
+
+## Host capture
+
+`--host-capture` opts macOS emulators into token-authenticated gRPC capture.
+Discovery matches live `pid_<pid>.ini` registrations by `port.serial` in
+`~/Library/Caches/TemporaryItems/avd/running/`. Linux discovery uses
+`$XDG_RUNTIME_DIR/avd/running`, though host encoding is macOS-only. Both
+`grpc.port` and `grpc.token` are required. The token is sent only in the
+HTTP/2 bearer header, never in public diagnostics.
+
+The screenshot RPC uses `ImageFormat` RGBA8888 with native dimensions and
+MMAP transport pointing at a private, 64-MiB file. Each image message supplies
+dimensions, rotation, sequence and timestamp. Messages are reassembled with
+a chunk queue and capped at 1 MiB; pixels stay in the mapped file. Size changes
+restart the encoder and emit a session packet before the new codec config.
+The scrcpy session remains control-only, using the native display dimensions
+for touch coordinates. Startup failures fall back to standard scrcpy capture;
+runtime failures follow the normal session terminal/recovery path.
+
+### Host encoder helper
+
+`native/host-encoder.swift` is compiled on demand using `xcrun swiftc -O`.
+The executable is cached under `~/.cache/serve-emu`, keyed by the source hash
+and host architecture. It accepts the mmap path, width, height, bit rate,
+maximum fps and keyframe interval in seconds. The interval defaults to 10 s,
+including when `--key-frame-interval=0` selects the default. Periodic keyframes
+are based on elapsed presentation time, including idle repeats. Host keyframe
+requests do not restart the encoder and remain available to late viewers even
+while another viewer is healthy. The file contains tightly packed, top-down
+RGBA8888 pixels.
+The helper preserves the MMAP row order while converting RGBA to BGRA.
+The helper copies and converts pixels to top-down BGRA on an `f` stdin line.
+A `k` line requests a keyframe, immediately encoding the last copied frame
+when available and the frame-rate cap permits it. Every submission, including
+requested keyframes, is spaced at least `1 / maxFps` seconds apart. New frames
+are copied immediately; faster arrivals replace a single pending frame, which
+is encoded at the next permitted time even if no more screenshots arrive.
+After `max(200 ms, 1 / maxFps)` without an encode it repeats the last frame,
+so the idle floor never exceeds the cap. CLI and per-stream quality caps use
+the same encoder setting.
+
+Stdout packets contain a `u32` payload length, `u8` flags (bit 0 keyframe,
+bit 1 configuration), `u64` presentation timestamp in microseconds and an
+Annex-B payload. An SPS/PPS configuration packet precedes every keyframe.
+Host encoding uses H.264 Main with CAVLC entropy coding: leaving the entropy
+mode at its encoder-specific default can select CABAC, whose decode cost at
+native foldable resolutions can trigger the browser's backlog recovery.
+The TypeScript reader rejects empty or over-32-MiB packets and truncated
+streams. Closing the wrapper kills the helper; stderr contains diagnostics.
+
+## Device server jar cache
+
 Before starting the server, the host prepares the jar on the device. The cache
 is content-addressed,
 `/data/local/tmp/serve-emu-scrcpy-server-v<version>.jar-<first 24 hex of its SHA-256>`,

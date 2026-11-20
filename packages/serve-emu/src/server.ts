@@ -32,12 +32,12 @@ import {
 } from "./emulator.ts";
 import { getExecSnapshot } from "./exec.ts";
 import { JsonResponseTracker } from "./json-response.ts";
+import { openCaptureSession } from "./host-capture.ts";
 import { setEmulatorLocationAsync, type GeoFix } from "./location.ts";
 import { stageMultipartUpload } from "./multipart-upload.ts";
 import {
   closeScrcpySession,
   SCRCPY_DEFAULTS,
-  startScrcpy,
   type ScrcpySession,
 } from "./scrcpy.ts";
 import { createRequestGate } from "./server/auth.ts";
@@ -99,6 +99,7 @@ export type ServerOpts = {
    */
   allowedHosts?: readonly string[];
   maxFps?: number;
+  hostCapture?: boolean;
   bitRate?: number;
   maxSize?: number;
   keyFrameInterval?: number;
@@ -112,7 +113,7 @@ export type ServerOpts = {
    * Launch settings for emulators started through /api/avds/start, the same
    * ones the CLI uses for --avd: the emulator binary, `-gpu`, and the window.
    */
-  emulator?: Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window">;
+  emulator?: Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window" | "hostCapture">;
   /**
    * Check the device for other scrcpy sessions in the background (#76).
    * The CLI turns it on; off, `/health` reports `contention: null`.
@@ -209,8 +210,9 @@ export async function startServer(
   const openScrcpy =
     dependencies.openScrcpy ??
     ((serial: string, signal?: AbortSignal, quality?: StreamQuality) =>
-      startScrcpy({
+      openCaptureSession({
         serial,
+        hostCapture: opts.hostCapture,
         signal,
         maxFps: quality?.maxFps ?? opts.maxFps,
         bitRate: quality?.bitRate ?? opts.bitRate,

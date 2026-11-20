@@ -48,6 +48,7 @@ export function parseCliArgs(argv: string[]) {
       "max-fps": { type: "string", default: String(SCRCPY_DEFAULTS.maxFps) },
       "bit-rate": { type: "string", default: String(SCRCPY_DEFAULTS.bitRate) },
       "max-size": { type: "string", default: String(SCRCPY_DEFAULTS.maxSize) },
+      "host-capture": { type: "boolean" },
       "key-frame-interval": { type: "string", default: String(SCRCPY_DEFAULTS.keyFrameInterval) },
       "repeat-frame-ms": { type: "string", default: String(SCRCPY_DEFAULTS.repeatFrameMs) },
       "max-devices": { type: "string", default: String(DEFAULT_MAX_DEVICES) },
@@ -88,7 +89,7 @@ export function parseCliArgs(argv: string[]) {
 
 export type CliValues = ReturnType<typeof parseCliArgs>;
 
-type EmulatorLaunchSettings = Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window">;
+type EmulatorLaunchSettings = Pick<StartEmulatorOpts, "emulatorPath" | "gpu" | "window" | "hostCapture">;
 
 /**
  * The emulator binary, `-gpu`, and window for every emulator this process
@@ -106,6 +107,7 @@ export function emulatorLaunchSettings(
     emulatorPath: values.emulator,
     gpu: values.gpu ?? (display ? "host" : "swiftshader_indirect"),
     window: values["emulator-window"] ?? display,
+    ...(values["host-capture"] ? { hostCapture: true } : {}),
   };
 }
 
@@ -135,6 +137,7 @@ export function serverOptions(
 ): ServerOpts {
   return {
     ...startup,
+    hostCapture: values["host-capture"],
     port: Number(values.port),
     allowedHosts: values["allowed-host"],
     maxFps: numberOption(values, "max-fps", SCRCPY_DEFAULTS.maxFps),
@@ -237,6 +240,9 @@ Options:
                          If serve-emu started the emulator, serve-emu exits
                          when it exits while it is still the streamed device
                          (not for an AVD that was already running).
+      --host-capture     Encode emulator video on the macOS host (opt-in).
+                         Uses native display size; ignores --max-size. Falls
+                         back to scrcpy if unavailable. Requires token gRPC.
       --gpu <mode>       GPU mode for emulators serve-emu launches (default:
                          host, or swiftshader_indirect on Linux without a
                          display). host uses the real GPU for smooth ~60fps;

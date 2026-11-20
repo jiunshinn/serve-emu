@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { constants, existsSync } from "node:fs";
 import { access, stat } from "node:fs/promises";
+import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { listAllDevices } from "./adb.ts";
@@ -41,6 +42,7 @@ export type StartEmulatorOpts = {
   emulatorPath?: string;
   port?: number;
   restartAvd?: boolean;
+  hostCapture?: boolean;
   bootTimeoutMs?: number;
   /**
    * Emulator `-gpu` mode. Defaults to `host` because the AVD's own `auto`
@@ -661,6 +663,21 @@ async function launchOnPort(
   if (opts.gpu) args.push("-gpu", opts.gpu);
   if (opts.window === false) args.push("-no-window");
   args.push(...camera);
+  if (opts.hostCapture && process.platform === "darwin") {
+    const grpcPort = await new Promise<number>((resolve, reject) => {
+      const listener = createServer();
+      listener.once("error", reject);
+      listener.listen(0, "127.0.0.1", () => {
+        const address = listener.address();
+        listener.close((error) => {
+          if (error) reject(error);
+          else if (address && typeof address !== "string") resolve(address.port);
+          else reject(new Error("Could not allocate emulator gRPC port"));
+        });
+      });
+    });
+    args.push("-grpc", String(grpcPort), "-grpc-use-token");
+  }
 
   throwIfAborted(opts.signal);
   const proc = (dependencies.spawn ?? spawn)(emulator, args, {

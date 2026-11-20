@@ -349,6 +349,8 @@ export type DeviceContention = {
 };
 
 export type HealthResponse = {
+  stream: { capture: "host" | "scrcpy" };
+  hostCaptureFallbackReason?: string;
   ok: boolean;
   status: SessionStatus;
   /** The selected device's scrcpy transport is being reopened. */
@@ -1295,6 +1297,8 @@ export function parseHealthResponse(value: unknown): HealthResponse {
   const root = record(value, "health response");
   // Validate the fields consumed by clients plus the nested state contracts.
   const health: HealthResponse = {
+    stream: { capture: oneOf(record(root.stream, "health response.stream").capture, ["host", "scrcpy"] as const, "health response.stream.capture") },
+    ...(root.hostCaptureFallbackReason === undefined ? {} : { hostCaptureFallbackReason: string(root.hostCaptureFallbackReason, "health response.hostCaptureFallbackReason") }),
     ok: boolean(root.ok, "health response.ok"),
     status: oneOf(root.status, ["streaming", "stopped", "error"] as const, "health response.status"),
     ...(root.recovering === undefined ? {} : {

@@ -68,6 +68,30 @@ async function launchArgs(opts: Partial<StartEmulatorOpts>): Promise<unknown> {
 }
 
 describe("emulator window (#74)", () => {
+  test.skipIf(process.platform !== "darwin")("host capture launches with a free token-authenticated gRPC port", async () => {
+    const args = await launchArgs({ hostCapture: true }) as string[];
+    expect(args).toEqual(["-grpc", expect.stringMatching(/^\d+$/), "-grpc-use-token"]);
+    expect(Number(args[1])).toBeGreaterThan(0);
+  });
+
+  test("--host-capture is opt-in and flows to every emulator launch and server", async () => {
+    expect(parseCliArgs([])["host-capture"]).toBeUndefined();
+    const values = parseCliArgs(["--host-capture", "--avd", "Pixel_8"]);
+    const settings = emulatorLaunchSettings(values, "darwin", {});
+    const signal = new AbortController().signal;
+    expect(settings.hostCapture).toBe(true);
+    expect(avdLaunchOptions("Pixel_8", values, settings, signal).hostCapture).toBe(true);
+    expect(serverOptions(values, settings, { serial: "emulator-5554" }).hostCapture).toBe(true);
+    const launches: StartEmulatorOpts[] = [];
+    const h = await createHarness({ emulator: settings }, {
+      startEmulator: async (opts) => { launches.push(opts); return { serial: "emulator-5556", proc: null, ownsProcess: false, stop: async () => {} }; },
+    });
+    const res = await response(h.request("/api/avds/start", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ avd: "Pixel_8", select: false }),
+    }));
+    expect(res.status).toBe(200);
+    expect(launches[0]!.hostCapture).toBe(true);
+  });
   test.each([
     ["darwin", {}, true],
     ["win32", {}, true],

@@ -42,6 +42,8 @@ export function buildHealthSnapshot(context: DeviceContext, sources: HealthSourc
     serial: context.serial,
     device: context.scrcpy.meta.deviceName,
     codec: context.scrcpy.meta.codecId,
+    stream: { capture: context.scrcpy.transport === "host-capture" ? "host" as const : "scrcpy" as const },
+    ...(context.scrcpy.hostCaptureFallbackReason ? { hostCaptureFallbackReason: context.scrcpy.hostCaptureFallbackReason } : {}),
     size: { width: context.screen.width, height: context.screen.height },
     clients: context.clients.size,
     frames: context.frameCount,

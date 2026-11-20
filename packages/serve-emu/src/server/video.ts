@@ -116,7 +116,7 @@ export function createVideoPipeline(deps: {
     // Client requests share the watchdog's gate, so they cannot restart an
     // encoder whose key frame is still on its way.
     const recovery = recoveries.get(context);
-    if (hasHealthyViewer(context, client) || !canReceive(client)) {
+    if ((!context.scrcpy.requestKeyFrame && hasHealthyViewer(context, client)) || !canReceive(client)) {
       recovery?.markAwaiting(client);
       return { completion: Promise.resolve({ status: "coalesced" as const }) };
     }
@@ -129,7 +129,10 @@ export function createVideoPipeline(deps: {
     // Priority: a reset must not wait behind a long swipe (the next step
     // boundary is at most ~20 ms away), and it is excluded from the depth
     // limit so a full gesture queue cannot block it.
-    const accepted = context.inputQueue.enqueuePacket(resetVideoPacket(), {
+    const accepted = context.scrcpy.requestKeyFrame ? (() => {
+      context.scrcpy.requestKeyFrame();
+      return { completion: Promise.resolve({ status: "completed" as const }) };
+    })() : context.inputQueue.enqueuePacket(resetVideoPacket(), {
       coalesceKey: "reset-video",
       priority: true,
     });
@@ -151,13 +154,18 @@ export function createVideoPipeline(deps: {
       resetSettleMs: RESET_SETTLE_MS,
       maxResetSettleMs: MAX_RESET_SETTLE_MS,
       shouldRetryAwaiting: (client, sourceQuiet) =>
-        canReceive(client) && (!hasHealthyViewer(context) ||
+        canReceive(client) && (!!context.scrcpy.requestKeyFrame || !hasHealthyViewer(context) ||
           (sourceQuiet && client.sentFrames === 0 && client.backpressureEvents === 0)),
       requestReset: (reason, now) => {
         if (!sessions.isCurrent(context) || context.status !== "streaming") {
           return false;
         }
         try {
+          if (context.scrcpy.requestKeyFrame) {
+            context.scrcpy.requestKeyFrame();
+            context.noteVideoReset(reason, now);
+            return true;
+          }
           const accepted = context.inputQueue.enqueuePacket(
             resetVideoPacket(),
             { coalesceKey: "reset-video", priority: true },
@@ -244,7 +252,7 @@ export function createVideoPipeline(deps: {
           : withConfig(frame.data, config), frame.isKey);
         if (!sent) break;
       }
-    } else if (canReceive(client) && !hasHealthyViewer(context, client)) {
+    } else if (canReceive(client) && (context.scrcpy.requestKeyFrame || !hasHealthyViewer(context, client))) {
       recovery?.requestVideoReset("client opened");
     }
   };
@@ -341,7 +349,7 @@ export function createVideoPipeline(deps: {
       ) {
         return;
       }
-      if (!isAbnormalExit(code, signal)) return;
+      if (!isAbnormalExit(code, signal) && context.scrcpy.transport !== "host-capture") return;
       const { reason, ...detail } = procExitDetail(code, signal);
       markTerminal(context, "error", reason, detail);
     });
@@ -358,6 +366,13 @@ export function createVideoPipeline(deps: {
         );
       }
     });
+    if (context.scrcpy.transport === "host-capture") {
+      context.scrcpy.controlSocket.once("close", () => {
+        if (!isStopping() && sessions.current === context && !context.signal.aborted) {
+          markTerminal(context, "error", "scrcpy control socket closed");
+        }
+      });
+    }
   };
 
   const activateContext = (context: DeviceContext) => {

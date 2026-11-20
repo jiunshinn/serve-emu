@@ -46,6 +46,7 @@ const REQUIRED_PACKAGE_FILES = [
   "package.json",
   "scripts/fetch-scrcpy.ts",
   "src/cli.ts",
+  "native/host-encoder.swift",
   VENDORED_SCRCPY_SERVER,
 ] as const;
 

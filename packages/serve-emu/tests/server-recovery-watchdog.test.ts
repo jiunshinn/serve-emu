@@ -349,6 +349,39 @@ describe("server recovery watchdog", () => {
     }
   });
 
+  test.each(["join", "client", "watchdog"])("host capture admits a late viewer's %s keyframe request after the join cache expires", async (request) => {
+    const clock = new ManualClock();
+    const session = fakeScrcpy("A");
+    session.transport = "host-capture";
+    let keyFrameRequests = 0;
+    session.requestKeyFrame = () => { keyFrameRequests++; };
+    const harness = await createHarness({ sessions: [session] }, { recoveryClock: clock });
+    try {
+      const healthy = await harness.openWebSocket();
+      await pushFrame(harness, "A", keyFrame(), 1);
+      for (let i = 0; i < 32; i++) await pushFrame(harness, "A", deltaFrame(), i + 2);
+      if (request === "join") clock.advance(1_000);
+      const joining = await harness.openWebSocket();
+      let frames = 33;
+      if (request === "client") {
+        clock.advance(1_000);
+        harness.handlers.websocket.message(joining, JSON.stringify({ type: "reset-video" }));
+      } else if (request === "watchdog") {
+        for (let i = 0; i < 3; i++) {
+          clock.advance(1_000);
+          await pushFrame(harness, "A", deltaFrame(), ++frames);
+          clock.fireActive();
+        }
+      }
+      expect(keyFrameRequests).toBe(2);
+      expect(session.fakeControlSocket.writes).toHaveLength(0);
+      await pushFrame(harness, "A", keyFrame(), ++frames);
+      expect(sentFrames(joining)).toHaveLength(1);
+      expect(sentFrames(healthy)).toHaveLength(frames);
+      expect((await readHealth(harness)).keyFrameRecovery.awaitingClients).toBe(0);
+    } finally { await harness.started.stop(); }
+  });
+
   test("owns exactly one timer through terminal recovery, switch, and shutdown", async () => {
     const clock = new ManualClock();
     const harness = await createHarness(

@@ -219,6 +219,7 @@ describe("shared API contracts against real server responses", () => {
       serial: "emulator-5556",
       generation: 2,
       session: { eventCount: 0 },
+      stream: { capture: "scrcpy" },
     });
   });
 
