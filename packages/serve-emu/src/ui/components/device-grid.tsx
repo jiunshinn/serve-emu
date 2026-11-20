@@ -10,8 +10,10 @@ const TILE_QUALITY = {
 } as const;
 type TileQuality = keyof typeof TILE_QUALITY | "device";
 
-const sameQuality = (a: Partial<StreamQuality>, b: Partial<StreamQuality>) =>
-  a.maxSize === b.maxSize && a.maxFps === b.maxFps && (a.bitRate ?? b.bitRate) === (b.bitRate ?? a.bitRate);
+const sameQuality = (current: StreamQuality, target: Partial<StreamQuality>) =>
+  (target.maxSize === undefined || current.maxSize === target.maxSize) &&
+  (target.maxFps === undefined || current.maxFps === target.maxFps) &&
+  (target.bitRate === undefined || current.bitRate === target.bitRate);
 
 /** Live tiles of every online device, each streamed under `/d/<serial>/`. */
 export function DeviceGrid() {

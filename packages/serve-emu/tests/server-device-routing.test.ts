@@ -282,6 +282,26 @@ describe("startServer multi-device routing", () => {
     expect(a.body).toMatchObject({ serial: "A", quality: { maxSize: 1280, maxFps: 60 } });
   });
 
+  test("keeps the encoder and generation when a quality patch is already applied", async () => {
+    const h = await multiDeviceHarness();
+    const patch = (path: string, body: unknown) =>
+      json(h.request(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+    const changed = await patch("/d/B/api/stream-quality", { maxFps: 15 });
+    expect(changed.status).toBe(200);
+    expect(h.opensOf("B")).toHaveLength(2);
+    const original = h.opensOf("B")[1]!;
+
+    const unchanged = await patch("/d/B/api/stream-quality", { maxFps: 15 });
+    expect(unchanged.status).toBe(200);
+    expect(unchanged.body).toEqual(changed.body);
+    expect(h.opensOf("B")).toHaveLength(2);
+    expect(original.closeCalls).toBe(0);
+  });
+
   test("reselecting the streaming device keeps its quality", async () => {
     const h = await multiDeviceHarness();
     const post = (path: string, body: unknown) =>
@@ -322,7 +342,7 @@ describe("startServer multi-device routing", () => {
       );
     const select = post("/api/devices/select", { serial: "B" });
     await Bun.sleep(5);
-    const quality = post("/api/stream-quality", { maxFps: 15 });
+    const quality = post("/api/stream-quality", { maxFps: 60 });
     await Bun.sleep(5);
     releaseB();
     expect((await select).status).toBe(200);
