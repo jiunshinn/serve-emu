@@ -65,15 +65,42 @@ describe("parseGeoFix", () => {
       "satellites must be an integer",
     );
     expect(() => parseGeoFix({ latitude: 0, longitude: 0, satellites: 65 })).toThrow(
-      "satellites must be between 1 and 64",
+      "satellites must be between 1 and 12",
     );
     expect(() => parseGeoFix({ latitude: 0, longitude: 0, velocity: -1 })).toThrow(
       "velocity must be between 0 and 1000",
     );
   });
+
+  test("accepts 12 satellites and rejects 13 before sending a console command", () => {
+    expect(parseGeoFix({ latitude: 0, longitude: 0, satellites: 12 }).satellites).toBe(12);
+    expect(() => parseGeoFix({ latitude: 0, longitude: 0, satellites: 13 })).toThrow(
+      "satellites must be between 1 and 12",
+    );
+  });
 });
 
 describe("setEmulatorLocationAsync", () => {
+  test("keeps optional GPS values in the emulator console's positional slots", async () => {
+    const calls: string[][] = [];
+    const runExec: typeof execText = async (cmd, args, options) => {
+      calls.push([...args]);
+      return answering({ stdout: "OK" })(cmd, args, options);
+    };
+    for (const options of [{ satellites: 8 }, { velocity: 0.5 }, { altitude: 15, velocity: 0 }]) {
+      await setEmulatorLocationAsync(
+        "emulator-5554",
+        parseGeoFix({ latitude: 20, longitude: 10, ...options }),
+        { execText: runExec },
+      );
+    }
+    expect(calls.map((args) => args.slice(7))).toEqual([
+      ["0", "8"],
+      ["0", "1", "0.5"],
+      ["15", "1", "0"],
+    ]);
+  });
+
   test("uses the shared interactive executor lane", async () => {
     const calls: Array<{
       cmd: string;

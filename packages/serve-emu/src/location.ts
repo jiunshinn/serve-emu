@@ -45,8 +45,12 @@ function geoFixArgs(serial: string, fix: GeoFix): string[] {
     decimal(fix.longitude),
     decimal(fix.latitude),
   ];
-  if (fix.altitude !== undefined) args.push(decimal(fix.altitude));
-  if (fix.satellites !== undefined) args.push(String(fix.satellites));
+  if (fix.altitude !== undefined || fix.satellites !== undefined || fix.velocity !== undefined) {
+    args.push(decimal(fix.altitude ?? 0));
+  }
+  if (fix.satellites !== undefined || fix.velocity !== undefined) {
+    args.push(String(fix.satellites ?? 1));
+  }
   if (fix.velocity !== undefined) args.push(decimal(fix.velocity));
   return args;
 }
@@ -77,8 +81,8 @@ export function parseGeoFix(value: unknown): GeoFix {
   if (altitude !== undefined && (altitude < -1000 || altitude > 100000)) {
     throw new Error("altitude must be between -1000 and 100000");
   }
-  if (satellites !== undefined && (satellites < 1 || satellites > 64)) {
-    throw new Error("satellites must be between 1 and 64");
+  if (satellites !== undefined && (satellites < 1 || satellites > 12)) {
+    throw new Error("satellites must be between 1 and 12");
   }
   if (velocity !== undefined && (velocity < 0 || velocity > 1000)) {
     throw new Error("velocity must be between 0 and 1000");

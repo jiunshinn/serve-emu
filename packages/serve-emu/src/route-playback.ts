@@ -91,7 +91,7 @@ function degrees(radiansValue: number): number {
   return (radiansValue * 180) / Math.PI;
 }
 
-function distanceMeters(a: RouteWaypoint, b: RouteWaypoint): number {
+function angularDistance(a: RouteWaypoint, b: RouteWaypoint): number {
   const lat1 = radians(a.latitude);
   const lat2 = radians(b.latitude);
   const dLat = lat2 - lat1;
@@ -99,18 +99,17 @@ function distanceMeters(a: RouteWaypoint, b: RouteWaypoint): number {
   const h =
     Math.sin(dLat / 2) ** 2 +
     Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_RADIUS_METERS * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  return 2 * Math.asin(Math.sqrt(clamp(h, 0, 1)));
 }
 
 function interpolate(a: RouteWaypoint, b: RouteWaypoint, t: number): GeoFix {
+  if (t === 0) return { ...a };
+  if (t === 1) return { ...b };
   const lat1 = radians(a.latitude);
   const lon1 = radians(a.longitude);
   const lat2 = radians(b.latitude);
   const lon2 = radians(b.longitude);
-  const d = 2 * Math.asin(Math.sqrt(
-    Math.sin((lat2 - lat1) / 2) ** 2 +
-      Math.cos(lat1) * Math.cos(lat2) * Math.sin((lon2 - lon1) / 2) ** 2,
-  ));
+  const d = angularDistance(a, b);
 
   if (d === 0) return { ...a };
 
@@ -164,7 +163,7 @@ function prepareRoute(waypoints: RouteWaypoint[]): PreparedRoute {
   const cumulativeMeters = [0];
   let totalMeters = 0;
   for (let i = 1; i < waypoints.length; i++) {
-    totalMeters += distanceMeters(waypoints[i - 1], waypoints[i]);
+    totalMeters += EARTH_RADIUS_METERS * angularDistance(waypoints[i - 1], waypoints[i]);
     cumulativeMeters.push(totalMeters);
   }
   return { waypoints, cumulativeMeters, totalMeters };
