@@ -428,6 +428,27 @@ describe("LogcatHub", () => {
     await reader.cancel();
   });
 
+  test("sends the final bounded batch before close even if the subscriber has not pulled", async () => {
+    const { hub, clock, children } = makeHub({ maxQueueLines: 2 });
+    const response = hub.subscribe({});
+    children[0]!.stdout.write("first\nsecond\nthird\n");
+    children[0]!.close(0, null);
+
+    const reader = response.body!.getReader();
+    expect((await readEvent(reader)).event).toBe("ready");
+    expect(await readEvent(reader)).toMatchObject({
+      event: "logs",
+      data: {
+        lines: [{ line: "second" }, { line: "third" }],
+        dropped: 1,
+        totalDropped: 1,
+      },
+    });
+    expect(await readEvent(reader)).toEqual({ event: "close", data: { code: 0, signal: null } });
+    expect((await reader.read()).done).toBe(true);
+    expect(clock.pendingTimeouts).toBe(0);
+  });
+
   test("reports child errors and cleans up once on close", async () => {
     const { hub, children } = makeHub();
     const response = hub.subscribe({});

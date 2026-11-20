@@ -478,6 +478,7 @@ export class LogcatHub {
       this.#lineBuffer = "";
       this.#discardingLongLine = false;
       for (const subscriber of [...this.#subscribers.values()]) {
+        this.#flush(subscriber, true);
         this.#sendControl(subscriber, "close", { code, signal });
         this.#removeSubscriber(subscriber, true);
       }
@@ -557,9 +558,10 @@ export class LogcatHub {
     }, this.#batchIntervalMs);
   }
 
-  #flush(subscriber: Subscriber): void {
+  #flush(subscriber: Subscriber, final = false): void {
     if (!subscriber.active) return;
     if (
+      !final &&
       subscriber.controller.desiredSize !== null &&
       subscriber.controller.desiredSize <= 0
     ) {
