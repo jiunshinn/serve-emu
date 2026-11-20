@@ -50,7 +50,7 @@ import { createDeviceRecovery } from "./server/device-recovery.ts";
 import { createEmulatorRegistry } from "./server/emulators.ts";
 import { buildHealthSnapshot } from "./server/health.ts";
 import { createSessionServices } from "./server/session-services.ts";
-import { isServicePath, splitDevicePath } from "./server/device-path.ts";
+import { isServicePath, splitDevicePath, uiPagePath } from "./server/device-path.ts";
 import { serveStaticFile } from "./server/static.ts";
 import type { Client, DeviceContext, WsData } from "./server/types.ts";
 import {
@@ -778,12 +778,11 @@ export async function startServer(
       if (rejected) return rejected;
 
       const target = splitDevicePath(url.pathname);
+      const page = uiPagePath(url, target);
+      if (page) return serveStaticFile(uiDir, page);
+
       if (target?.serial === null) {
         return routeToSlot(primary, requestContext, req, url, url.pathname, srv);
-      }
-      // A device's own UI is the same page; it finds its prefix in the URL.
-      if (target && (target.path === "/" || target.path === "/index.html")) {
-        return serveStaticFile(uiDir, "/");
       }
       if (!target || !isServicePath(target.path)) {
         return new Response("not found", { status: 404 });

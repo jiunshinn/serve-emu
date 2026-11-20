@@ -513,14 +513,20 @@ describe("server HTTP and WebSocket boundaries", () => {
       const fixtureName = "__server-request-gates-fixture__.txt";
       await writeFile(join(uiDir, fixtureName), "static fixture\n", "utf8");
       await writeFile(join(uiDir, "index.html"), "<!doctype html>fixture ui", "utf8");
+      await writeFile(join(uiDir, "compact.html"), "<!doctype html>fixture compact ui", "utf8");
 
       const index = await response(harness.request("/"));
       expect(index.status).toBe(200);
       expect(await index.text()).toBe("<!doctype html>fixture ui");
-      for (const page of ["/grid", "/grid/", "/d/emulator-5556/", "/d/emulator-5556/index.html"]) {
+      for (const page of ["/d/emulator-5556", "/d/emulator-5556/", "/d/emulator-5556/index.html"]) {
         const ui = await response(harness.request(page));
         expect(ui.status, page).toBe(200);
         expect(await ui.text()).toBe("<!doctype html>fixture ui");
+      }
+      for (const page of ["/grid", "/grid/", "/?tile=1", "/d/emulator-5556/?tile=1", "/d/emulator-5556/index.html?tile"]) {
+        const ui = await response(harness.request(page));
+        expect(ui.status, page).toBe(200);
+        expect(await ui.text()).toBe("<!doctype html>fixture compact ui");
       }
 
       const existing = await response(harness.request(`/${fixtureName}`));

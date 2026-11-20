@@ -5,6 +5,7 @@
   // `knip --production` follows only production entries, so a module that
   // only tests import is reported as unused (see check:unused:prod).
   "entry": [
+    "src/ui/compact.tsx!",
     "src/ui/lib/stream-worker.ts!",
     "src/ui/lib/route-parser-worker.ts!",
     "tests/**/*.test.ts"

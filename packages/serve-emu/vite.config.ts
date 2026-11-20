@@ -1,7 +1,8 @@
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 import react from "@vitejs/plugin-react";
+import { uiPagePath } from "./src/server/device-path";
 
 export const DEFAULT_BACKEND_ORIGIN = "http://localhost:3300";
 export const DEFAULT_UI_PORT = 5173;
@@ -61,10 +62,30 @@ export default defineConfig(({ mode }) => {
 
   return {
     root: "src/ui",
-    plugins: [react()],
+    plugins: [
+      react(),
+      {
+        name: "serve-emu-ui-entries",
+        configureServer(server) {
+          server.middlewares.use((request, _response, next) => {
+            if (request.url) {
+              const page = uiPagePath(new URL(request.url, DEFAULT_BACKEND_ORIGIN));
+              if (page) request.url = page;
+            }
+            next();
+          });
+        },
+      },
+    ],
     build: {
       outDir: "../../dist/ui",
       emptyOutDir: true,
+      rollupOptions: {
+        input: [
+          join(packageDirectory, "src/ui/index.html"),
+          join(packageDirectory, "src/ui/compact.html"),
+        ],
+      },
     },
     server: {
       port: DEFAULT_UI_PORT,
