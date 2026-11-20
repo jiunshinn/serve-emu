@@ -27,7 +27,7 @@ export type SessionRecorderOptions = {
   sleep?: (ms: number) => Promise<void>;
 };
 
-type TouchGesture = Extract<Gesture, { type: "touch" }>;
+type HeldGesture = Extract<Gesture, { type: "touch" | "key" }>;
 
 export const DEFAULT_MAX_SESSION_EVENTS = 2_000;
 export const DEFAULT_MAX_SESSION_BYTES = 1024 * 1024;
@@ -379,10 +379,8 @@ export class SessionRecorder {
   ): Promise<SessionSnapshot> {
     let outcome: "completed" | "cancelled" | "error" = "completed";
     let targetMs = this.#clock.now();
-    // Touch pointers this replay has pressed, with their last gesture. A move
-    // or up whose down was not replayed (evicted, or recorded unpaired) is
-    // skipped, and anything still pressed is released when replay ends.
-    const pressed = new Map<number, TouchGesture>();
+    // Skip moves and releases whose down is missing from the retained history.
+    const pressed = new Map<string, HeldGesture>();
     try {
       for (const event of events) {
         this.#assertReplayActive(replay);
@@ -394,14 +392,16 @@ export class SessionRecorder {
         this.#assertReplayActive(replay);
         if (event.kind === "gesture") {
           const gesture = event.gesture;
-          if (gesture.type === "touch") {
-            const pointer = gesture.pointerId ?? 0;
-            if (gesture.action !== "down" && !pressed.has(pointer)) continue;
+          if (gesture.type === "touch" || (gesture.type === "key" && gesture.action !== undefined)) {
+            const id = gesture.type === "touch"
+              ? `touch:${gesture.pointerId ?? 0}`
+              : `key:${gesture.keycode}`;
+            if (gesture.action !== "down" && !pressed.has(id)) continue;
             // Marked before dispatch: a down interrupted mid-dispatch may
             // already be on the device.
-            if (gesture.action !== "up") pressed.set(pointer, gesture);
+            if (gesture.action !== "up") pressed.set(id, gesture);
             await handlers.dispatchGesture(gesture, replay.controller.signal);
-            if (gesture.action === "up") pressed.delete(pointer);
+            if (gesture.action === "up") pressed.delete(id);
           } else {
             await handlers.dispatchGesture(gesture, replay.controller.signal);
           }
@@ -429,7 +429,7 @@ export class SessionRecorder {
         console.error("[session] replay failed:", err);
       }
     } finally {
-      await this.#releasePointers(pressed, handlers);
+      await this.#releaseInputs(pressed, handlers);
       if (this.#activeReplay?.id === replay.id) {
         const finishedAt = new Date(this.#clock.now()).toISOString();
         this.#replaying = false;
@@ -444,8 +444,8 @@ export class SessionRecorder {
     return this.snapshot();
   }
 
-  async #releasePointers(
-    pressed: Map<number, TouchGesture>,
+  async #releaseInputs(
+    pressed: Map<string, HeldGesture>,
     handlers: ReplayHandlers,
   ): Promise<void> {
     // Runs after cancellation too, so it needs its own (never aborted) signal;
