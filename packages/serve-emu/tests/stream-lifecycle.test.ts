@@ -399,7 +399,8 @@ describe("StreamSessionResources", () => {
     expect(second.closeCalls).toBe(0);
     expect(third.closeCalls).toBe(0);
     expect(resources.queuedFrameCount).toBe(2);
-    expect(resources.timingCount).toBe(2);
+    expect(resources.peekTiming(2)).toBe("timing-2");
+    expect(resources.peekTiming(3)).toBe("timing-3");
     expect(resources.takeTiming(1)).toBeUndefined();
   });
 
@@ -416,7 +417,8 @@ describe("StreamSessionResources", () => {
     expect(latest).toBe(frames[2]);
     expect(frames.map((frame) => frame.closeCalls)).toEqual([1, 1, 0]);
     expect(resources.queuedFrameCount).toBe(0);
-    expect(resources.timingCount).toBe(1);
+    expect(resources.peekTiming(10)).toBeUndefined();
+    expect(resources.peekTiming(11)).toBeUndefined();
     expect(resources.takeTiming(12)).toBe("timing-12");
   });
 
@@ -432,7 +434,9 @@ describe("StreamSessionResources", () => {
     expect(resources.reset()).toEqual({ closedFrames: 3, clearedTimings: 4 });
     expect(frames.map((frame) => frame.closeCalls)).toEqual([1, 1, 1]);
     expect(resources.queuedFrameCount).toBe(0);
-    expect(resources.timingCount).toBe(0);
+    for (const timestamp of [20, 21, 22, 99]) {
+      expect(resources.peekTiming(timestamp)).toBeUndefined();
+    }
 
     expect(resources.reset()).toEqual({ closedFrames: 0, clearedTimings: 0 });
     expect(frames.map((frame) => frame.closeCalls)).toEqual([1, 1, 1]);
@@ -458,7 +462,8 @@ describe("StreamSessionResources", () => {
     resources.rememberTiming(2, "two");
     resources.rememberTiming(3, "three");
 
-    expect(resources.timingCount).toBe(2);
+    expect(resources.peekTiming(2)).toBe("two");
+    expect(resources.peekTiming(3)).toBe("three");
     expect(resources.takeTiming(1)).toBeUndefined();
     expect(resources.takeTiming(2)).toBe("two");
     expect(resources.takeTiming(3)).toBe("three");
