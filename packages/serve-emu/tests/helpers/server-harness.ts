@@ -374,7 +374,6 @@ export {
   createHarness,
   fakeScrcpy,
   fakeWebSocket,
-  INERT_RECOVERY_CLOCK,
   response,
   stopHarnesses,
   waitFor,

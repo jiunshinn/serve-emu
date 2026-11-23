@@ -38,7 +38,7 @@ export function loadGop(bytes: Buffer): Gop {
 const V4_CONFIG = 1n << 62n;
 const V4_KEY_FRAME = 1n << 61n;
 
-export function v4SessionPacket(width: number, height: number): Buffer {
+function v4SessionPacket(width: number, height: number): Buffer {
   const packet = Buffer.alloc(12);
   packet.writeUInt32BE(0x8000_0000, 0);
   packet.writeUInt32BE(width, 4);
@@ -46,7 +46,7 @@ export function v4SessionPacket(width: number, height: number): Buffer {
   return packet;
 }
 
-export function v4FramePacket(
+function v4FramePacket(
   data: Buffer,
   pts: bigint,
   { config = false, key = false }: { config?: boolean; key?: boolean } = {},
