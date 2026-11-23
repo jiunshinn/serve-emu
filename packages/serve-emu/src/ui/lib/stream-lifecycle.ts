@@ -373,17 +373,12 @@ export class StreamSessionResources<
     return this.#frameCount;
   }
 
-  get timingCount(): number {
-    return this.#timings.size;
-  }
-
   rememberTiming(timestamp: number, timing: Timing): void {
     finiteTimestamp(timestamp, "frame timestamp");
     if (this.#timings.has(timestamp)) this.#timings.delete(timestamp);
-    while (this.#timings.size >= this.#timingCapacity) {
-      const oldest = this.#timings.keys().next();
-      if (oldest.done) break;
-      this.#timings.delete(oldest.value);
+    for (const oldest of this.#timings.keys()) {
+      if (this.#timings.size < this.#timingCapacity) break;
+      this.#timings.delete(oldest);
     }
     this.#timings.set(timestamp, timing);
   }
